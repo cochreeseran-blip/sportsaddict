@@ -73,6 +73,18 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       await upsertGame(g, gameDate);
     }
     log(`Schedule: ${scheduleGames.length} game(s) upserted.`);
+
+    // Same probables mlb.com/probable-pitchers shows; flag the games where
+    // MLB hasn't announced one yet so the user knows those can't be
+    // moneyline-screened until a starter posts.
+    const tbd = scheduleGames.filter((g) => !g.homeStarterName || !g.awayStarterName);
+    if (tbd.length) {
+      warnings.push(
+        `${tbd.length} game(s) have no announced probable starter yet (per mlb.com/probable-pitchers): ` +
+          tbd.map((g) => `${g.awayTeamName} @ ${g.homeTeamName}`).join('; ') +
+          '. They can\'t be moneyline-screened until MLB posts the pitcher.'
+      );
+    }
   } catch (err) {
     warnings.push(`MLB schedule unavailable — check manually. (${err.message})`);
     console.warn(`  Schedule fetch failed: ${err.message}`);

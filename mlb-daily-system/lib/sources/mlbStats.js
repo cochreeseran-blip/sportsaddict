@@ -15,9 +15,13 @@ async function fetchJson(url, timeoutMs = 15000) {
   }
 }
 
-// Today's schedule with probable starters, hydrated per-team.
+// Today's schedule with probable starters. This is the same feed that
+// backs mlb.com/probable-pitchers — that page is just a render of
+// statsapi's schedule endpoint with probablePitcher hydration — so we use
+// the identical request (probablePitcher(note),venue) and read the same
+// fields. There is no separate probable-pitchers API to scrape.
 export async function fetchScheduleWithProbables(dateStr) {
-  const url = `${BASE}/schedule?sportId=1&hydrate=probablePitcher,venue&date=${dateStr}`;
+  const url = `${BASE}/schedule?sportId=1&hydrate=probablePitcher(note),venue&date=${dateStr}`;
   const data = await fetchJson(url);
   const dates = data.dates || [];
   const games = [];

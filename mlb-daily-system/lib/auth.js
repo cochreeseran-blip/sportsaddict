@@ -77,10 +77,48 @@ export async function ensureAuthSchema(pool) {
       expires_at TIMESTAMPTZ NOT NULL
     );
     CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_seed INTEGER;
     UPDATE users SET avatar_seed = ((id::bigint * 2654435761) % 2147483647)::integer
       WHERE avatar_seed IS NULL;
   `);
+
+  // The production database turned out to host a users table from an older
+  // app, with its own NOT NULL columns (e.g. "role") that this app's INSERT
+  // never supplies. Generically relax NOT NULL on any users column we don't
+  // own and that has no default, so unknown legacy columns can never block
+  // a signup. Data is left untouched.
+  await pool.query(`
+    DO $$
+    DECLARE col record;
+    BEGIN
+      FOR col IN
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'users'
+          AND is_nullable = 'NO' AND column_default IS NULL
+          AND column_name NOT IN ('id', 'email', 'username', 'password_hash')
+      LOOP
+        EXECUTE format('ALTER TABLE users ALTER COLUMN %I DROP NOT NULL', col.column_name);
+      END LOOP;
+    END $$;
+  `);
+
+  // On a legacy table the username/email columns we just added have no
+  // unique constraint, which createUser's collision-retry depends on.
+  // Best-effort: existing duplicate data makes this fail, and that must
+  // not block boot.
+  for (const idx of [
+    'CREATE UNIQUE INDEX IF NOT EXISTS users_username_uidx ON users (username)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS users_email_uidx ON users (email)',
+  ]) {
+    try {
+      await pool.query(idx);
+    } catch (err) {
+      console.warn(`ensureAuthSchema: skipped "${idx}" (${err.message})`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

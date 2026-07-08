@@ -78,6 +78,8 @@ export async function runWindHrFilter(pool, gameDate) {
           batterId: b.batter_id,
           batterName: b.batter_name,
           team,
+          position: b.position ?? null,
+          jerseyNumber: b.jersey_number ?? null,
           trailing15HrRate: hrRate,
           lineupConfirmed: b.lineup_confirmed,
           last5Results: b.last5_results ?? [],

@@ -13,20 +13,33 @@ function fmtLineup(confirmed) {
 
 export async function saveDigest(pool, gameDate, signalType, details) {
   await pool.query(
-    'INSERT INTO daily_digest (game_date, signal_type, details) VALUES ($1, $2, $3)',
+    `INSERT INTO daily_digest (game_date, signal_type, details) VALUES ($1, $2, $3)
+     ON CONFLICT (game_date, signal_type) DO UPDATE SET
+       details = EXCLUDED.details,
+       created_at = now()`,
     [gameDate, signalType, JSON.stringify(details)]
   );
 }
 
-export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }) {
+export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, topPicks }) {
   const line = '='.repeat(60);
   console.log(`\n${line}`);
-  console.log(`MLB DAILY DIGEST — ${gameDate}`);
+  console.log(`SLATEFINDER DAILY DIGEST — ${gameDate}`);
   console.log(line);
 
   if (warnings.length) {
     console.log('\n[WARNINGS]');
     for (const w of warnings) console.log(`  - ${w}`);
+  }
+
+  console.log('\n--- TOP 3 PICKS (pooled across all signals) ---');
+  if (!topPicks?.length) {
+    console.log('  Nothing pooled to the top today.');
+  } else {
+    topPicks.forEach((p, i) => {
+      console.log(`  ${i + 1}. [${p.type}] ${p.headline}`);
+      console.log(`     ${p.detail}`);
+    });
   }
 
   console.log('\n--- MONEYLINE (capped at 2, sorted by closeness to -155) ---');

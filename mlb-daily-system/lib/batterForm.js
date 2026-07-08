@@ -42,8 +42,9 @@ export async function upsertBatterForm(pool, record) {
   await pool.query(
     `INSERT INTO batter_form
        (game_date, batter_id, batter_name, team, hit_streak, trailing_15_avg, trailing_15_hr_rate,
-        lineup_confirmed, last5_results)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        lineup_confirmed, last5_results, position, jersey_number, lineup_confirmed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+             CASE WHEN $8 THEN now() ELSE NULL END)
      ON CONFLICT (game_date, batter_id) DO UPDATE SET
        batter_name = EXCLUDED.batter_name,
        team = EXCLUDED.team,
@@ -51,7 +52,14 @@ export async function upsertBatterForm(pool, record) {
        trailing_15_avg = EXCLUDED.trailing_15_avg,
        trailing_15_hr_rate = EXCLUDED.trailing_15_hr_rate,
        lineup_confirmed = EXCLUDED.lineup_confirmed,
-       last5_results = EXCLUDED.last5_results`,
+       last5_results = EXCLUDED.last5_results,
+       position = COALESCE(EXCLUDED.position, batter_form.position),
+       jersey_number = COALESCE(EXCLUDED.jersey_number, batter_form.jersey_number),
+       -- Remember the FIRST moment the lineup showed up confirmed that day.
+       lineup_confirmed_at = CASE
+         WHEN EXCLUDED.lineup_confirmed THEN COALESCE(batter_form.lineup_confirmed_at, now())
+         ELSE batter_form.lineup_confirmed_at
+       END`,
     [
       record.gameDate,
       record.batterId,
@@ -62,6 +70,8 @@ export async function upsertBatterForm(pool, record) {
       record.trailing15HrRate,
       record.lineupConfirmed,
       JSON.stringify(record.last5Results ?? []),
+      record.position ?? null,
+      record.jerseyNumber ?? null,
     ]
   );
 }

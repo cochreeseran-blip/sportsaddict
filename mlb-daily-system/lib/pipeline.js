@@ -9,6 +9,7 @@ import { runMoneylineFilter } from './filters/moneyline.js';
 import { runHitStreakFilter } from './filters/hitStreak.js';
 import { runWindHrFilter } from './filters/windHr.js';
 import { saveDigest } from './digest.js';
+import { buildTopPicks } from './topPicks.js';
 import { recordTrackedPicks } from './trackedPicks.js';
 
 export function todayIsoDate() {
@@ -164,6 +165,8 @@ export async function runPipeline(gameDate = todayIsoDate()) {
             batterName: hitter.fullName,
             team,
             lineupConfirmed,
+            position: hitter.position,
+            jerseyNumber: hitter.jerseyNumber,
             ...stats,
           });
           battersOk++;
@@ -232,12 +235,17 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   const windHr = await runWindHrFilter(pool, gameDate);
   warnings.push(...(windHr.warnings || []));
 
+  // Pooled cross-category ranking for the dashboard's Top 3 hero section.
+  // Heuristic and explainable, not a model — see lib/topPicks.js.
+  const topPicks = buildTopPicks({ moneyline, hitStreak, windHr });
+
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
   await saveDigest(pool, gameDate, 'wind_hr', windHr);
+  await saveDigest(pool, gameDate, 'top_picks', { picks: topPicks });
 
   const trackedCount = await recordTrackedPicks(pool, gameDate, { moneyline, hitStreak, windHr });
   log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
 
-  return { gameDate, warnings, moneyline, hitStreak, windHr };
+  return { gameDate, warnings, moneyline, hitStreak, windHr, topPicks };
 }

@@ -37,6 +37,8 @@ export async function runHitStreakFilter(pool, gameDate) {
       batterId: b.batter_id,
       batterName: b.batter_name,
       team: b.team,
+      position: b.position ?? null,
+      jerseyNumber: b.jersey_number ?? null,
       hitStreak: b.hit_streak,
       trailing15Avg: b.trailing_15_avg !== null ? Number(b.trailing_15_avg) : null,
       lineupConfirmed: b.lineup_confirmed,

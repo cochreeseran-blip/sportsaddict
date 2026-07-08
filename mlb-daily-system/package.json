@@ -1,7 +1,7 @@
 {
-  "name": "mlb-daily-system",
-  "version": "1.0.0",
-  "description": "Standalone daily research pipeline for MLB betting research signals.",
+  "name": "slatefinder",
+  "version": "2.0.0",
+  "description": "SlateFinder — interactive MLB slate research console: daily signals, lineups, and a 10-day slate browser.",
   "type": "module",
   "private": true,
   "engines": {

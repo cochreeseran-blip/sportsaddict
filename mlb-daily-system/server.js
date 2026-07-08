@@ -1,9 +1,14 @@
 import 'dotenv/config';
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { pool } from './lib/db.js';
 import { runMigrations } from './lib/migrate.js';
 import { runPipeline, todayIsoDate } from './lib/pipeline.js';
-import { fmtOdds, fmtNum } from './lib/util/format.js';
+import * as mlb from './lib/sources/mlbStats.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Railway injects PORT dynamically — binding to a fixed port would fail.
 const PORT = process.env.PORT || 3000;
@@ -73,17 +78,34 @@ function scheduleDailyRuns() {
   }
 }
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str).replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
+// ---------------------------------------------------------------------------
+// Tiny TTL cache for live MLB Stats API proxying. The slate/game endpoints
+// are hit on every client navigation; without this each click would fan a
+// request out to the free MLB API. Entries also serve stale data while a
+// background refresh is in flight (simple: we just cache the promise).
+const cache = new Map();
+function cached(key, ttlMs, producer) {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
+  const promise = producer().catch((err) => {
+    cache.delete(key); // don't cache failures
+    throw err;
+  });
+  cache.set(key, { at: Date.now(), promise });
+  return promise;
 }
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function shiftIso(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
 
 async function listDigestDates() {
   const { rows } = await pool.query(
-    'SELECT DISTINCT game_date FROM daily_digest ORDER BY game_date DESC LIMIT 14'
+    'SELECT DISTINCT game_date FROM daily_digest ORDER BY game_date DESC LIMIT 30'
   );
   return rows.map((r) => r.game_date.toISOString().slice(0, 10));
 }
@@ -95,220 +117,192 @@ async function loadDigest(gameDate) {
   );
   const byType = Object.fromEntries(rows.map((r) => [r.signal_type, r.details]));
   return {
+    topPicks: byType.top_picks?.picks || [],
     moneyline: byType.moneyline || { signal: 'SIT', picks: [] },
     hitStreak: byType.hit_streak || { watchList: [], highConfidence: [] },
     windHr: byType.wind_hr || { watchList: [], highConfidence: [], hrRateThreshold: null },
   };
 }
 
-function pitcherBadge(era) {
-  if (era === null || era === undefined) return '';
-  return era >= 6.0
-    ? `<span class="badge bad">STRUGGLING (${fmtNum(era)} ERA)</span>`
-    : `<span class="badge good">PITCHING WELL (${fmtNum(era)} ERA)</span>`;
+// Per-team lineup confirmation for a date, from what the pipeline saw:
+// whether the lineup was confirmed and the first moment we saw it posted.
+async function lineupStatusByTeam(gameDate) {
+  const { rows } = await pool.query(
+    `SELECT team,
+            bool_or(lineup_confirmed) AS confirmed,
+            min(lineup_confirmed_at) FILTER (WHERE lineup_confirmed) AS confirmed_at
+     FROM batter_form
+     WHERE game_date = $1
+     GROUP BY team`,
+    [gameDate]
+  );
+  return Object.fromEntries(
+    rows.map((r) => [r.team, { confirmed: r.confirmed === true, confirmedAt: r.confirmed_at }])
+  );
 }
 
-function renderLast5(results) {
-  if (!results || !results.length) return '<span class="muted">no data</span>';
-  return `<span class="last5">${results.map((hit) => (hit ? '✅' : '❌')).join(' ')}</span>`;
+// One day of the interactive slate: live MLB schedule (statuses, scores,
+// probables, lineups-posted flags) merged with our own pipeline knowledge
+// (odds, wind, lineup confirmation timestamps) where we have it.
+async function buildSlate(dateStr) {
+  const [byDate, dbStatus, dbGames] = await Promise.all([
+    cached(`sched:${dateStr}`, 3 * 60 * 1000, () => mlb.fetchScheduleRange(dateStr, dateStr)),
+    lineupStatusByTeam(dateStr),
+    pool.query(
+      'SELECT mlb_game_id, home_ml, away_ml, wind_speed_mph, wind_blowing_out FROM games WHERE game_date = $1',
+      [dateStr]
+    ).then((r) => new Map(r.rows.map((g) => [g.mlb_game_id, g]))),
+  ]);
+
+  const games = (byDate[dateStr] || []).map((g) => {
+    const db = dbGames.get(String(g.gamePk));
+    const homeDb = dbStatus[g.home.name];
+    const awayDb = dbStatus[g.away.name];
+    return {
+      ...g,
+      homeMl: db?.home_ml ?? null,
+      awayMl: db?.away_ml ?? null,
+      windSpeedMph: db?.wind_speed_mph !== null && db?.wind_speed_mph !== undefined ? Number(db.wind_speed_mph) : null,
+      windBlowingOut: db?.wind_blowing_out ?? null,
+      lineups: {
+        home: {
+          posted: g.lineupsPosted.home || homeDb?.confirmed === true,
+          confirmedAt: homeDb?.confirmedAt ?? null,
+        },
+        away: {
+          posted: g.lineupsPosted.away || awayDb?.confirmed === true,
+          confirmedAt: awayDb?.confirmedAt ?? null,
+        },
+      },
+    };
+  });
+  return { date: dateStr, games };
 }
 
-function lineupBadge(confirmed) {
-  if (confirmed === true) return '<span class="badge good">✅ Confirmed lineup</span>';
-  if (confirmed === false) return '<span class="badge warn">⚠️ Projected — not confirmed</span>';
-  return '';
+// Game detail: boxscore lineups (order, jersey, position, day's line)
+// merged with our stored batter form (streak, trailing avg/HR rate) and
+// pitcher form for the probable starters.
+async function buildGameDetail(gamePk, dateStr) {
+  const lineups = await cached(`box:${gamePk}`, 2 * 60 * 1000, () => mlb.fetchBoxscoreLineups(gamePk));
+
+  const [batterRows, pitcherRows, gameRow] = await Promise.all([
+    pool.query(
+      `SELECT batter_id, hit_streak, trailing_15_avg, trailing_15_hr_rate, last5_results,
+              lineup_confirmed, lineup_confirmed_at, position, jersey_number
+       FROM batter_form WHERE game_date = $1`,
+      [dateStr]
+    ),
+    pool.query(
+      'SELECT pitcher_id, pitcher_name, season_era, trailing_era, trailing_starts FROM pitcher_form WHERE game_date = $1',
+      [dateStr]
+    ),
+    pool.query('SELECT * FROM games WHERE mlb_game_id = $1', [String(gamePk)]),
+  ]);
+
+  const formById = new Map(batterRows.rows.map((b) => [b.batter_id, b]));
+  const pitcherById = new Map(pitcherRows.rows.map((p) => [p.pitcher_id, p]));
+  const g = gameRow.rows[0] || null;
+
+  const decorate = (side) => ({
+    ...side,
+    batters: side.batters.map((b) => {
+      const f = formById.get(b.id);
+      return {
+        ...b,
+        // Prefer live boxscore jersey/position; fall back to what the
+        // pipeline stored from the roster earlier in the day.
+        jerseyNumber: b.jerseyNumber ?? f?.jersey_number ?? null,
+        position: b.position ?? f?.position ?? null,
+        hitStreak: f?.hit_streak ?? null,
+        trailing15Avg: f?.trailing_15_avg !== null && f?.trailing_15_avg !== undefined ? Number(f.trailing_15_avg) : null,
+        trailing15HrRate: f?.trailing_15_hr_rate !== null && f?.trailing_15_hr_rate !== undefined ? Number(f.trailing_15_hr_rate) : null,
+        last5Results: f?.last5_results ?? null,
+      };
+    }),
+  });
+
+  const starter = (id, name) => {
+    const p = id != null ? pitcherById.get(id) : null;
+    return {
+      id: id ?? null,
+      name: p?.pitcher_name ?? name ?? null,
+      seasonEra: p?.season_era !== null && p?.season_era !== undefined ? Number(p.season_era) : null,
+      trailingEra: p?.trailing_era !== null && p?.trailing_era !== undefined ? Number(p.trailing_era) : null,
+      trailingStarts: p?.trailing_starts ?? null,
+    };
+  };
+
+  return {
+    gamePk: Number(gamePk),
+    date: dateStr,
+    venue: g?.venue ?? null,
+    homeMl: g?.home_ml ?? null,
+    awayMl: g?.away_ml ?? null,
+    windSpeedMph: g?.wind_speed_mph !== null && g?.wind_speed_mph !== undefined ? Number(g.wind_speed_mph) : null,
+    windBlowingOut: g?.wind_blowing_out ?? null,
+    homeStarter: starter(g?.home_starter_id, g?.home_starter_name),
+    awayStarter: starter(g?.away_starter_id, g?.away_starter_name),
+    home: decorate(lineups.home),
+    away: decorate(lineups.away),
+  };
 }
 
-function renderOtherGames(otherGames) {
-  if (!otherGames?.length) return '';
-  const rows = otherGames
-    .map(
-      (g) => `
-      <div class="card miss">
-        <div class="card-title">${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)} <span class="odds miss">${fmtOdds(g.homeMl)}</span></div>
-        <div class="card-row muted">${escapeHtml(g.reason)}</div>
-      </div>`
-    )
-    .join('');
-  return `<p class="muted" style="margin-top:16px;">Games that came close but didn't make the cut:</p><div class="cards">${rows}</div>`;
+async function buildPerformance() {
+  const [summary, recent] = await Promise.all([
+    pool.query(`
+      SELECT signal_type,
+             count(*) FILTER (WHERE result IN ('win', 'loss')) AS graded,
+             count(*) FILTER (WHERE result = 'win') AS wins,
+             count(*) FILTER (WHERE result = 'loss') AS losses,
+             count(*) FILTER (WHERE result = 'push') AS pushes,
+             count(*) FILTER (WHERE result = 'pending') AS pending,
+             avg(breakeven_pct) FILTER (WHERE result IN ('win', 'loss') AND breakeven_pct IS NOT NULL) AS avg_breakeven
+      FROM tracked_picks
+      GROUP BY signal_type
+      ORDER BY signal_type
+    `),
+    pool.query(`
+      SELECT game_date, signal_type, description, locked_price, breakeven_pct, result
+      FROM tracked_picks
+      ORDER BY game_date DESC, id DESC
+      LIMIT 40
+    `),
+  ]);
+  return {
+    summary: summary.rows.map((r) => ({
+      signalType: r.signal_type,
+      graded: Number(r.graded),
+      wins: Number(r.wins),
+      losses: Number(r.losses),
+      pushes: Number(r.pushes),
+      pending: Number(r.pending),
+      winRate: Number(r.graded) > 0 ? Number(r.wins) / Number(r.graded) : null,
+      avgBreakeven: r.avg_breakeven !== null ? Number(r.avg_breakeven) : null,
+    })),
+    recent: recent.rows.map((r) => ({
+      gameDate: r.game_date.toISOString().slice(0, 10),
+      signalType: r.signal_type,
+      description: r.description,
+      lockedPrice: r.locked_price,
+      breakevenPct: r.breakeven_pct !== null ? Number(r.breakeven_pct) : null,
+      result: r.result,
+    })),
+  };
 }
 
-function renderMoneylineSection(moneyline) {
-  const picksHtml =
-    moneyline.signal === 'SIT' || !moneyline.picks?.length
-      ? `<p class="empty">SIT — nobody qualifies today. No games where the home team is a modest favorite AND the visiting pitcher is struggling. See below for the closest ones.</p>`
-      : `<div class="cards">${moneyline.picks
-          .map(
-            (p) => `
-            <div class="card play">
-              <div class="card-title">Bet on ${escapeHtml(p.homeTeam)} <span class="odds">${fmtOdds(p.homeMl)}</span></div>
-              <div class="card-sub">to beat ${escapeHtml(p.awayTeam)}</div>
-              <div class="card-row">
-                Why: ${escapeHtml(p.awayStarterName ?? 'their pitcher')}, ${escapeHtml(p.awayTeam)}'s starting pitcher, has been getting hit hard lately.
-                ${pitcherBadge(p.awayStarterTrailingEra)}
-                <span class="muted">(his ERA for the whole season is ${fmtNum(p.awayStarterSeasonEra)} — this pick only cares about his last 3 starts, not the full season)</span>
-              </div>
-              <div class="card-row muted">Needs to hit ${p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : 'n/a'} of the time at this price (${fmtOdds(p.homeMl)}) just to break even — not a claim it actually will.</div>
-            </div>`
-          )
-          .join('')}</div>`;
-  return picksHtml + renderOtherGames(moneyline.otherGames);
-}
+// ---------------------------------------------------------------------------
+// Static assets: the SlateFinder single-page app. Whitelisted files only —
+// no directory traversal surface.
+const STATIC_FILES = {
+  '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
+  '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
+};
 
-function renderBatterRow(b, headline, subline) {
-  return `
-    <tr class="${b.highConfidence ? 'hc' : ''}">
-      <td>${escapeHtml(b.batterName)}<div class="muted">${escapeHtml(b.team)}</div><div>${lineupBadge(b.lineupConfirmed)}</div></td>
-      <td>${headline}<div class="muted">${subline}</div></td>
-      <td>${renderLast5(b.last5Results)}</td>
-      <td>${escapeHtml(b.opposingStarterName ?? 'TBD')}<div>${pitcherBadge(b.opposingStarterTrailingEra)}</div></td>
-      <td>${b.highConfidence ? '<span class="badge hot">🎯 GREAT MATCHUP</span>' : ''}</td>
-    </tr>`;
-}
-
-function renderHitStreakSection(hitStreak) {
-  if (!hitStreak.watchList?.length) {
-    return `<p class="empty">No batters are hot enough to qualify today.</p>`;
-  }
-  const rows = hitStreak.watchList
-    .map((b) =>
-      renderBatterRow(
-        b,
-        b.hitStreak >= 5 ? `🔥 Hit in ${b.hitStreak} straight games` : `Batting ${fmtNum(b.trailing15Avg, 3)} lately`,
-        `${fmtNum(b.trailing15Avg, 3)} average over his last 15 games`
-      )
-    )
-    .join('');
-  return `<p class="muted">Batters who are hitting well right now (5+ game hit streak, or batting .320+ over their last 15 games).</p>
-    <table><thead><tr><th>Hot hitter</th><th>Recent form</th><th>Last 5 games</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function renderWindHrSection(windHr) {
-  if (!windHr.watchList?.length) {
-    return `<p class="empty">No games today have wind strong enough (10+ mph) blowing toward the outfield, or no power hitters cleared today's bar.</p>`;
-  }
-  const rows = windHr.watchList
-    .map((b) =>
-      renderBatterRow(
-        b,
-        `💨 Playing at ${escapeHtml(b.venue ?? '')}`,
-        `wind blowing out at ${fmtNum(b.windSpeedMph, 1)} mph — ${fmtNum(b.trailing15HrRate, 2)} HR per game lately`
-      )
-    )
-    .join('');
-  return `<p class="muted">Wind is blowing out today (helps fly balls carry over the fence) at these parks — showing power hitters (top third of everyone playing today by recent home-run rate) on both teams.</p>
-    <table><thead><tr><th>Power hitter</th><th>Conditions</th><th>Last 5 games</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function renderPage({ gameDate, availableDates, digest }) {
-  const dateOptions = availableDates
-    .map((d) => `<option value="${d}" ${d === gameDate ? 'selected' : ''}>${d}</option>`)
-    .join('');
-  let statusLine;
-  if (isRefreshing) {
-    const elapsedSec = Math.round((Date.now() - refreshStartedAt.getTime()) / 1000);
-    statusLine = `refreshing… (${elapsedSec}s so far — this fetches live data and usually takes under a minute, page will reload automatically)`;
-  } else if (lastRunError) {
-    statusLine = `last run failed: ${escapeHtml(lastRunError)}`;
-  } else if (lastRunAt) {
-    statusLine = `last updated ${lastRunAt.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
-  } else {
-    statusLine = 'no pipeline run yet since this deploy started';
-  }
-
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MLB Daily Digest — ${escapeHtml(gameDate)}</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; line-height: 1.5; }
-  h1 { font-size: 1.4rem; margin-bottom: 4px; }
-  h2 { font-size: 1.05rem; margin-top: 2.5rem; border-bottom: 1px solid rgba(128,128,128,0.3); padding-bottom: 6px; }
-  .sub { color: #888; margin-top: 0; }
-  select { font-size: 1rem; padding: 4px 8px; margin-left: 8px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.92rem; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(128,128,128,0.2); }
-  th { color: #888; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
-  tr.hc { background: rgba(255, 200, 0, 0.08); }
-  .badge { display: inline-block; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; font-weight: 600; margin-top: 2px; }
-  .badge.hot { background: #d97706; color: white; }
-  .badge.bad { background: rgba(220, 38, 38, 0.15); color: #dc2626; }
-  .badge.good { background: rgba(22, 163, 74, 0.15); color: #16a34a; }
-  .badge.warn { background: rgba(217, 119, 6, 0.15); color: #d97706; }
-  .last5 { letter-spacing: 2px; white-space: nowrap; }
-  .empty { color: #888; font-style: italic; }
-  .muted { color: #888; font-size: 0.85rem; }
-  .cards { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
-  .card { border: 1px solid rgba(128,128,128,0.3); border-radius: 8px; padding: 12px 16px; }
-  .card.play { border-left: 4px solid #16a34a; }
-  .card.miss { border-left: 4px solid rgba(128,128,128,0.4); padding: 8px 16px; }
-  .card-title { font-weight: 600; font-size: 1.05rem; }
-  .card-sub { color: #888; margin-bottom: 6px; }
-  .odds { color: #16a34a; font-weight: 600; }
-  .odds.miss { color: #888; font-weight: 600; }
-  form { display: inline; }
-  .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,0.4); background: transparent; cursor: pointer; }
-  button:disabled { opacity: 0.5; cursor: default; }
-  .intro { background: rgba(128,128,128,0.08); border-radius: 8px; padding: 14px 16px; margin: 16px 0; font-size: 0.92rem; }
-  .glossary { font-size: 0.85rem; color: #888; }
-  .glossary summary { cursor: pointer; color: inherit; font-size: 0.9rem; margin-bottom: 8px; }
-  .glossary ul { margin: 8px 0 0; padding-left: 20px; }
-  .glossary li { margin-bottom: 6px; }
-</style>
-</head>
-<body>
-  <h1>MLB Daily Digest</h1>
-  <p class="sub toolbar">
-    ${escapeHtml(gameDate)}
-    <form method="get">
-      <select name="date" onchange="this.form.submit()">${dateOptions}</select>
-    </form>
-    <form method="post" action="/refresh">
-      <button type="submit" ${isRefreshing ? 'disabled' : ''} title="Re-fetches everything, including which batters are actually in tonight's confirmed lineup">${isRefreshing ? 'Refreshing…' : 'Refresh now'}</button>
-    </form>
-    <span class="muted">${statusLine}</span>
-  </p>
-  <p class="muted" style="margin-top:-6px;">Automatic checks run daily around ${REFRESH_HOURS_UTC.map(etLabel).join(', ')} ET. Lineups usually aren't posted until 1-3 hours before a given game, so for the most accurate ✅/⚠️ status, hit "Refresh now" yourself shortly before first pitch.</p>
-
-  <p class="intro">This page looks for three separate, unrelated situations in today's MLB games — a home team favored against a struggling opposing pitcher, hitters who are on a hot streak, and parks where the wind is helping the ball fly out for home runs. Each section below stands on its own; there's no blended "best pick" ranking across categories, since there isn't yet enough graded history to know how they should be weighted against each other. See <code>npm run report</code> once results start accumulating.</p>
-
-  <details class="glossary">
-    <summary>What do these terms mean?</summary>
-    <ul>
-      <li><strong>ERA (Earned Run Average)</strong> — average runs a pitcher gives up per 9 innings. Lower is better. Under ~4.00 is good, 6.00+ means he's been getting hit hard ("struggling").</li>
-      <li><strong>Trailing ERA</strong> — a pitcher's ERA over just his last 3 starts, not the whole season. This page cares about recent form, not the season total.</li>
-      <li><strong>Hit streak</strong> — number of games in a row where a batter has gotten at least 1 hit.</li>
-      <li><strong>HR rate</strong> — home runs per game over a batter's last 15 games played.</li>
-      <li><strong>Wind blowing out</strong> — the wind is blowing from the infield toward the outfield fence, which helps fly balls carry for home runs.</li>
-      <li><strong>Last 5 games</strong> — whether the batter got a hit (✅) or not (❌) in each of his last 5 games played, oldest game on the left, most recent on the right.</li>
-      <li><strong>✅ Confirmed lineup / ⚠️ Projected</strong> — MLB usually doesn't post the actual starting lineup until a couple hours before first pitch. Until then, batters shown are the team's regular starters based on their active roster, not a guarantee they're playing tonight. Always double check an ⚠️ batter is actually starting before betting on him.</li>
-      <li><strong>🎯 Great matchup</strong> — a hot hitter facing a pitcher who is also struggling. Both signs point the same way.</li>
-    </ul>
-  </details>
-
-  <h2>Moneyline: who to bet on</h2>
-  ${renderMoneylineSection(digest.moneyline)}
-
-  <h2>Hot Hitters to Watch</h2>
-  ${renderHitStreakSection(digest.hitStreak)}
-
-  <h2>Home Run Weather</h2>
-  ${renderWindHrSection(digest.windHr)}
-
-  <p class="muted" style="margin-top:3rem;">Research signals only — not betting advice. Verify starters/lineups before game time.</p>
-  ${isRefreshing ? `<script>
-    (function poll() {
-      fetch('/status.json').then((r) => r.json()).then((s) => {
-        if (!s.isRefreshing) { location.reload(); } else { setTimeout(poll, 3000); }
-      }).catch(() => setTimeout(poll, 5000));
-    })();
-  </script>` : ''}
-</body>
-</html>`;
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
 }
 
 const server = http.createServer(async (req, res) => {
@@ -321,41 +315,73 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === '/refresh' && req.method === 'POST') {
-      triggerPipelineRun(); // fire-and-forget; page shows "Refreshing…" until it's done
-      res.writeHead(302, { Location: '/' });
-      res.end();
+    const staticEntry = STATIC_FILES[url.pathname];
+    if (staticEntry && req.method === 'GET') {
+      const filePath = path.join(__dirname, 'web', staticEntry.file);
+      res.writeHead(200, { 'Content-Type': staticEntry.type, 'Cache-Control': 'no-cache' });
+      res.end(fs.readFileSync(filePath));
       return;
     }
 
-    if (url.pathname === '/status.json') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+    if ((url.pathname === '/api/refresh' || url.pathname === '/refresh') && req.method === 'POST') {
+      triggerPipelineRun(); // fire-and-forget; client polls /api/status
+      sendJson(res, 202, { started: true });
+      return;
+    }
+
+    if (url.pathname === '/api/status' || url.pathname === '/status.json') {
+      sendJson(res, 200, {
         isRefreshing,
         refreshStartedAt,
         lastRunAt,
         lastRunError,
-      }));
+        refreshHoursEt: REFRESH_HOURS_UTC.map(etLabel),
+        today: todayIsoDate(),
+      });
       return;
     }
 
-    const availableDates = await listDigestDates();
-    const requestedDate = url.searchParams.get('date');
-    const gameDate = requestedDate || availableDates[0] || new Date().toISOString().slice(0, 10);
-
-    if (!availableDates.length) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(renderPage({ gameDate, availableDates: [gameDate], digest: await loadDigest(gameDate) }));
+    if (url.pathname === '/api/digest') {
+      const date = url.searchParams.get('date') || todayIsoDate();
+      if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      const [digest, availableDates] = await Promise.all([loadDigest(date), listDigestDates()]);
+      sendJson(res, 200, { date, availableDates, ...digest });
       return;
     }
 
-    const digest = await loadDigest(gameDate);
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(renderPage({ gameDate, availableDates, digest }));
+    if (url.pathname === '/api/slate') {
+      const date = url.searchParams.get('date') || todayIsoDate();
+      if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      // Guardrail so the live proxy can't be used to crawl arbitrary
+      // history — the app itself only navigates a +/- 15 day window.
+      const today = todayIsoDate();
+      if (date < shiftIso(today, -15) || date > shiftIso(today, 15)) {
+        return sendJson(res, 400, { error: 'date outside the supported slate window' });
+      }
+      sendJson(res, 200, await buildSlate(date));
+      return;
+    }
+
+    if (url.pathname === '/api/game') {
+      const gamePk = url.searchParams.get('gamePk');
+      const date = url.searchParams.get('date') || todayIsoDate();
+      if (!/^\d+$/.test(gamePk || '') || !ISO_DATE_RE.test(date)) {
+        return sendJson(res, 400, { error: 'bad gamePk/date' });
+      }
+      sendJson(res, 200, await buildGameDetail(gamePk, date));
+      return;
+    }
+
+    if (url.pathname === '/api/performance') {
+      sendJson(res, 200, await buildPerformance());
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not found');
   } catch (err) {
     console.error('Request failed:', err);
-    res.writeHead(500, { 'Content-Type': 'text/plain' });
-    res.end(`Internal error: ${err.message}`);
+    sendJson(res, 500, { error: err.message });
   }
 });
 
@@ -366,7 +392,7 @@ async function start() {
   // don't make first boot wait on a full pipeline run (batter form alone
   // can take ~a minute against ~400 hitters).
   server.listen(PORT, () => {
-    console.log(`MLB digest dashboard listening on :${PORT}`);
+    console.log(`SlateFinder listening on :${PORT}`);
   });
 
   triggerPipelineRun(); // fire-and-forget initial populate

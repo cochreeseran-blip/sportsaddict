@@ -8,7 +8,18 @@ import { fmtOdds, fmtNum } from './lib/util/format.js';
 
 // Railway injects PORT dynamically — binding to a fixed port would fail.
 const PORT = process.env.PORT || 3000;
-const REFRESH_HOUR_UTC = Number(process.env.DIGEST_REFRESH_HOUR_UTC ?? 13); // ~9am ET
+
+// MLB teams usually don't post the actual starting lineup until 1-3 hours
+// before that specific game's first pitch, and games are staggered all
+// day, so no single fixed time catches everyone. Instead we run a few
+// times a day: once in the morning for schedule/odds/pitcher data (which
+// IS known well ahead of time), then twice more in the afternoon/evening
+// as lineups trickle in. Defaults: 9am, 4pm, 7pm ET. Override with a
+// comma-separated list of UTC hours, e.g. DIGEST_REFRESH_HOURS_UTC=13,20,23.
+const REFRESH_HOURS_UTC = (process.env.DIGEST_REFRESH_HOURS_UTC || '13,20,23')
+  .split(',')
+  .map((h) => Number(h.trim()))
+  .filter((h) => Number.isFinite(h) && h >= 0 && h <= 23);
 
 let isRefreshing = false;
 let refreshStartedAt = null;
@@ -40,13 +51,27 @@ function msUntilNextRun(hourUtc) {
   return next - now;
 }
 
-function scheduleDailyRun() {
-  const delay = msUntilNextRun(REFRESH_HOUR_UTC);
-  console.log(`Next scheduled pipeline run in ${(delay / 3600000).toFixed(1)}h (target ${REFRESH_HOUR_UTC}:00 UTC).`);
+// Human-friendly ET label for a UTC hour, computed against today's actual
+// date so it accounts for daylight saving automatically.
+function etLabel(hourUtc) {
+  const now = new Date();
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hourUtc, 0, 0));
+  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }).format(d);
+}
+
+function scheduleDailyRunAt(hourUtc) {
+  const delay = msUntilNextRun(hourUtc);
+  console.log(`Next scheduled pipeline run at ${hourUtc}:00 UTC (~${etLabel(hourUtc)} ET) in ${(delay / 3600000).toFixed(1)}h.`);
   setTimeout(async () => {
     await triggerPipelineRun();
-    scheduleDailyRun();
+    scheduleDailyRunAt(hourUtc);
   }, delay);
+}
+
+function scheduleDailyRuns() {
+  for (const hourUtc of REFRESH_HOURS_UTC) {
+    scheduleDailyRunAt(hourUtc);
+  }
 }
 
 function escapeHtml(str) {
@@ -274,10 +299,11 @@ function renderPage({ gameDate, availableDates, digest }) {
       <select name="date" onchange="this.form.submit()">${dateOptions}</select>
     </form>
     <form method="post" action="/refresh">
-      <button type="submit" ${isRefreshing ? 'disabled' : ''}>${isRefreshing ? 'Refreshing…' : 'Refresh now'}</button>
+      <button type="submit" ${isRefreshing ? 'disabled' : ''} title="Re-fetches everything, including which batters are actually in tonight's confirmed lineup">${isRefreshing ? 'Refreshing…' : 'Refresh now'}</button>
     </form>
     <span class="muted">${statusLine}</span>
   </p>
+  <p class="muted" style="margin-top:-6px;">Automatic checks run daily around ${REFRESH_HOURS_UTC.map(etLabel).join(', ')} ET. Lineups usually aren't posted until 1-3 hours before a given game, so for the most accurate ✅/⚠️ status, hit "Refresh now" yourself shortly before first pitch.</p>
 
   <h2 style="margin-top:1rem;">🏆 Top 3 Picks Today</h2>
   ${renderTopPicks(buildTopPicks(digest))}
@@ -379,7 +405,7 @@ async function start() {
   });
 
   triggerPipelineRun(); // fire-and-forget initial populate
-  scheduleDailyRun();
+  scheduleDailyRuns();
 }
 
 start().catch((err) => {

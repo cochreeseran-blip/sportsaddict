@@ -11,6 +11,7 @@ import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets 
 import { listManualPicks, addManualPick, deleteManualPick } from './lib/manualPicks.js';
 import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newsletter.js';
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
+import { ensureInsertSafety } from './lib/schemaGuard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -546,10 +547,11 @@ const server = http.createServer(async (req, res) => {
       const b = await readJsonBody(req);
       const gameDate = b.gameDate || todayIsoDate();
       const homeTeam = String(b.homeTeam || '').trim();
-      const awayTeam = String(b.awayTeam || '').trim();
+      // Optional: the game matcher fills the opponent in from the slate.
+      const awayTeam = String(b.awayTeam || '').trim() || 'TBD';
       const homeMl = Number(b.homeMl);
       if (!ISO_DATE_RE.test(gameDate)) return sendJson(res, 400, { error: 'bad date' });
-      if (!homeTeam || !awayTeam) return sendJson(res, 400, { error: 'Home team and away team are required.' });
+      if (!homeTeam) return sendJson(res, 400, { error: 'Team is required.' });
       if (!Number.isInteger(homeMl) || Math.abs(homeMl) < 100 || Math.abs(homeMl) > 100000) {
         return sendJson(res, 400, { error: 'Odds must be American style, e.g. -150 or +120.' });
       }
@@ -602,6 +604,9 @@ async function start() {
   // Never trust migration-file state for auth: re-assert the users/sessions
   // schema (incl. avatar_seed) on every boot. Idempotent and fast.
   await ensureAuthSchema(pool);
+  // And guard every table we insert into against legacy NOT NULL columns
+  // left behind by older apps sharing this database (see lib/schemaGuard.js).
+  await ensureInsertSafety(pool);
 
   // Bind the port immediately so Railway's healthcheck passes right away —
   // don't make first boot wait on a full pipeline run (batter form alone

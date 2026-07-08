@@ -20,16 +20,38 @@ export async function listManualPicks(pool, gameDate) {
 // Best-effort match against whatever the pipeline already knows about
 // today's slate, so a manually-added pick can still be auto-graded later
 // (npm run grade) without you having to know the MLB gamePk yourself.
-async function findMlbGameId(pool, gameDate, homeTeam, awayTeam) {
-  const { rows } = await pool.query(
-    'SELECT mlb_game_id FROM games WHERE game_date = $1 AND lower(home_team) = lower($2) AND lower(away_team) = lower($3) LIMIT 1',
+// Matching is forgiving: "baltimore", "Orioles", or "Baltimore Orioles"
+// all find the Orioles' home game, and a matched pick adopts the
+// canonical team names from the schedule (so logos resolve and grading
+// is unambiguous). Falls back to what was typed if nothing matches.
+async function findGame(pool, gameDate, homeTeam, awayTeam) {
+  // Try both sides first, then home-only (covers a misspelled or omitted
+  // opponent — the schedule fills the rest in).
+  const both = await pool.query(
+    `SELECT mlb_game_id, home_team, away_team FROM games
+     WHERE game_date = $1
+       AND lower(home_team) LIKE '%' || lower($2) || '%'
+       AND lower(away_team) LIKE '%' || lower($3) || '%'
+     LIMIT 1`,
     [gameDate, homeTeam, awayTeam]
   );
-  return rows[0]?.mlb_game_id ?? null;
+  if (both.rows.length) return both.rows[0];
+  const homeOnly = await pool.query(
+    `SELECT mlb_game_id, home_team, away_team FROM games
+     WHERE game_date = $1 AND lower(home_team) LIKE '%' || lower($2) || '%'
+     LIMIT 1`,
+    [gameDate, homeTeam]
+  );
+  return homeOnly.rows[0] ?? null;
 }
 
 export async function addManualPick(pool, { gameDate, homeTeam, awayTeam, homeMl, reason }) {
-  const mlbGameId = await findMlbGameId(pool, gameDate, homeTeam, awayTeam);
+  const game = await findGame(pool, gameDate, homeTeam, awayTeam);
+  const mlbGameId = game?.mlb_game_id ?? null;
+  if (game) {
+    homeTeam = game.home_team;
+    awayTeam = game.away_team;
+  }
   const breakeven = breakevenPct(homeMl);
 
   const { rows } = await pool.query(

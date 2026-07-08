@@ -11,6 +11,13 @@ import { runWindHrFilter } from './filters/windHr.js';
 import { saveDigest } from './digest.js';
 import { buildTopPicks } from './topPicks.js';
 import { recordTrackedPicks } from './trackedPicks.js';
+import { runWithConcurrency } from './util/concurrency.js';
+
+// How many player stat lookups run in flight at once during the full-roster
+// pass. Sequential would mean ~1,000+ calls back to back on a full slate;
+// unbounded parallel would slam a free, unauthenticated API with hundreds of
+// simultaneous connections. This is the middle ground.
+const PLAYER_FETCH_CONCURRENCY = 5;
 
 export function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
@@ -119,11 +126,12 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // 3. Full active roster — every pitcher and every position player on
   // both teams' 26-man active rosters, for every game today. Not just
   // today's two probable starters and the confirmed lineup: the whole
-  // staff and the whole bench. More API calls and a longer run than
-  // pulling just the narrow slice, done sequentially on purpose (kinder
-  // to the free, unauthenticated MLB Stats API), but it means every
-  // signal is scored off a complete roster picture, and a probable-
-  // pitcher swap or a hot bench bat doesn't need its own extra live
+  // staff and the whole bench. Many more API calls than pulling just the
+  // narrow slice, capped at PLAYER_FETCH_CONCURRENCY in flight at once so
+  // a full slate stays fast without slamming the free, unauthenticated
+  // MLB Stats API. Every signal ends up scored off a complete roster
+  // picture, and a probable-pitcher swap or a hot bench bat doesn't need
+  // its own extra live
   // fetch — the data's already on file from this pass.
   const gameSideByTeam = new Map(); // teamId -> { gamePk, side }
   const teamNameById = new Map();
@@ -168,7 +176,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       continue;
     }
 
-    for (const pitcher of roster.pitchers) {
+    await runWithConcurrency(roster.pitchers, PLAYER_FETCH_CONCURRENCY, async (pitcher) => {
       pitcherTotal++;
       try {
         const [gameLog, seasonEra] = await Promise.all([
@@ -181,9 +189,9 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       } catch (err) {
         warnings.push(`Pitcher form unavailable for ${pitcher.fullName ?? pitcher.id} — check manually. (${err.message})`);
       }
-    }
+    });
 
-    for (const hitter of roster.hitters) {
+    await runWithConcurrency(roster.hitters, PLAYER_FETCH_CONCURRENCY, async (hitter) => {
       battersTotal++;
       try {
         const batterLog = await mlb.fetchBatterGameLog(hitter.id, season);
@@ -202,7 +210,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       } catch (err) {
         warnings.push(`Batter form unavailable for ${hitter.fullName ?? hitter.id} — check manually. (${err.message})`);
       }
-    }
+    });
   }
   log(`Pitcher form: ${pitcherOk}/${pitcherTotal} pitcher(s) updated across ${teamNameById.size} team(s).`);
   log(`Batter form: ${battersOk}/${battersTotal} batter(s) updated across ${teamNameById.size} team(s).`);

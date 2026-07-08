@@ -8,22 +8,23 @@ const MAX_OTHER_GAMES = 5;
 
 // The moneyline screener, in the order the research is actually done:
 //   1. all of today's games
-//   2. home favorites only
+//   2. home favorites only (skip home underdogs)
 //   3. odds between -100 and -250
-//   4. both probable starters known (the same probables MLB publishes on
-//      mlb.com/starting-lineups; the pipeline re-confirms them per game
-//      before a pick locks)
-//   5. the HOME starter has the better (lower) ERA than the visitor —
-//      compared on each pitcher's last 5 starts, falling back to season
-//      ERA when someone hasn't made 5 starts yet
-// Picks are ranked by the size of the home starter's ERA advantage. Both
-// pitchers' last-5 and season ERAs ride along so the card shows the full
-// matchup, and every evaluated game gets a plain-English reason so a SIT
-// day isn't a black box.
+//   4. both starters known — confirmed from the posted lineup when it's
+//      out, otherwise the projected/probable starter MLB has published
+//   5. the HOME starter has the better (lower) ERA than the visitor,
+//      compared on last 5 starts (season ERA as fallback)
+//
+// Every pick carries two honesty flags so the UI can be upfront:
+//   lineStatus       'priced'  = a real betting line was available and in band
+//                    'no-line' = no odds yet, shown on the pitching matchup
+//                                alone (happens before odds post, or when
+//                                ODDS_API_KEY isn't configured)
+//   startersConfirmed true  = both teams' lineups are officially posted
+//                     false = using projected/probable starters for now
+// A no-line pick is still shown for the date, clearly labeled, rather than
+// leaving the section empty.
 
-// Compare on last-5 form when both sides have it; otherwise fall back to
-// season ERA so early-season/new arms still get evaluated instead of
-// silently dropped. Returns null when there's nothing to compare.
 function eraComparison(home, away) {
   if (home.trailingEra !== null && away.trailingEra !== null) {
     return { basis: 'last 5 starts', homeEra: home.trailingEra, awayEra: away.trailingEra };
@@ -45,31 +46,48 @@ export async function runMoneylineFilter(pool, gameDate) {
        ON hpf.game_date = g.game_date AND hpf.pitcher_id = g.home_starter_id
      LEFT JOIN pitcher_form apf
        ON apf.game_date = g.game_date AND apf.pitcher_id = g.away_starter_id
-     WHERE g.game_date = $1
-       AND g.home_ml IS NOT NULL
-       AND g.home_ml < 0`,
+     WHERE g.game_date = $1`,
     [gameDate]
   );
+
+  // Which teams have an officially posted lineup today. When both a game's
+  // teams are in here, its starters are "confirmed"; otherwise we're on the
+  // projected/probable starters and say so.
+  const { rows: confirmedRows } = await pool.query(
+    `SELECT DISTINCT team FROM batter_form WHERE game_date = $1 AND lineup_confirmed = true`,
+    [gameDate]
+  );
+  const confirmedTeams = new Set(confirmedRows.map((r) => r.team));
 
   const num = (v) => (v !== null && v !== undefined ? Number(v) : null);
 
   const evaluated = rows.map((r) => {
     const homeMl = r.home_ml;
+    const hasLine = homeMl !== null && homeMl !== undefined;
     const home = { trailingEra: num(r.home_trailing_era), seasonEra: num(r.home_season_era) };
     const away = { trailingEra: num(r.away_trailing_era), seasonEra: num(r.away_season_era) };
 
-    const inBand = homeMl >= BAND_LOW && homeMl <= BAND_HIGH;
-    const bandDistance = inBand ? 0 : Math.min(Math.abs(homeMl - BAND_LOW), Math.abs(homeMl - BAND_HIGH));
+    const homeIsFavorite = hasLine && homeMl < 0;
+    const inBand = homeIsFavorite && homeMl >= BAND_LOW && homeMl <= BAND_HIGH;
+    const bandDistance = inBand ? 0 : hasLine ? Math.min(Math.abs(homeMl - BAND_LOW), Math.abs(homeMl - BAND_HIGH)) : 0;
 
     const startersKnown = r.home_starter_name !== null && r.away_starter_name !== null;
     const cmp = startersKnown ? eraComparison(home, away) : null;
     const homeHasBetterEra = cmp !== null && cmp.homeEra < cmp.awayEra;
     const eraEdge = cmp !== null ? cmp.awayEra - cmp.homeEra : null;
 
-    const qualifies = inBand && homeHasBetterEra;
+    // No line yet? Show it on the pitching matchup alone (can't check the
+    // band, but the home-ERA-edge rule still applies). A real line that's
+    // out of band is a genuine disqualifier, not a missing-data case.
+    const lineStatus = inBand ? 'priced' : hasLine ? 'out-of-band' : 'no-line';
+    const startersConfirmed = confirmedTeams.has(r.home_team) && confirmedTeams.has(r.away_team);
+
+    const qualifies = homeHasBetterEra && (inBand || (!hasLine));
 
     const reasons = [];
-    if (!inBand) {
+    if (hasLine && !homeIsFavorite) {
+      reasons.push(`${r.home_team} is the underdog (${fmtOdds(homeMl)}) at home — the screener only plays home favorites`);
+    } else if (homeIsFavorite && !inBand) {
       reasons.push(
         homeMl > BAND_HIGH
           ? `${r.home_team} is not favored strongly enough (${fmtOdds(homeMl)}) — the screener wants ${BAND_HIGH} to ${BAND_LOW}`
@@ -77,7 +95,7 @@ export async function runMoneylineFilter(pool, gameDate) {
       );
     }
     if (!startersKnown) {
-      reasons.push('a probable starter has not been announced yet for this game — check back once MLB posts it');
+      reasons.push('a starter has not been announced yet for this game — check back once MLB posts it');
     } else if (cmp === null) {
       reasons.push(`no ERA data yet for ${home.trailingEra === null && home.seasonEra === null ? r.home_starter_name : r.away_starter_name} — check back after he has made a start`);
     } else if (!homeHasBetterEra) {
@@ -91,8 +109,10 @@ export async function runMoneylineFilter(pool, gameDate) {
       mlbGameId: r.mlb_game_id,
       homeTeam: r.home_team,
       awayTeam: r.away_team,
-      homeMl,
-      breakevenPct: breakevenPct(homeMl),
+      homeMl: hasLine ? homeMl : null,
+      breakevenPct: hasLine ? breakevenPct(homeMl) : null,
+      lineStatus,
+      startersConfirmed,
       eraBasis: cmp?.basis ?? null,
       eraEdge,
       homeStarterName: r.home_starter_name,
@@ -102,17 +122,19 @@ export async function runMoneylineFilter(pool, gameDate) {
       awayStarterTrailingEra: away.trailingEra,
       awayStarterSeasonEra: away.seasonEra,
       qualifies,
-      // Lower = closer to qualifying, for ranking near misses. A game
-      // whose home arm is nearly even ranks above a lopsided one.
       closeness: (eraEdge !== null ? Math.max(0, -eraEdge) : 99) * 100 + bandDistance,
       reason: reasons.join('; '),
     };
   });
 
-  // Biggest home-pitcher ERA advantage first.
+  // Biggest home-pitcher ERA advantage first. A priced/in-band pick ranks
+  // above an equal-edge no-line one, so real lines lead when we have them.
   const qualifying = evaluated
     .filter((g) => g.qualifies)
-    .sort((a, b) => b.eraEdge - a.eraEdge);
+    .sort((a, b) => {
+      if (a.lineStatus !== b.lineStatus) return a.lineStatus === 'priced' ? -1 : 1;
+      return b.eraEdge - a.eraEdge;
+    });
 
   const picks = qualifying.slice(0, MAX_PICKS);
   const pickIds = new Set(picks.map((p) => p.gameId));
@@ -121,7 +143,7 @@ export async function runMoneylineFilter(pool, gameDate) {
     .filter((g) => !pickIds.has(g.gameId))
     .map((g) =>
       g.qualifies
-        ? { ...g, closeness: -1, reason: `Qualified too, but only the top ${MAX_PICKS} ERA edges make the card — this one's edge (${fmtNum(g.eraEdge)} runs) was smaller.` }
+        ? { ...g, closeness: -1, reason: `Qualified too, but only the top ${MAX_PICKS} make the card — this one's ERA edge (${fmtNum(g.eraEdge)} runs) was smaller.` }
         : g
     )
     .sort((a, b) => a.closeness - b.closeness)
@@ -130,6 +152,9 @@ export async function runMoneylineFilter(pool, gameDate) {
 
   return {
     signal: picks.length ? 'PLAY' : 'SIT',
+    // True when at least one pick is riding on projected (not yet posted)
+    // starters or has no betting line — lets the UI show one banner.
+    hasProjected: picks.some((p) => !p.startersConfirmed || p.lineStatus === 'no-line'),
     picks: picks.map(({ gameId, qualifies, closeness, reason, ...p }) => p),
     otherGames,
   };

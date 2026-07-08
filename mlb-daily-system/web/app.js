@@ -707,13 +707,26 @@ function starterEra(name, trailing, season, highlight) {
 }
 
 function moneylinePickCard(p) {
+  const noLine = p.lineStatus === 'no-line' || p.homeMl === null || p.homeMl === undefined;
   const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '—';
   const edge = p.eraEdge !== null && p.eraEdge !== undefined ? fmtNum(p.eraEdge) : null;
+
+  const flags = [];
+  flags.push(p.startersConfirmed
+    ? '<span class="pill ok"><span class="pill-dot"></span>Confirmed starters</span>'
+    : '<span class="pill warn"><span class="pill-dot"></span>Projected starters</span>');
+  if (noLine) flags.push('<span class="pill warn"><span class="pill-dot"></span>No betting line yet</span>');
+
+  const oddsLabel = noLine ? 'No line' : fmtOdds(p.homeMl);
+  const note = noLine
+    ? 'No betting line posted yet — this is the pitching matchup only. The odds band gets checked once a price is available.'
+    : `Needs to win ${breakeven} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.`;
+
   return `
     <div class="sig-card">
       <div class="sig-head">
         <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)}</span>
-        <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
+        <span class="sig-odds${noLine ? ' faint' : ''}">${oddsLabel}</span>
       </div>
       <div class="sig-sub">To beat ${esc(p.awayTeam)} at home${edge ? ` — home starter's ERA is <strong>${edge} runs better</strong> (${esc(p.eraBasis ?? '')})` : ''}.</div>
       <div class="ml-matchup">
@@ -721,14 +734,15 @@ function moneylinePickCard(p) {
         <span class="ml-vs">vs</span>
         ${starterEra(p.awayStarterName, p.awayStarterTrailingEra, p.awayStarterSeasonEra, false)}
       </div>
-      <div class="sig-note">Needs to win ${breakeven} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.</div>
-      <div style="margin-top:10px">${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${fmtOdds(p.homeMl)}) vs ${p.awayTeam}`, odds: p.homeMl, mlbGameId: p.mlbGameId }))}</div>
+      <div class="ml-flags">${flags.join('')}</div>
+      <div class="sig-note">${note}</div>
+      <div style="margin-top:10px">${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${oddsLabel}) vs ${p.awayTeam}`, odds: noLine ? null : p.homeMl, mlbGameId: p.mlbGameId }))}</div>
     </div>`;
 }
 
 function moneylineCards(ml) {
   if (ml.signal === 'SIT' || !ml.picks?.length) {
-    return emptyHtml('SIT — no qualifying games', 'No home favorite between -100 and -250 today whose starting pitcher has the better ERA than the visitor. The nearest misses are listed below.');
+    return emptyHtml('SIT — no qualifying games', 'No home favorite today whose starting pitcher has the better ERA than the visitor. The nearest misses are listed below.');
   }
   return `<div class="sig-cards">${ml.picks.map(moneylinePickCard).join('')}</div>`;
 }

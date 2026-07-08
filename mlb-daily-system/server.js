@@ -18,6 +18,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Railway injects PORT dynamically — binding to a fixed port would fail.
 const PORT = process.env.PORT || 3000;
 
+// Which code is actually running. Railway sets RAILWAY_GIT_COMMIT_SHA on
+// every deploy; surfaced in /api/status and the site footer so "did the
+// deploy actually land?" is answerable at a glance.
+const BUILD = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.BUILD_SHA || 'dev').slice(0, 7);
+
 // MLB teams usually don't post the actual starting lineup until 1-3 hours
 // before that specific game's first pitch, and games are staggered all
 // day, so no single fixed time catches everyone. Instead we run a few
@@ -439,6 +444,7 @@ const server = http.createServer(async (req, res) => {
         lastRunWarnings,
         refreshHoursEt: REFRESH_HOURS_UTC.map(etLabel),
         today: todayIsoDate(),
+        build: BUILD,
       });
       return;
     }

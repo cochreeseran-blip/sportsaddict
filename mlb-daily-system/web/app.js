@@ -925,6 +925,7 @@ async function pollStatus(fast = false) {
     if (s.today && s.today !== state.today) {
       state.today = s.today;
     }
+    if (s.build) $('#buildTag').textContent = `Build ${s.build}`;
     const dot = $('#statusDot');
     const txt = $('#statusText');
     const btn = $('#refreshBtn');

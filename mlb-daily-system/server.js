@@ -80,23 +80,38 @@ async function loadDigest(gameDate) {
   };
 }
 
-function renderMoneylineSection(moneyline) {
-  if (moneyline.signal === 'SIT' || !moneyline.picks?.length) {
-    return `<p class="empty">SIT — no qualifying games today.</p>`;
-  }
-  return `<div class="cards">${moneyline.picks
+function renderOtherGames(otherGames) {
+  if (!otherGames?.length) return '';
+  const rows = otherGames
     .map(
-      (p) => `
-      <div class="card play">
-        <div class="card-title">${escapeHtml(p.homeTeam)} <span class="odds">${fmtOdds(p.homeMl)}</span></div>
-        <div class="card-sub">over ${escapeHtml(p.awayTeam)}</div>
-        <div class="card-row">${escapeHtml(p.awayStarterName ?? 'TBD')} — trailing ERA
-          <strong>${fmtNum(p.awayStarterTrailingEra)}</strong>
-          <span class="muted">(season ${fmtNum(p.awayStarterSeasonEra)})</span>
-        </div>
+      (g) => `
+      <div class="card miss">
+        <div class="card-title">${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)} <span class="odds miss">${fmtOdds(g.homeMl)}</span></div>
+        <div class="card-row muted">${escapeHtml(g.reason)}</div>
       </div>`
     )
-    .join('')}</div>`;
+    .join('');
+  return `<p class="muted" style="margin-top:16px;">Came close but didn't qualify:</p><div class="cards">${rows}</div>`;
+}
+
+function renderMoneylineSection(moneyline) {
+  const picksHtml =
+    moneyline.signal === 'SIT' || !moneyline.picks?.length
+      ? `<p class="empty">SIT — no qualifying games today.</p>`
+      : `<div class="cards">${moneyline.picks
+          .map(
+            (p) => `
+            <div class="card play">
+              <div class="card-title">${escapeHtml(p.homeTeam)} <span class="odds">${fmtOdds(p.homeMl)}</span></div>
+              <div class="card-sub">over ${escapeHtml(p.awayTeam)}</div>
+              <div class="card-row">${escapeHtml(p.awayStarterName ?? 'TBD')} — trailing ERA
+                <strong>${fmtNum(p.awayStarterTrailingEra)}</strong>
+                <span class="muted">(season ${fmtNum(p.awayStarterSeasonEra)})</span>
+              </div>
+            </div>`
+          )
+          .join('')}</div>`;
+  return picksHtml + renderOtherGames(moneyline.otherGames);
 }
 
 function renderBatterRow(b, extra) {
@@ -164,9 +179,11 @@ function renderPage({ gameDate, availableDates, digest }) {
   .cards { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
   .card { border: 1px solid rgba(128,128,128,0.3); border-radius: 8px; padding: 12px 16px; }
   .card.play { border-left: 4px solid #16a34a; }
+  .card.miss { border-left: 4px solid rgba(128,128,128,0.4); padding: 8px 16px; }
   .card-title { font-weight: 600; font-size: 1.05rem; }
   .card-sub { color: #888; margin-bottom: 6px; }
   .odds { color: #16a34a; font-weight: 600; }
+  .odds.miss { color: #888; font-weight: 600; }
   form { display: inline; }
   .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,0.4); background: transparent; cursor: pointer; }

@@ -32,6 +32,12 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
       );
     }
   }
+  if (moneyline.otherGames?.length) {
+    console.log('  Other home favorites considered:');
+    for (const g of moneyline.otherGames) {
+      console.log(`    - ${g.awayTeam} @ ${g.homeTeam} (${fmtOdds(g.homeMl)}) — ${g.reason}`);
+    }
+  }
 
   console.log('\n--- HIT STREAK / CONTACT WATCH ---');
   if (!hitStreak.watchList.length) {

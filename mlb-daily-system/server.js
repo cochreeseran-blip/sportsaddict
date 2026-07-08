@@ -137,11 +137,17 @@ async function listDigestDates() {
 
 async function loadDigest(gameDate) {
   const { rows } = await pool.query(
-    'SELECT signal_type, details FROM daily_digest WHERE game_date = $1',
+    'SELECT signal_type, details, created_at FROM daily_digest WHERE game_date = $1',
     [gameDate]
   );
   const byType = Object.fromEntries(rows.map((r) => [r.signal_type, r.details]));
+  // Newest created_at across every signal for the date — lets the client
+  // show "as of HH:MM" next to a signal so it's obvious whether what's on
+  // screen is from the latest pipeline run or older/stale data, instead of
+  // silently trusting an empty section is correct.
+  const updatedAt = rows.length ? new Date(Math.max(...rows.map((r) => new Date(r.created_at).getTime()))) : null;
   return {
+    updatedAt,
     topPicks: byType.top_picks?.picks || [],
     moneyline: byType.moneyline || { signal: 'SIT', picks: [] },
     hitStreak: byType.hit_streak || { watchList: [], highConfidence: [] },

@@ -1,7 +1,7 @@
 /* SlateFinder client — vanilla JS single-page app, no build step.
-   Views: Slate (10-day interactive browser), Signals (daily edge digest),
-   Performance (tracked pick ledger). All data comes from this server's
-   /api/* endpoints; logos and headshots load from MLB's public CDN. */
+   Views: Slate (today's games), Signals (daily edge digest), Performance
+   (tracked pick ledger). All data comes from this server's /api/*
+   endpoints; logos and headshots load from MLB's public CDN. */
 
 'use strict';
 
@@ -46,7 +46,6 @@ const TEAMS = {
 const state = {
   today: new Date().toISOString().slice(0, 10), // corrected from /api/status
   view: 'slate',
-  slateDate: null,
   signalsDate: null,
   slateCache: new Map(),
 };
@@ -57,18 +56,6 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmtOdds = (ml) => (ml === null || ml === undefined ? '—' : ml > 0 ? `+${ml}` : `${ml}`);
 const fmtNum = (n, d = 2) => (n === null || n === undefined ? '—' : Number(n).toFixed(d));
 
-function shiftIso(dateStr, days) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-function dowLabel(dateStr) {
-  return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
-}
-function shortDate(dateStr) {
-  const d = new Date(`${dateStr}T12:00:00Z`);
-  return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
-}
 function longDate(dateStr) {
   return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
@@ -81,6 +68,10 @@ function etDateTime(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/New_York' }) +
     ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
+}
+function fmtRunTime(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
 }
 
 function logoHtml(teamId, teamName, size = 34) {
@@ -144,33 +135,13 @@ function emptyHtml(title, msg) {
 }
 
 // ---------------------------------------------------------------------------
-// SLATE VIEW — 10-day window: 5 days back, today, 4 days ahead.
-function slateWindow() {
-  const days = [];
-  for (let i = -5; i <= 4; i++) days.push(shiftIso(state.today, i));
-  return days;
-}
-
+// SLATE VIEW — today's games only. Open a game for lineups, batting order,
+// and pitcher form.
 function renderSlateShell() {
-  const days = slateWindow();
   $('#view-slate').innerHTML = `
-    <p class="section-sub">The last five days, today, and the next four. Open a game for lineups, batting order, and pitcher form.</p>
-    <div class="date-strip" id="dateStrip">
-      ${days.map((d) => `
-        <div class="date-chip ${d < state.today ? 'past' : ''} ${d === state.today ? 'today' : ''} ${d === state.slateDate ? 'selected' : ''}" data-date="${d}">
-          <div class="dc-dow">${d === state.today ? 'Today' : dowLabel(d)}</div>
-          <div class="dc-date">${shortDate(d)}</div>
-        </div>`).join('')}
-    </div>
+    <div class="section-head"><h2 class="section-title">Today's slate</h2></div>
+    <p class="section-sub">${esc(longDate(state.today))}. Open a game for lineups, batting order, and pitcher form.</p>
     <div id="slateGames">${loadingHtml}</div>`;
-
-  $('#dateStrip').addEventListener('click', (e) => {
-    const chip = e.target.closest('.date-chip');
-    if (!chip) return;
-    state.slateDate = chip.dataset.date;
-    document.querySelectorAll('.date-chip').forEach((c) => c.classList.toggle('selected', c === chip));
-    loadSlateGames();
-  });
 }
 
 function statusLabel(g) {
@@ -230,17 +201,16 @@ function gameCardHtml(g) {
 
 async function loadSlateGames() {
   const host = $('#slateGames');
-  const date = state.slateDate;
+  const date = state.today;
   host.innerHTML = loadingHtml;
   try {
     let slate = state.slateCache.get(date);
     if (!slate) {
       slate = await api(`/api/slate?date=${encodeURIComponent(date)}`);
       state.slateCache.set(date, slate);
-      // Keep live days fresh: today/live games shouldn't stick around.
-      if (date >= state.today) setTimeout(() => state.slateCache.delete(date), 120000);
+      // Today's games are live — don't let the cache go stale.
+      setTimeout(() => state.slateCache.delete(date), 120000);
     }
-    if (state.slateDate !== date) return; // user already clicked elsewhere
     if (!slate.games.length) {
       host.innerHTML = emptyHtml('No games', `There are no MLB games scheduled on ${longDate(date)}.`);
       return;
@@ -666,20 +636,25 @@ function playerCell(b) {
     </div>`;
 }
 
-function moneylineCards(ml) {
-  if (ml.signal === 'SIT' || !ml.picks?.length) {
-    return emptyHtml('SIT — no qualifying games', 'No matchup today pairs a modest home favorite with a struggling opposing starter. The nearest misses are listed below.');
-  }
-  return `<div class="sig-cards">${ml.picks.map((p) => `
+function moneylinePickCard(p) {
+  const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '—';
+  return `
     <div class="sig-card">
       <div class="sig-head">
         <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)}</span>
         <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
       </div>
       <div class="sig-sub">To beat ${esc(p.awayTeam)}. ${esc(p.awayStarterName ?? 'Their starter')} carries a <strong>${fmtNum(p.awayStarterTrailingEra)} ERA over his last 3 starts</strong> (season ${fmtNum(p.awayStarterSeasonEra)}).</div>
-      <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '—'} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.</div>
+      <div class="sig-note">Needs to win ${breakeven} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.</div>
       <div style="margin-top:10px">${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${fmtOdds(p.homeMl)}) vs ${p.awayTeam}`, odds: p.homeMl, mlbGameId: p.mlbGameId }))}</div>
-    </div>`).join('')}</div>`;
+    </div>`;
+}
+
+function moneylineCards(ml) {
+  if (ml.signal === 'SIT' || !ml.picks?.length) {
+    return emptyHtml('SIT — no qualifying games', 'No matchup today pairs a home favorite between -100 and -200 with a visiting starter carrying a 6.00+ ERA over his last three starts. The nearest misses are listed below.');
+  }
+  return `<div class="sig-cards">${ml.picks.map(moneylinePickCard).join('')}</div>`;
 }
 
 function manualPickCards(picks) {
@@ -786,6 +761,7 @@ async function renderSignals() {
 
       <div class="section-head">
         <h2 class="section-title">Moneyline</h2>
+        <span class="section-freshness">${d.updatedAt ? `Screener last ran ${esc(fmtRunTime(d.updatedAt))}` : 'Screener has not run yet'}</span>
         <button class="btn small" style="margin-left:auto" data-add-manual-pick>Add a pick</button>
       </div>
       <p class="section-sub">Home teams favored between -100 and -200 facing a visiting starter with a 6.00+ ERA over his last three starts. Manual picks below are added by hand, not by the automated screener.</p>
@@ -980,13 +956,12 @@ async function init() {
   });
 
   // Anchor "today" to the server's pipeline date before first render so the
-  // 10-day window matches what the backend considers today.
+  // slate matches what the backend considers today.
   try {
     const s = await api('/api/status');
     if (s.today) state.today = s.today;
   } catch { /* fall back to client clock */ }
 
-  state.slateDate = state.today;
   renderSlateShell();
   loadSlateGames();
   pollStatus();

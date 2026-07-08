@@ -154,7 +154,6 @@ function slateWindow() {
 function renderSlateShell() {
   const days = slateWindow();
   $('#view-slate').innerHTML = `
-    <p class="section-sub">The last five days, today, and the next four. Open a game for lineups, batting order, and pitcher form.</p>
     <div class="date-strip" id="dateStrip">
       ${days.map((d) => `
         <div class="date-chip ${d < state.today ? 'past' : ''} ${d === state.today ? 'today' : ''} ${d === state.slateDate ? 'selected' : ''}" data-date="${d}">
@@ -493,7 +492,6 @@ async function renderBets() {
         <button class="btn primary" id="addBetBtn">Add a bet</button>
         <button class="btn" id="gradeBetsBtn" ${s.pending ? '' : 'disabled'}>Check results</button>
         <span class="spacer"></span>
-        <span class="toolbar-note">Bets tracked from a pick settle themselves once the game is final.</span>
       </div>
 
       <div class="stat-tiles">
@@ -533,12 +531,8 @@ async function renderBets() {
       btn.disabled = true;
       btn.textContent = 'Checking…';
       try {
-        const r = await apiSend('/api/bets/grade', 'POST');
+        await apiSend('/api/bets/grade', 'POST');
         await renderBets();
-        if (!r.graded) {
-          const note = $('#view-bets .toolbar-note');
-          if (note) note.textContent = 'No finished games to settle yet — check back after tonight’s games.';
-        }
       } catch (ex) {
         btn.disabled = false;
         btn.textContent = 'Check results';
@@ -631,7 +625,7 @@ function moneylineCards(ml) {
 function nearMissCards(otherGames) {
   if (!otherGames?.length) return '';
   return `
-    <p class="section-sub" style="margin-top:18px">Close calls — evaluated but did not qualify:</p>
+    <p class="section-sub" style="margin-top:18px">Close calls</p>
     <div class="sig-cards">${otherGames.map((g) => `
       <div class="sig-card miss">
         <div class="sig-head">
@@ -650,7 +644,7 @@ function batterTable(rows, cols) {
 }
 
 function hitStreakSection(hs) {
-  if (!hs.watchList?.length) return emptyHtml('No qualifying batters', 'Nobody clears the bar today: a 5+ game hit streak or a .320+ average over the last 15 games.');
+  if (!hs.watchList?.length) return emptyHtml('No qualifying batters', 'Nobody clears the bar today.');
   const rows = hs.watchList.map((b) => `
     <tr class="${b.highConfidence ? 'hc' : ''}">
       <td>${playerCell(b)}</td>
@@ -664,7 +658,7 @@ function hitStreakSection(hs) {
 }
 
 function windHrSection(wh) {
-  if (!wh.watchList?.length) return emptyHtml('No qualifying conditions', 'No park has 10+ mph wind blowing out today, or no power hitters cleared the top-third HR-rate bar.');
+  if (!wh.watchList?.length) return emptyHtml('No qualifying conditions', 'No park has wind blowing out today.');
   const rows = wh.watchList.map((b) => `
     <tr class="${b.highConfidence ? 'hc' : ''}">
       <td>${playerCell(b)}</td>
@@ -695,20 +689,16 @@ async function renderSignals() {
       </div>
 
       <div class="section-head"><h2 class="section-title">Top 3 picks</h2></div>
-      <p class="section-sub">The day's strongest signals, ranked across all three categories. Scored by a simple, transparent heuristic — not a statistical model.</p>
-      ${d.topPicks?.length ? `<div class="top-picks">${d.topPicks.map(topPickCard).join('')}</div>` : emptyHtml('Nothing today', 'No signal cleared its bar today, so nothing rose to the top.')}
+      ${d.topPicks?.length ? `<div class="top-picks">${d.topPicks.map(topPickCard).join('')}</div>` : emptyHtml('Nothing today', 'No signal cleared its bar today.')}
 
       <div class="section-head"><h2 class="section-title">Moneyline</h2></div>
-      <p class="section-sub">Home teams favored between -130 and -180 facing a visiting starter with a 6.00+ ERA over his last three starts.</p>
       ${moneylineCards(d.moneyline)}
       ${nearMissCards(d.moneyline.otherGames)}
 
       <div class="section-head"><h2 class="section-title">Hot hitters</h2></div>
-      <p class="section-sub">Hitters riding a 5+ game hit streak or batting .320+ over their last 15 games. Prime matchup means the opposing starter is struggling too.</p>
       ${hitStreakSection(d.hitStreak)}
 
       <div class="section-head"><h2 class="section-title">Home run weather</h2></div>
-      <p class="section-sub">Parks where the wind is blowing out at 10+ mph, crossed with the top third of today's hitters by recent home-run rate.</p>
       ${windHrSection(d.windHr)}`;
 
     $('#signalsDate').addEventListener('change', (e) => {
@@ -753,8 +743,7 @@ async function renderPerformance() {
 
     host.innerHTML = `
       <div class="section-head"><h2 class="section-title">How the signals have done</h2></div>
-      <p class="section-sub">Every qualifying pick is recorded the first time it appears each day, then graded against real results. A signal only means something once its win rate beats the break-even rate implied by the price.</p>
-      ${tiles ? `<div class="stat-tiles">${tiles}</div>` : emptyHtml('No picks tracked yet', 'Picks accumulate automatically as the daily refresh finds qualifying signals.')}
+      ${tiles ? `<div class="stat-tiles">${tiles}</div>` : emptyHtml('No picks tracked yet', 'Picks accumulate as the daily refresh finds qualifying signals.')}
 
       <div class="section-head"><h2 class="section-title">Recent picks</h2></div>
       ${d.recent.length ? batterTable(recentRows, ['Date', 'Signal', 'Pick', 'Price', 'Result']) : emptyHtml('Nothing recorded yet', 'Recent picks will appear here as the pipeline runs.')}`;

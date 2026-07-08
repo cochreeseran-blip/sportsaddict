@@ -1,13 +1,11 @@
+import { fmtOdds } from '../util/format.js';
+
 const BAND_LOW = -180;
 const BAND_HIGH = -130;
 const BAND_MID = (BAND_LOW + BAND_HIGH) / 2; // -155
 const ERA_GATE = 6.0;
 const MAX_PICKS = 2;
 const MAX_OTHER_GAMES = 5;
-
-function fmtOdds(ml) {
-  return ml > 0 ? `+${ml}` : `${ml}`;
-}
 
 // Home favorite in the -130..-180 band whose away starter's trailing ERA
 // (last 3 starts, not season ERA) is 6.00 or worse. Season ERA is carried

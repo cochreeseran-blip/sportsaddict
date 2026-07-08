@@ -1,12 +1,11 @@
+import { fmtOdds } from './util/format.js';
+import { buildTopPicks } from './topPicks.js';
+
 export async function saveDigest(pool, gameDate, signalType, details) {
   await pool.query(
     'INSERT INTO daily_digest (game_date, signal_type, details) VALUES ($1, $2, $3)',
     [gameDate, signalType, JSON.stringify(details)]
   );
-}
-
-function fmtOdds(ml) {
-  return ml > 0 ? `+${ml}` : `${ml}`;
 }
 
 export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }) {
@@ -18,6 +17,17 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
   if (warnings.length) {
     console.log('\n[WARNINGS]');
     for (const w of warnings) console.log(`  - ${w}`);
+  }
+
+  const topPicks = buildTopPicks({ moneyline, hitStreak, windHr });
+  console.log('\n--- TOP 3 PICKS TODAY ---');
+  if (!topPicks.length) {
+    console.log('  Not enough qualifying signals today for a top 3.');
+  } else {
+    topPicks.forEach((p, i) => {
+      console.log(`  ${i + 1}. ${p.headline}`);
+      console.log(`     ${p.detail}`);
+    });
   }
 
   console.log('\n--- MONEYLINE ---');

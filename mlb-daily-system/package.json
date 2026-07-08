@@ -9,7 +9,8 @@
   },
   "scripts": {
     "migrate": "node scripts/migrate.js",
-    "job": "node job.js"
+    "job": "node job.js",
+    "serve": "node server.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

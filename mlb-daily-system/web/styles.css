@@ -70,7 +70,17 @@ body {
 .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
 .pulse-dot.busy { background: var(--amber); animation: blink 1.2s ease-in-out infinite; }
 .pulse-dot.err { background: var(--red); }
+.pulse-dot.warn { background: var(--amber); }
 @keyframes blink { 50% { opacity: 0.3; } }
+
+.digest-warning {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: rgba(217, 119, 6, 0.08); border: 1px solid rgba(217, 119, 6, 0.35);
+  border-radius: 8px; padding: 10px 14px; margin: 0 0 16px; font-size: 13px; color: var(--text-2);
+}
+.digest-warning .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-top: 6px; flex-shrink: 0; }
+.digest-warning ul { margin: 0; padding-left: 16px; }
+.digest-warning li { margin-bottom: 3px; }
 
 .btn-refresh {
   display: inline-flex; align-items: center; gap: 6px;

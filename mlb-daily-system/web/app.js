@@ -642,6 +642,19 @@ function nearMissCards(otherGames) {
       </div>`).join('')}</div>`;
 }
 
+function digestWarningBanner(warnings) {
+  if (!warnings?.length) return '';
+  const items = warnings.map((w) => `<li>${esc(w)}</li>`).join('');
+  return `
+    <div class="digest-warning">
+      <span class="dot"></span>
+      <div>
+        <strong>${warnings.length} issue${warnings.length === 1 ? '' : 's'} while building this slate</strong>
+        <ul>${items}</ul>
+      </div>
+    </div>`;
+}
+
 function batterTable(rows, cols) {
   return `<div class="table-wrap"><table class="data-table">
     <thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>
@@ -693,6 +706,8 @@ async function renderSignals() {
         <select class="date-select" id="signalsDate">${dateOptions}</select>
         <span class="toolbar-note">Signals for ${esc(longDate(d.date))}</span>
       </div>
+
+      ${digestWarningBanner(d.warnings)}
 
       <div class="section-head"><h2 class="section-title">Top 3 picks</h2></div>
       <p class="section-sub">The day's strongest signals, ranked across all three categories. Scored by a simple, transparent heuristic — not a statistical model.</p>
@@ -795,9 +810,15 @@ async function pollStatus(fast = false) {
     if (s.lastRunError) {
       dot.className = 'pulse-dot err';
       txt.textContent = 'Last refresh failed';
+      txt.title = s.lastRunError;
+    } else if (s.lastRunWarnings && s.lastRunWarnings.length) {
+      dot.className = 'pulse-dot warn';
+      txt.textContent = `Updated with ${s.lastRunWarnings.length} warning${s.lastRunWarnings.length === 1 ? '' : 's'}`;
+      txt.title = s.lastRunWarnings.join('\n');
     } else if (s.lastRunAt) {
       dot.className = 'pulse-dot';
       txt.textContent = `Updated ${new Date(s.lastRunAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+      txt.title = '';
     } else {
       dot.className = 'pulse-dot';
       txt.textContent = 'Online';

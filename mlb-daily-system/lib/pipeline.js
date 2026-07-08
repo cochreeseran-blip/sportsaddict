@@ -243,6 +243,10 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
   await saveDigest(pool, gameDate, 'wind_hr', windHr);
   await saveDigest(pool, gameDate, 'top_picks', { picks: topPicks });
+  // Persisted so a past date's digest still shows why its data may be
+  // incomplete (e.g. odds unavailable that day), not just the most recent
+  // run's in-memory warnings.
+  await saveDigest(pool, gameDate, 'warnings', { warnings });
 
   const trackedCount = await recordTrackedPicks(pool, gameDate, { moneyline, hitStreak, windHr });
   log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);

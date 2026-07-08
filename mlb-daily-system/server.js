@@ -31,18 +31,23 @@ let isRefreshing = false;
 let refreshStartedAt = null;
 let lastRunAt = null;
 let lastRunError = null;
+let lastRunWarnings = [];
+let lastRunDate = null;
 
 async function triggerPipelineRun(gameDate = todayIsoDate()) {
   if (isRefreshing) return { skipped: true };
   isRefreshing = true;
   refreshStartedAt = new Date();
   try {
-    await runPipeline(gameDate);
+    const result = await runPipeline(gameDate);
     lastRunAt = new Date();
+    lastRunDate = gameDate;
     lastRunError = null;
+    lastRunWarnings = result?.warnings || [];
   } catch (err) {
     console.error('Pipeline run failed:', err);
     lastRunError = err.message;
+    lastRunWarnings = [];
   } finally {
     isRefreshing = false;
     refreshStartedAt = null;
@@ -140,6 +145,7 @@ async function loadDigest(gameDate) {
     moneyline: byType.moneyline || { signal: 'SIT', picks: [] },
     hitStreak: byType.hit_streak || { watchList: [], highConfidence: [] },
     windHr: byType.wind_hr || { watchList: [], highConfidence: [], hrRateThreshold: null },
+    warnings: byType.warnings?.warnings || [],
   };
 }
 
@@ -375,7 +381,9 @@ const server = http.createServer(async (req, res) => {
         isRefreshing,
         refreshStartedAt,
         lastRunAt,
+        lastRunDate,
         lastRunError,
+        lastRunWarnings,
         refreshHoursEt: REFRESH_HOURS_UTC.map(etLabel),
         today: todayIsoDate(),
       });

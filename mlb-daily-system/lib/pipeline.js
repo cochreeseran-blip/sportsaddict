@@ -5,7 +5,7 @@ import { fetchWindAt } from './sources/weather.js';
 import { isWindBlowingOut } from './geo.js';
 import { computeTrailingPitcherStats, upsertPitcherForm } from './pitcherForm.js';
 import { computeBatterStats, upsertBatterForm } from './batterForm.js';
-import { runMoneylineFilter } from './filters/moneyline.js';
+import { runMoneylineFilter, BAND_LOW, BAND_HIGH } from './filters/moneyline.js';
 import { runHitStreakFilter } from './filters/hitStreak.js';
 import { runWindHrFilter } from './filters/windHr.js';
 import { saveDigest } from './digest.js';
@@ -138,6 +138,55 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     }
   }
   log(`Pitcher form: ${pitcherOk}/${starterIds.size} pitcher(s) updated.`);
+
+  // 3b. Re-confirm the away starter for games that already clear the
+  // moneyline odds band. Probable starters are usually announced well
+  // before game day and are far more stable than same-day lineups, but a
+  // late scratch or doubleheader shuffle would otherwise silently lock a
+  // pick to whichever pitcher was probable at the last full schedule
+  // fetch. This is deliberately scoped to just the odds-qualifying games
+  // (typically a handful, not the whole slate) so it stays cheap enough
+  // to run on every pull.
+  const { rows: bandGames } = await pool.query(
+    'SELECT mlb_game_id, home_team, away_team, away_starter_id, away_starter_name FROM games WHERE game_date = $1 AND home_ml IS NOT NULL AND home_ml BETWEEN $2 AND $3',
+    [gameDate, BAND_LOW, BAND_HIGH]
+  );
+  let pitcherSwaps = 0;
+  for (const g of bandGames) {
+    try {
+      const fresh = await mlb.fetchGameProbables(g.mlb_game_id);
+      if (!fresh || !fresh.awayStarterId) continue;
+      if (fresh.awayStarterId !== g.away_starter_id) {
+        pitcherSwaps++;
+        warnings.push(
+          `Probable starter changed for ${g.away_team} @ ${g.home_team}: was ${g.away_starter_name ?? 'unknown'}, ` +
+            `now ${fresh.awayStarterName ?? 'unknown'}. Refreshed before scoring this pick.`
+        );
+        await pool.query('UPDATE games SET away_starter_id = $1, away_starter_name = $2 WHERE mlb_game_id = $3', [
+          fresh.awayStarterId,
+          fresh.awayStarterName,
+          g.mlb_game_id,
+        ]);
+        const [gameLog, seasonEra] = await Promise.all([
+          mlb.fetchPitcherGameLog(fresh.awayStarterId, season),
+          mlb.fetchPitcherSeasonEra(fresh.awayStarterId, season),
+        ]);
+        const trailing = computeTrailingPitcherStats(gameLog);
+        await upsertPitcherForm(pool, {
+          gameDate,
+          pitcherId: fresh.awayStarterId,
+          pitcherName: fresh.awayStarterName,
+          seasonEra,
+          ...trailing,
+        });
+      }
+    } catch (err) {
+      warnings.push(`Could not re-confirm the probable starter for ${g.away_team} @ ${g.home_team} — check manually. (${err.message})`);
+    }
+  }
+  if (bandGames.length) {
+    log(`Pitcher re-confirmation: checked ${bandGames.length} moneyline-band game(s), ${pitcherSwaps} swap(s) found.`);
+  }
 
   // 4. Batter form — confirmed lineup if it's out yet, else active roster
   // position players as a "regulars" stand-in. Calls are sequential on

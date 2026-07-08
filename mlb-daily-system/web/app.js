@@ -788,7 +788,7 @@ async function renderSignals() {
         <h2 class="section-title">Moneyline</h2>
         <button class="btn small" style="margin-left:auto" data-add-manual-pick>Add a pick</button>
       </div>
-      <p class="section-sub">Home teams favored between -130 and -180 facing a visiting starter with a 6.00+ ERA over his last three starts. Manual picks below are added by hand, not by the automated screener.</p>
+      <p class="section-sub">Home teams favored between -100 and -200 facing a visiting starter with a 6.00+ ERA over his last three starts. Manual picks below are added by hand, not by the automated screener.</p>
       ${manualPickCards(d.manualPicks)}
       ${moneylineCards(d.moneyline)}
       ${nearMissCards(d.moneyline.otherGames)}

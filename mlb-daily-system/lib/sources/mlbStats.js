@@ -155,6 +155,25 @@ export async function fetchBatterGameLog(batterId, season) {
 }
 
 // Final score + status for a specific game, used by the grading script.
+// Targeted, single-game probable-pitcher check. Probable starters are
+// usually announced well before game day and are far more stable than
+// same-day lineups, but a late scratch, doubleheader shuffle, or bullpen
+// game can still swap one out. This is meant to be called only against
+// the small handful of games that already cleared the odds filter, right
+// before a pick locks in, rather than re-fetching the whole day's slate.
+export async function fetchGameProbables(gamePk) {
+  const url = `${BASE}/schedule?gamePk=${gamePk}&hydrate=probablePitcher`;
+  const data = await fetchJson(url);
+  const game = data.dates?.[0]?.games?.[0];
+  if (!game) return null;
+  return {
+    homeStarterId: game.teams?.home?.probablePitcher?.id ?? null,
+    homeStarterName: game.teams?.home?.probablePitcher?.fullName ?? null,
+    awayStarterId: game.teams?.away?.probablePitcher?.id ?? null,
+    awayStarterName: game.teams?.away?.probablePitcher?.fullName ?? null,
+  };
+}
+
 export async function fetchGameResult(gamePk) {
   const url = `${BASE}/schedule?gamePk=${gamePk}`;
   const data = await fetchJson(url);

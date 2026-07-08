@@ -1,14 +1,14 @@
 import { fmtOdds } from '../util/format.js';
 import { breakevenPct } from '../breakeven.js';
 
-const BAND_LOW = -180;
-const BAND_HIGH = -130;
-const BAND_MID = (BAND_LOW + BAND_HIGH) / 2; // -155
+export const BAND_LOW = -200;
+export const BAND_HIGH = -100;
+const BAND_MID = (BAND_LOW + BAND_HIGH) / 2; // -150
 const ERA_GATE = 6.0;
 const MAX_PICKS = 2;
 const MAX_OTHER_GAMES = 5;
 
-// Home favorite in the -130..-180 band whose away starter's trailing ERA
+// Home favorite in the -100..-200 band whose away starter's trailing ERA
 // (last 3 starts, not season ERA) is 6.00 or worse. Season ERA is carried
 // through as informational context only, per spec.
 //
@@ -43,8 +43,8 @@ export async function runMoneylineFilter(pool, gameDate) {
     if (!inBand) {
       reasons.push(
         homeMl > BAND_HIGH
-          ? `${r.home_team} is only a slight favorite (${fmtOdds(homeMl)}) — we want them favored more solidly than that (odds of -130 or shorter)`
-          : `${r.home_team} is too big a favorite (${fmtOdds(homeMl)}) — betting on huge favorites doesn't pay well even when they win, so we cap it at -180`
+          ? `${r.home_team} is only a slight favorite (${fmtOdds(homeMl)}) — we want them favored more solidly than that (odds of ${BAND_HIGH} or shorter)`
+          : `${r.home_team} is too big a favorite (${fmtOdds(homeMl)}) — betting on huge favorites doesn't pay well even when they win, so we cap it at ${BAND_LOW}`
       );
     }
     if (!eraQualifies) {

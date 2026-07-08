@@ -345,6 +345,41 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// ---------------------------------------------------------------------------
+// Security helpers.
+
+// Per-IP sliding-window rate limiter for the abuse-prone endpoints (login
+// brute force, signup/subscribe spam). In-memory is fine for a single
+// Railway instance; entries expire as they age out of the window.
+const rateBuckets = new Map();
+function rateLimited(req, key, maxHits, windowMs) {
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const bucketKey = `${key}:${ip}`;
+  const now = Date.now();
+  const hits = (rateBuckets.get(bucketKey) || []).filter((t) => now - t < windowMs);
+  hits.push(now);
+  rateBuckets.set(bucketKey, hits);
+  if (rateBuckets.size > 10000) {
+    // Cheap global cleanup so the map can't grow unbounded.
+    for (const [k, v] of rateBuckets) {
+      if (!v.length || now - v[v.length - 1] > windowMs) rateBuckets.delete(k);
+    }
+  }
+  return hits.length > maxHits;
+}
+
+// Mutating endpoints (bets, manual picks, refresh) require a logged-in
+// session — without this, anyone on the internet could delete bets or
+// publish picks onto the site. Read-only research data stays public.
+async function requireUser(req, res) {
+  const user = await userForSession(pool, parseCookies(req).sf_session);
+  if (!user) {
+    sendJson(res, 401, { error: 'Log in to do that.' });
+    return null;
+  }
+  return user;
+}
+
 function readJsonBody(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -371,6 +406,19 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
+    // Baseline security headers on every response. The CSP allows exactly
+    // what the app uses: self-hosted assets, MLB's logo/headshot CDNs,
+    // Google Fonts, and same-origin fetches.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+        "font-src https://fonts.gstatic.com; img-src 'self' data: https://www.mlbstatic.com https://img.mlbstatic.com; " +
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    );
+
     if (url.pathname === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end('ok');
@@ -386,6 +434,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if ((url.pathname === '/api/refresh' || url.pathname === '/refresh') && req.method === 'POST') {
+      if (!(await requireUser(req, res))) return;
+      if (rateLimited(req, 'refresh', 6, 10 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down — refresh is already running on a schedule.' });
       triggerPipelineRun(); // fire-and-forget; client polls /api/status
       sendJson(res, 202, { started: true });
       return;
@@ -395,6 +445,7 @@ const server = http.createServer(async (req, res) => {
     // The account gate lives in the frontend; the data API stays open so a
     // broken auth flow can never brick the research pages.
     if (url.pathname === '/api/auth/signup' && req.method === 'POST') {
+      if (rateLimited(req, 'signup', 10, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many signups from this address — try again later.' });
       const { email, password, rememberMe } = await readJsonBody(req);
       const cleanEmail = String(email || '').trim();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return sendJson(res, 400, { error: 'That email does not look right.' });
@@ -412,6 +463,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
+      if (rateLimited(req, 'login', 20, 15 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many login attempts — wait a few minutes and try again.' });
       const { email, password, rememberMe } = await readJsonBody(req);
       const user = await authenticate(pool, String(email || '').trim(), String(password || ''));
       if (!user) return sendJson(res, 401, { error: 'Wrong email or password.' });
@@ -496,6 +548,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/bets' && req.method === 'POST') {
+      if (!(await requireUser(req, res))) return;
       const b = await readJsonBody(req);
       const stake = Number(b.stake);
       const description = String(b.description || '').trim();
@@ -522,12 +575,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/bets/grade' && req.method === 'POST') {
+      if (!(await requireUser(req, res))) return;
       sendJson(res, 200, await gradePendingBets(pool));
       return;
     }
 
     const betAction = url.pathname.match(/^\/api\/bets\/(\d+)(?:\/(settle|reopen))?$/);
     if (betAction) {
+      if (!(await requireUser(req, res))) return;
       const id = Number(betAction[1]);
       if (betAction[2] === 'settle' && req.method === 'POST') {
         const { result } = await readJsonBody(req);
@@ -550,6 +605,7 @@ const server = http.createServer(async (req, res) => {
     // a separate Claude project) without waiting on or depending on the
     // automated odds/schedule pipeline.
     if (url.pathname === '/api/manual-picks' && req.method === 'POST') {
+      if (!(await requireUser(req, res))) return;
       const b = await readJsonBody(req);
       const gameDate = b.gameDate || todayIsoDate();
       const homeTeam = String(b.homeTeam || '').trim();
@@ -568,6 +624,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.match(/^\/api\/manual-picks\/\d+$/) && req.method === 'DELETE') {
+      if (!(await requireUser(req, res))) return;
       const id = Number(url.pathname.split('/').pop());
       await deleteManualPick(pool, id);
       sendJson(res, 200, { deleted: true });
@@ -576,6 +633,7 @@ const server = http.createServer(async (req, res) => {
 
     // --- newsletter ------------------------------------------------------
     if (url.pathname === '/api/subscribe' && req.method === 'POST') {
+      if (rateLimited(req, 'subscribe', 8, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many attempts — try again later.' });
       const { email } = await readJsonBody(req);
       try {
         await addSubscriber(pool, email);

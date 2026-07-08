@@ -45,7 +45,7 @@ const TEAMS = {
 
 const state = {
   today: new Date().toISOString().slice(0, 10), // corrected from /api/status
-  view: 'slate',
+  view: 'signals',
   signalsDate: null,
   slateCache: new Map(),
   user: null,
@@ -148,21 +148,24 @@ function fmtRunTime(iso) {
   return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
 }
 
+// Image fallbacks use a delegated capture-phase error listener (see
+// init) instead of inline onerror handlers — the CSP forbids inline
+// script, and that's the point: no inline JS anywhere in this app.
 function logoHtml(teamId, teamName, size = 34) {
   const id = teamId ?? TEAMS[teamName]?.id ?? null;
   const abbrev = TEAMS[teamName]?.abbrev ?? (teamName || '?').slice(0, 3).toUpperCase();
   if (!id) return `<span class="gc-logo-fallback" style="width:${size}px;height:${size}px">${esc(abbrev)}</span>`;
   return `<img class="gc-logo" style="width:${size}px;height:${size}px" loading="lazy" alt="${esc(teamName || '')} logo"
-    src="https://www.mlbstatic.com/team-logos/${id}.svg"
-    onerror="this.outerHTML='<span class=&quot;gc-logo-fallback&quot; style=&quot;width:${size}px;height:${size}px&quot;>${esc(abbrev)}</span>'">`;
+    data-fb="${esc(abbrev)}" data-fb-class="gc-logo-fallback"
+    src="https://www.mlbstatic.com/team-logos/${id}.svg">`;
 }
 
 function headshotHtml(personId, name) {
   const initials = (name || '?').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   if (!personId) return `<span class="headshot-fallback">${esc(initials)}</span>`;
   return `<img class="headshot" loading="lazy" alt=""
-    src="https://img.mlbstatic.com/mlb-photos/image/upload/w_96,q_auto/v1/people/${personId}/headshot/67/current"
-    onerror="this.outerHTML='<span class=&quot;headshot-fallback&quot;>${esc(initials)}</span>'">`;
+    data-fb="${esc(initials)}" data-fb-class="headshot-fallback"
+    src="https://img.mlbstatic.com/mlb-photos/image/upload/w_96,q_auto/v1/people/${personId}/headshot/67/current">`;
 }
 
 function form5Html(results) {
@@ -194,6 +197,33 @@ async function apiSend(path, method, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `${path} -> ${res.status}`);
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Estimated cash probabilities for the board. These are simple, honest
+// estimates from recent form — labeled "est" in the UI, never presented as
+// odds. Hit: chance of 1+ hit in ~4 at-bats at his last-15 average.
+// HR: his own last-15 HR-per-game rate. K over: recent-start hit rate with
+// Laplace smoothing so 5-for-5 doesn't read as 100%. ML: the market's own
+// implied probability from the price.
+function estHitProb(avg15) {
+  if (avg15 === null || avg15 === undefined) return null;
+  return Math.max(0.05, Math.min(0.97, 1 - Math.pow(1 - avg15, 4)));
+}
+function estHrProb(hrRate15) {
+  if (hrRate15 === null || hrRate15 === undefined) return null;
+  return Math.max(0.02, Math.min(0.75, hrRate15));
+}
+function estKOverProb(last5Ks, floor) {
+  if (!last5Ks?.length) return null;
+  const over = last5Ks.filter((k) => k >= floor).length;
+  return (over + 1) / (last5Ks.length + 2);
+}
+function probChip(p, label = 'est') {
+  if (p === null || p === undefined) return '';
+  const pct = Math.round(p * 100);
+  const tier = pct >= 70 ? 'hot' : pct >= 50 ? 'warm' : 'cool';
+  return `<span class="prob-chip ${tier}"><b>${pct}%</b><i>${label}</i></span>`;
 }
 
 function fmtMoney(n, withSign = false) {
@@ -806,32 +836,92 @@ function opposingStarterCell(b) {
   }`;
 }
 
+// --- trading-card pick grids -------------------------------------------------
+// The sketch: picks presented like positions on a trading board. Big
+// probability, headshot, sparkline of recent form; tap the card and it
+// opens the "why" (form, opposing arm, wind).
+
+function sparkBars(results) {
+  if (!results?.length) return '';
+  return `<span class="spark">${results.map((hit) => `<i class="${hit ? 'up' : ''}"></i>`).join('')}</span>`;
+}
+
+function whyRow(label, value) {
+  return value ? `<div class="why-row"><span>${esc(label)}</span><b>${value}</b></div>` : '';
+}
+
+function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark, why, flags, track }) {
+  return `
+    <article class="pick-card" data-expand>
+      <div class="pc-rank">${rank}</div>
+      <div class="pc-top">
+        ${headshotHtml(personId, name)}
+        <div class="pc-id">
+          <div class="pc-name">${esc(name)}</div>
+          <div class="pc-sub">${sub}</div>
+        </div>
+        ${probChip(prob, probLabel)}
+      </div>
+      <div class="pc-mid">
+        ${logoHtml(null, teamName, 20)}
+        ${spark || ''}
+        ${flags || ''}
+      </div>
+      <div class="pc-why">
+        ${why}
+        <div class="pc-actions">${track}</div>
+      </div>
+    </article>`;
+}
+
 function hitStreakSection(hs) {
   if (!hs.watchList?.length) return emptyHtml('No qualifying batters', 'Nobody clears the bar today.');
-  const rows = hs.watchList.map((b, i) => `
-    <tr class="${b.highConfidence ? 'hc' : ''}">
-      <td class="mono faint rank-col">${i + 1}</td>
-      <td>${playerCell(b, b.highConfidence ? '<span class="pill info"><span class="pill-dot"></span>Prime matchup</span>' : '')}</td>
-      <td><span class="mono">${b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)}`}</span><div class="faint" style="font-size:11px;margin-top:2px">${fmtNum(b.trailing15Avg, 3)} avg last 15</div></td>
-      <td>${form5Html(b.last5Results)}</td>
-      <td>${opposingStarterCell(b)}</td>
-      <td style="text-align:right">${trackBtn(pickPrefill({ type: 'hit_streak', headline: `${b.batterName} to record a hit`, mlbGameId: b.mlbGameId, batterId: b.batterId }))}</td>
-    </tr>`);
-  return batterTable(rows, ['#', 'Hitter', 'Form', 'Last 5', 'Opposing starter', '']);
+  const cards = hs.watchList.map((b, i) => pickCard({
+    rank: i + 1,
+    personId: b.batterId,
+    name: b.batterName,
+    sub: `${b.jerseyNumber ? `#${esc(b.jerseyNumber)} ` : ''}${b.position ? esc(b.position) + ' · ' : ''}1+ hit`,
+    teamName: b.team,
+    prob: estHitProb(b.trailing15Avg),
+    probLabel: 'est',
+    spark: sparkBars(b.last5Results),
+    flags: [
+      b.highConfidence ? '<span class="pill info"><span class="pill-dot"></span>Prime matchup</span>' : '',
+      b.lineupConfirmed === false ? '<span class="pill warn"><span class="pill-dot"></span>Projected</span>' : '',
+    ].join(''),
+    why: [
+      whyRow('Form', b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)}`),
+      whyRow('Last 15 avg', fmtNum(b.trailing15Avg, 3)),
+      whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? ` — ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
+    ].join(''),
+    track: trackBtn(pickPrefill({ type: 'hit_streak', headline: `${b.batterName} to record a hit`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
+  }));
+  return `<div class="pick-grid">${cards.join('')}</div>`;
 }
 
 function windHrSection(wh) {
   if (!wh.watchList?.length) return emptyHtml('No qualifying batters', 'No power bats cleared the top-third HR-rate bar today.');
-  const rows = wh.watchList.map((b, i) => `
-    <tr class="${b.highConfidence ? 'hc' : ''}">
-      <td class="mono faint rank-col">${i + 1}</td>
-      <td>${playerCell(b, b.windBlowingOut ? `<span class="pill hot"><span class="pill-dot"></span>Wind out${b.windSpeedMph ? ` ${fmtNum(b.windSpeedMph, 0)} mph` : ''}</span>` : '')}</td>
-      <td><span class="mono">${fmtNum(b.trailing15HrRate, 2)}</span><div class="faint" style="font-size:11px;margin-top:2px">HR per game, last 15</div></td>
-      <td>${form5Html(b.last5Results)}</td>
-      <td>${opposingStarterCell(b)}</td>
-      <td style="text-align:right">${trackBtn(pickPrefill({ type: 'wind_hr', headline: `${b.batterName} to hit a home run`, mlbGameId: b.mlbGameId, batterId: b.batterId }))}</td>
-    </tr>`);
-  return batterTable(rows, ['#', 'Power hitter', 'HR rate', 'Last 5', 'Opposing starter', '']);
+  const cards = wh.watchList.map((b, i) => pickCard({
+    rank: i + 1,
+    personId: b.batterId,
+    name: b.batterName,
+    sub: `${b.jerseyNumber ? `#${esc(b.jerseyNumber)} ` : ''}${b.position ? esc(b.position) + ' · ' : ''}home run`,
+    teamName: b.team,
+    prob: estHrProb(b.trailing15HrRate),
+    probLabel: 'est',
+    spark: sparkBars(b.last5Results),
+    flags: [
+      b.windBlowingOut ? `<span class="pill hot"><span class="pill-dot"></span>Wind out${b.windSpeedMph ? ` ${fmtNum(b.windSpeedMph, 0)} mph` : ''}</span>` : '',
+      b.lineupConfirmed === false ? '<span class="pill warn"><span class="pill-dot"></span>Projected</span>' : '',
+    ].join(''),
+    why: [
+      whyRow('Power', `${fmtNum(b.trailing15HrRate, 2)} HR per game, last 15`),
+      whyRow('Park', b.venue ? `${esc(b.venue)}${b.windBlowingOut ? ` — wind out ${fmtNum(b.windSpeedMph, 0)} mph` : ''}` : null),
+      whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? ` — ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
+    ].join(''),
+    track: trackBtn(pickPrefill({ type: 'wind_hr', headline: `${b.batterName} to hit a home run`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
+  }));
+  return `<div class="pick-grid">${cards.join('')}</div>`;
 }
 
 function formKsHtml(ks, floor) {
@@ -843,17 +933,95 @@ function strikeoutSection(so) {
   if (!so?.watchList?.length) {
     return emptyHtml('No strikeout spots', 'No probable starter today has a high, consistent strikeout floor over his recent starts.');
   }
-  const rows = so.watchList.map((p, i) => `
-    <tr>
-      <td class="mono faint rank-col">${i + 1}</td>
-      <td>${playerCell({ batterId: p.pitcherId, batterName: p.pitcherName, team: p.team, position: 'P', jerseyNumber: null, lineupConfirmed: null })}</td>
-      <td><span class="mono" style="font-weight:600">Over ${p.suggestedLine.toFixed(1)} Ks</span><div class="faint" style="font-size:11px;margin-top:2px">Reached ${p.strictFloorKs}+ in every recent start</div></td>
-      <td>${formKsHtml(p.last5StartKs, p.strictFloorKs)}<div class="faint" style="font-size:11px;margin-top:3px">Ks by start, oldest first</div></td>
-      <td><span class="mono">${fmtNum(p.kPerStart, 1)}</span><div class="faint" style="font-size:11px;margin-top:2px">Ks per start</div></td>
-      <td>vs ${esc(p.opponent)}</td>
-      <td style="text-align:right">${trackBtn({ description: `${p.pitcherName} over ${p.suggestedLine.toFixed(1)} strikeouts`, odds: null, betKind: 'manual', mlbGameId: p.mlbGameId, batterId: null, gameDate: state.signalsDate || state.today })}</td>
-    </tr>`);
-  return batterTable(rows, ['#', 'Pitcher', 'Suggested line', 'Recent Ks', 'Average', 'Matchup', '']);
+  const cards = so.watchList.map((p, i) => pickCard({
+    rank: i + 1,
+    personId: p.pitcherId,
+    name: p.pitcherName,
+    sub: `P · over ${p.suggestedLine.toFixed(1)} Ks`,
+    teamName: p.team,
+    prob: estKOverProb(p.last5StartKs, p.strictFloorKs),
+    probLabel: 'est',
+    spark: formKsHtml(p.last5StartKs, p.strictFloorKs),
+    flags: '',
+    why: [
+      whyRow('Floor', `Reached ${p.strictFloorKs}+ Ks in every recent start`),
+      whyRow('Average', `${fmtNum(p.kPerStart, 1)} Ks per start`),
+      whyRow('Matchup', `vs ${esc(p.opponent)}`),
+    ].join(''),
+    track: trackBtn({ description: `${p.pitcherName} over ${p.suggestedLine.toFixed(1)} strikeouts`, odds: null, betKind: 'manual', mlbGameId: p.mlbGameId, batterId: null, gameDate: state.signalsDate || state.today }),
+  }));
+  return `<div class="pick-grid">${cards.join('')}</div>`;
+}
+
+// --- jumbotron ---------------------------------------------------------------
+// The rotating stadium board at the top of Daily Picks: the day's
+// highest-probability picks, scrolling continuously with faces and
+// percentages. Content is duplicated so the loop wraps seamlessly.
+function buildBoardItems(d) {
+  const items = [];
+  for (const b of d.hitStreak?.watchList || []) {
+    items.push({ personId: b.batterId, name: b.batterName, team: b.team, label: '1+ HIT', prob: estHitProb(b.trailing15Avg), probLabel: 'est' });
+  }
+  for (const b of d.windHr?.watchList || []) {
+    items.push({ personId: b.batterId, name: b.batterName, team: b.team, label: 'HOME RUN', prob: estHrProb(b.trailing15HrRate), probLabel: 'est' });
+  }
+  for (const p of d.strikeouts?.watchList || []) {
+    items.push({ personId: p.pitcherId, name: p.pitcherName, team: p.team, label: `OVER ${p.suggestedLine.toFixed(1)} K`, prob: estKOverProb(p.last5StartKs, p.strictFloorKs), probLabel: 'est' });
+  }
+  for (const p of d.moneyline?.picks || []) {
+    items.push({ personId: null, name: p.homeTeam, team: p.homeTeam, label: `ML ${p.homeMl !== null ? fmtOdds(p.homeMl) : ''}`.trim(), prob: p.breakevenPct ?? null, probLabel: 'mkt' });
+  }
+  const seen = new Set();
+  return items
+    .filter((x) => x.prob !== null)
+    .filter((x) => (seen.has(x.name + x.label) ? false : seen.add(x.name + x.label)))
+    .sort((a, b) => b.prob - a.prob)
+    .slice(0, 12);
+}
+
+function jumbotronHtml(d) {
+  const items = buildBoardItems(d);
+  if (items.length < 2) return '';
+  const chip = (x, i) => `
+    <span class="jumbo-item">
+      <span class="jumbo-rank">${i + 1}</span>
+      ${x.personId ? headshotHtml(x.personId, x.name) : logoHtml(null, x.team, 30)}
+      <span class="jumbo-name">${esc(x.name)}</span>
+      <span class="jumbo-label">${esc(x.label)}</span>
+      ${probChip(x.prob, x.probLabel)}
+    </span>`;
+  const row = items.map(chip).join('<span class="jumbo-sep"></span>');
+  return `
+    <div class="jumbotron" aria-label="Today's top picks board">
+      <div class="jumbo-title"><span class="jumbo-live"></span>TODAY'S BOARD</div>
+      <div class="jumbo-viewport">
+        <div class="jumbo-track">${row}<span class="jumbo-sep"></span>${row}<span class="jumbo-sep"></span></div>
+      </div>
+    </div>`;
+}
+
+// --- yesterday strip -----------------------------------------------------------
+// Public accountability: yesterday's graded picks as W/L chips plus the
+// all-time record, straight from the tracked ledger.
+function yesterdayStrip(perf, today) {
+  if (!perf) return '';
+  const y = new Date(`${today}T00:00:00Z`);
+  y.setUTCDate(y.getUTCDate() - 1);
+  const yd = y.toISOString().slice(0, 10);
+  const graded = (perf.recent || []).filter((r) => r.gameDate === yd && (r.result === 'win' || r.result === 'loss' || r.result === 'push'));
+  let wins = 0, losses = 0, pushes = 0;
+  for (const s of perf.summary || []) { wins += s.wins; losses += s.losses; pushes += s.pushes; }
+  const pct = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(0) : null;
+  const chips = graded.slice(0, 8).map((r) => {
+    const short = r.description.split(' — ')[0].split(' to ')[0];
+    return `<span class="yd-chip ${r.result}"><b>${r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}</b>${esc(short)}</span>`;
+  }).join('');
+  return `
+    <div class="yesterday-strip">
+      <span class="yd-title">Yesterday</span>
+      ${chips || '<span class="faint" style="font-size:12px">Nothing graded yet</span>'}
+      <span class="yd-record">All-time <b>${wins}-${losses}${pushes ? `-${pushes}` : ''}</b>${pct !== null ? ` (${pct}%)` : ''}</span>
+    </div>`;
 }
 
 async function renderSignals() {
@@ -861,22 +1029,28 @@ async function renderSignals() {
   host.innerHTML = loadingHtml;
   try {
     const date = state.signalsDate || state.today;
-    const d = await api(`/api/digest?date=${date}`);
+    const [d, perf] = await Promise.all([
+      api(`/api/digest?date=${date}`),
+      api('/api/performance').catch(() => null), // strip is optional, never blocks the page
+    ]);
     state.signalsDate = d.date;
     const dateOptions = (d.availableDates.length ? d.availableDates : [d.date])
       .map((dd) => `<option value="${dd}" ${dd === d.date ? 'selected' : ''}>${dd}</option>`).join('');
 
     host.innerHTML = `
+      ${jumbotronHtml(d)}
+      ${yesterdayStrip(perf, d.date)}
+
       <div class="signals-toolbar">
         <select class="date-select" id="signalsDate">${dateOptions}</select>
-        <span class="toolbar-note">Signals for ${esc(longDate(d.date))}</span>
+        <span class="toolbar-note">${esc(longDate(d.date))}${d.updatedAt ? ` · screener ran ${esc(fmtRunTime(d.updatedAt))}` : ''}</span>
+        <span class="toolbar-note" style="margin-left:auto">Percentages are estimates from recent form, not guarantees.</span>
       </div>
 
       ${digestWarningBanner(d.warnings)}
 
       <div class="section-head">
         <h2 class="section-title">Moneyline</h2>
-        <span class="section-freshness">${d.updatedAt ? `Screener last ran ${esc(fmtRunTime(d.updatedAt))}` : 'Screener has not run yet'}</span>
         <button class="btn small" style="margin-left:auto" data-add-manual-pick>Add a pick</button>
       </div>
       <p class="section-sub">Home favorites between -100 and -250 whose starting pitcher has the better ERA (last 5 starts) than the visitor.</p>
@@ -884,19 +1058,19 @@ async function renderSignals() {
       ${moneylineCards(d.moneyline)}
 
       <div class="section-head"><h2 class="section-title">Projected to get a hit</h2></div>
-      <p class="section-sub">Today's ten hottest bats, ranked by recent form and how weak the arm they're facing is.</p>
+      <p class="section-sub">Today's hottest bats, ranked by form and the arm they're facing. Tap a card for the why.</p>
       ${hitStreakSection(d.hitStreak)}
 
       <div class="section-head"><h2 class="section-title">Projected to go deep</h2></div>
-      <p class="section-sub">Top home-run rates over the last 15 games, ranked against the opposing starter. Wind blowing out is a bonus flag, not a requirement.</p>
+      <p class="section-sub">Top home-run rates over the last 15 games. Wind out is a bonus flag, not a requirement.</p>
       ${windHrSection(d.windHr)}
 
       <div class="section-head"><h2 class="section-title">Strikeout watch</h2></div>
-      <p class="section-sub">Probable starters whose recent strikeout counts hold a consistent floor. The suggested line is what his own last starts support, not a book line.</p>
+      <p class="section-sub">Starters whose recent K counts hold a consistent floor. The line is what his own starts support, not a book line.</p>
       ${strikeoutSection(d.strikeouts)}
 
       <div class="section-head"><h2 class="section-title">All home favorites considered</h2></div>
-      <p class="section-sub">Everything the screener evaluated for the moneyline section and why each one did or did not make it.</p>
+      <p class="section-sub">Everything the screener evaluated and why each game did or did not make it.</p>
       ${nearMissCards(d.moneyline.otherGames) || emptyHtml('Nothing else evaluated', 'Every home favorite today either qualified or there were none.')}`;
 
     $('#signalsDate').addEventListener('change', (e) => {
@@ -1098,8 +1272,27 @@ async function init() {
   }
   updateAccountChip();
 
-  renderSlateShell();
-  loadSlateGames();
+  // Trading-card expand/collapse: tap anywhere on a card that isn't a
+  // button or link to open its "why" panel.
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('button, a, [data-track]')) return;
+    const card = e.target.closest('[data-expand]');
+    if (card) card.classList.toggle('open');
+  });
+
+  // Image fallbacks: swap any failed logo/headshot for its initials badge.
+  // Capture phase because error events don't bubble.
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.dataset.fb) return;
+    const span = document.createElement('span');
+    span.className = img.dataset.fbClass || 'gc-logo-fallback';
+    span.textContent = img.dataset.fb;
+    if (img.style.width) { span.style.width = img.style.width; span.style.height = img.style.height; }
+    img.replaceWith(span);
+  }, true);
+
+  renderSignals(); // Daily Picks is home
   pollStatus();
 }
 

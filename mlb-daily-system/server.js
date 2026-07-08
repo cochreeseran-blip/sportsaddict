@@ -8,6 +8,7 @@ import { runMigrations } from './lib/migrate.js';
 import { runPipeline, todayIsoDate } from './lib/pipeline.js';
 import * as mlb from './lib/sources/mlbStats.js';
 import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
+import { listManualPicks, addManualPick, deleteManualPick } from './lib/manualPicks.js';
 import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newsletter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -393,8 +394,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/digest') {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
-      const [digest, availableDates] = await Promise.all([loadDigest(date), listDigestDates()]);
-      sendJson(res, 200, { date, availableDates, ...digest });
+      const [digest, availableDates, manualPicks] = await Promise.all([
+        loadDigest(date),
+        listDigestDates(),
+        listManualPicks(pool, date),
+      ]);
+      sendJson(res, 200, { date, availableDates, ...digest, manualPicks });
       return;
     }
 
@@ -480,6 +485,34 @@ const server = http.createServer(async (req, res) => {
           ? sendJson(res, 200, { deleted: true })
           : sendJson(res, 404, { error: 'not found' });
       }
+    }
+
+    // --- manual moneyline picks -------------------------------------------
+    // A direct publish path for a pick you've researched yourself (e.g. in
+    // a separate Claude project) without waiting on or depending on the
+    // automated odds/schedule pipeline.
+    if (url.pathname === '/api/manual-picks' && req.method === 'POST') {
+      const b = await readJsonBody(req);
+      const gameDate = b.gameDate || todayIsoDate();
+      const homeTeam = String(b.homeTeam || '').trim();
+      const awayTeam = String(b.awayTeam || '').trim();
+      const homeMl = Number(b.homeMl);
+      if (!ISO_DATE_RE.test(gameDate)) return sendJson(res, 400, { error: 'bad date' });
+      if (!homeTeam || !awayTeam) return sendJson(res, 400, { error: 'Home team and away team are required.' });
+      if (!Number.isInteger(homeMl) || Math.abs(homeMl) < 100 || Math.abs(homeMl) > 100000) {
+        return sendJson(res, 400, { error: 'Odds must be American style, e.g. -150 or +120.' });
+      }
+      const reason = b.reason ? String(b.reason).trim().slice(0, 500) : null;
+      const created = await addManualPick(pool, { gameDate, homeTeam, awayTeam, homeMl, reason });
+      sendJson(res, 201, created);
+      return;
+    }
+
+    if (url.pathname.match(/^\/api\/manual-picks\/\d+$/) && req.method === 'DELETE') {
+      const id = Number(url.pathname.split('/').pop());
+      await deleteManualPick(pool, id);
+      sendJson(res, 200, { deleted: true });
+      return;
     }
 
     // --- newsletter ------------------------------------------------------

@@ -443,6 +443,60 @@ async function submitBet(e) {
 }
 
 // ---------------------------------------------------------------------------
+// MANUAL MONEYLINE PICKS
+// A direct publish path: add a pick you researched yourself without
+// waiting on or depending on the automated odds/schedule pipeline.
+function openManualPickModal() {
+  const modal = $('#manualPickModal');
+  $('#mpHomeTeam').value = '';
+  $('#mpAwayTeam').value = '';
+  $('#mpHomeMl').value = '';
+  $('#mpDate').value = state.signalsDate || state.today;
+  $('#mpReason').value = '';
+  $('#mpError').hidden = true;
+  $('#mpHint').hidden = true;
+  $('#mpSave').disabled = false;
+  modal.hidden = false;
+  $('#mpHomeTeam').focus();
+}
+
+function closeManualPickModal() { $('#manualPickModal').hidden = true; }
+
+async function submitManualPick(e) {
+  e.preventDefault();
+  const oddsRaw = $('#mpHomeMl').value.trim().replace(/^\+/, '');
+  const payload = {
+    homeTeam: $('#mpHomeTeam').value.trim(),
+    awayTeam: $('#mpAwayTeam').value.trim(),
+    homeMl: Number(oddsRaw),
+    gameDate: $('#mpDate').value,
+    reason: $('#mpReason').value.trim() || null,
+  };
+  const err = $('#mpError');
+  try {
+    $('#mpSave').disabled = true;
+    await apiSend('/api/manual-picks', 'POST', payload);
+    const hint = $('#mpHint');
+    hint.textContent = 'Added to the Moneyline section.';
+    hint.hidden = false;
+    setTimeout(() => {
+      closeManualPickModal();
+      if (state.view === 'signals') renderSignals();
+    }, 550);
+  } catch (ex) {
+    $('#mpSave').disabled = false;
+    err.textContent = ex.message;
+    err.hidden = false;
+  }
+}
+
+async function deleteManualPick(id) {
+  if (!confirm('Remove this manual pick?')) return;
+  await apiSend(`/api/manual-picks/${id}`, 'DELETE');
+  renderSignals();
+}
+
+// ---------------------------------------------------------------------------
 // MY BETS VIEW
 function resultPill(result) {
   const label = result.charAt(0).toUpperCase() + result.slice(1);
@@ -628,6 +682,23 @@ function moneylineCards(ml) {
     </div>`).join('')}</div>`;
 }
 
+function manualPickCards(picks) {
+  if (!picks?.length) return '';
+  return `<div class="sig-cards">${picks.map((p) => `
+    <div class="sig-card manual">
+      <div class="sig-head">
+        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)} <span class="manual-tag">Manual</span></span>
+        <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
+      </div>
+      <div class="sig-sub">To beat ${esc(p.awayTeam)}.${p.reason ? ` ${esc(p.reason)}` : ''}</div>
+      <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '—'} of the time at ${fmtOdds(p.homeMl)} just to break even.</div>
+      <div style="margin-top:10px;display:flex;gap:10px">
+        ${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${fmtOdds(p.homeMl)}) vs ${p.awayTeam}`, odds: p.homeMl, mlbGameId: p.mlbGameId }))}
+        <button class="btn ghost small" data-delete-manual-pick="${p.id}">Remove</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+
 function nearMissCards(otherGames) {
   if (!otherGames?.length) return '';
   return `
@@ -713,8 +784,12 @@ async function renderSignals() {
       <p class="section-sub">The day's strongest signals, ranked across all three categories. Scored by a simple, transparent heuristic — not a statistical model.</p>
       ${d.topPicks?.length ? `<div class="top-picks">${d.topPicks.map(topPickCard).join('')}</div>` : emptyHtml('Nothing today', 'No signal cleared its bar today, so nothing rose to the top.')}
 
-      <div class="section-head"><h2 class="section-title">Moneyline</h2></div>
-      <p class="section-sub">Home teams favored between -130 and -180 facing a visiting starter with a 6.00+ ERA over his last three starts.</p>
+      <div class="section-head">
+        <h2 class="section-title">Moneyline</h2>
+        <button class="btn small" style="margin-left:auto" data-add-manual-pick>Add a pick</button>
+      </div>
+      <p class="section-sub">Home teams favored between -130 and -180 facing a visiting starter with a 6.00+ ERA over his last three starts. Manual picks below are added by hand, not by the automated screener.</p>
+      ${manualPickCards(d.manualPicks)}
       ${moneylineCards(d.moneyline)}
       ${nearMissCards(d.moneyline.otherGames)}
 
@@ -854,6 +929,7 @@ async function init() {
     if (e.key === 'Escape') {
       closeGamePanel();
       closeBetModal();
+      closeManualPickModal();
     }
   });
 
@@ -866,6 +942,16 @@ async function init() {
     if (!btn) return;
     const prefill = trackData.get(Number(btn.dataset.track));
     if (prefill) openBetModal(prefill);
+  });
+
+  // Manual pick modal wiring + delegated add/delete buttons.
+  $('#manualPickForm').addEventListener('submit', submitManualPick);
+  $('#mpCancel').addEventListener('click', closeManualPickModal);
+  $('#manualPickModal').addEventListener('click', (e) => { if (e.target === $('#manualPickModal')) closeManualPickModal(); });
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-add-manual-pick]')) openManualPickModal();
+    const delBtn = e.target.closest('[data-delete-manual-pick]');
+    if (delBtn) deleteManualPick(Number(delBtn.dataset.deleteManualPick));
   });
 
   // Newsletter signup.

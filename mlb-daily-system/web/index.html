@@ -84,6 +84,39 @@
   </div>
 </div>
 
+<div id="manualPickModal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-label="Add a moneyline pick">
+    <div class="modal-title">Add a moneyline pick</div>
+    <form id="manualPickForm">
+      <div class="field-row">
+        <label class="field"><span>Home team</span>
+          <input type="text" id="mpHomeTeam" maxlength="60" required placeholder="New York Yankees">
+        </label>
+        <label class="field"><span>Away team</span>
+          <input type="text" id="mpAwayTeam" maxlength="60" required placeholder="Boston Red Sox">
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Home odds</span>
+          <input type="text" id="mpHomeMl" inputmode="numeric" required placeholder="-150" autocomplete="off">
+        </label>
+        <label class="field"><span>Game date</span>
+          <input type="date" id="mpDate" required>
+        </label>
+      </div>
+      <label class="field"><span>Reason <em>optional</em></span>
+        <input type="text" id="mpReason" maxlength="500" placeholder="Why this pick">
+      </label>
+      <div class="modal-error" id="mpError" hidden></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="mpCancel">Cancel</button>
+        <button type="submit" class="btn primary" id="mpSave">Save pick</button>
+      </div>
+      <div class="modal-hint" id="mpHint" hidden></div>
+    </form>
+  </div>
+</div>
+
 <aside id="gamePanel" class="game-panel" aria-hidden="true">
   <div class="game-panel-inner" id="gamePanelInner"></div>
 </aside>

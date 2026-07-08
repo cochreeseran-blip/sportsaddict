@@ -1,7 +1,4 @@
-import { fmtOdds } from './util/format.js';
-import { BAND_LOW, BAND_HIGH } from './filters/moneyline.js';
-
-const BAND_MID = (BAND_LOW + BAND_HIGH) / 2;
+import { fmtOdds, fmtNum } from './util/format.js';
 
 function fmtLast5(results) {
   if (!results || !results.length) return 'no data';
@@ -45,7 +42,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, 
     });
   }
 
-  console.log(`\n--- MONEYLINE (capped at 2, sorted by closeness to ${BAND_MID}) ---`);
+  console.log('\n--- MONEYLINE (home favorites, home starter holds the ERA edge) ---');
   if (moneyline.signal === 'SIT') {
     console.log('  SIT — no qualifying games today.');
   } else {
@@ -53,8 +50,9 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, 
       const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : 'n/a';
       console.log(
         `  ${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam} — ` +
-          `${p.awayStarterName ?? 'TBD'} trailing ERA ${p.awayStarterTrailingEra?.toFixed(2)} ` +
-          `(season ${p.awayStarterSeasonEra !== null ? p.awayStarterSeasonEra.toFixed(2) : 'n/a'}) — needs to hit ${breakeven} to break even`
+          `${p.homeStarterName ?? 'TBD'} (${fmtNum(p.homeStarterTrailingEra)} last 5 / ${fmtNum(p.homeStarterSeasonEra)} season) ` +
+          `vs ${p.awayStarterName ?? 'TBD'} (${fmtNum(p.awayStarterTrailingEra)} last 5 / ${fmtNum(p.awayStarterSeasonEra)} season) — ` +
+          `needs to hit ${breakeven} to break even`
       );
     }
   }

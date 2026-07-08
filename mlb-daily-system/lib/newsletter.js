@@ -83,7 +83,7 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
         .map((p) =>
           pickBlock({
             headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam}`,
-            detail: `${p.awayStarterName ?? 'Their starter'} has a ${p.awayStarterTrailingEra?.toFixed(2) ?? '—'} ERA over his last 3 starts.`,
+            detail: `${p.homeStarterName ?? 'The home starter'} (${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? '—'} ERA) has the edge over ${p.awayStarterName ?? 'the visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? '—'}).`,
           })
         )
         .join('')

@@ -240,48 +240,67 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // swap usually needs no extra fetch here — only an emergency call-up
   // who wasn't on the roster yet at pull time falls back to a live one.
   const { rows: bandGames } = await pool.query(
-    'SELECT mlb_game_id, home_team, away_team, away_starter_id, away_starter_name FROM games WHERE game_date = $1 AND home_ml IS NOT NULL AND home_ml BETWEEN $2 AND $3',
+    `SELECT mlb_game_id, home_team, away_team,
+            home_starter_id, home_starter_name, away_starter_id, away_starter_name
+     FROM games WHERE game_date = $1 AND home_ml IS NOT NULL AND home_ml BETWEEN $2 AND $3`,
     [gameDate, BAND_LOW, BAND_HIGH]
   );
+
+  // Make sure this pitcher's trailing/season ERA is on file, fetching it
+  // live only if the full-roster pass didn't already capture it (e.g. an
+  // emergency call-up who wasn't rostered at pull time).
+  async function ensurePitcherForm(pitcherId, pitcherName) {
+    const { rows: existing } = await pool.query(
+      'SELECT 1 FROM pitcher_form WHERE game_date = $1 AND pitcher_id = $2',
+      [gameDate, pitcherId]
+    );
+    if (existing.length) return;
+    const [gameLog, seasonEra] = await Promise.all([
+      mlb.fetchPitcherGameLog(pitcherId, season),
+      mlb.fetchPitcherSeasonEra(pitcherId, season),
+    ]);
+    await upsertPitcherForm(pool, {
+      gameDate,
+      pitcherId,
+      pitcherName,
+      seasonEra,
+      ...computeTrailingPitcherStats(gameLog),
+      ...computeStrikeoutStats(gameLog),
+    });
+  }
+
+  // The new moneyline screener compares BOTH starters (home must have the
+  // better ERA), so re-confirm both probables here, not just the visitor.
   let pitcherSwaps = 0;
   for (const g of bandGames) {
+    let fresh;
     try {
-      const fresh = await mlb.fetchGameProbables(g.mlb_game_id);
-      if (!fresh || !fresh.awayStarterId) continue;
-      if (fresh.awayStarterId !== g.away_starter_id) {
-        pitcherSwaps++;
-        warnings.push(
-          `Probable starter changed for ${g.away_team} @ ${g.home_team}: was ${g.away_starter_name ?? 'unknown'}, ` +
-            `now ${fresh.awayStarterName ?? 'unknown'}. Refreshed before scoring this pick.`
-        );
-        await pool.query('UPDATE games SET away_starter_id = $1, away_starter_name = $2 WHERE mlb_game_id = $3', [
-          fresh.awayStarterId,
-          fresh.awayStarterName,
-          g.mlb_game_id,
-        ]);
-        const { rows: existing } = await pool.query(
-          'SELECT 1 FROM pitcher_form WHERE game_date = $1 AND pitcher_id = $2',
-          [gameDate, fresh.awayStarterId]
-        );
-        if (!existing.length) {
-          const [gameLog, seasonEra] = await Promise.all([
-            mlb.fetchPitcherGameLog(fresh.awayStarterId, season),
-            mlb.fetchPitcherSeasonEra(fresh.awayStarterId, season),
-          ]);
-          const trailing = computeTrailingPitcherStats(gameLog);
-          const strikeouts = computeStrikeoutStats(gameLog);
-          await upsertPitcherForm(pool, {
-            gameDate,
-            pitcherId: fresh.awayStarterId,
-            pitcherName: fresh.awayStarterName,
-            seasonEra,
-            ...trailing,
-            ...strikeouts,
-          });
-        }
-      }
+      fresh = await mlb.fetchGameProbables(g.mlb_game_id);
     } catch (err) {
-      warnings.push(`Could not re-confirm the probable starter for ${g.away_team} @ ${g.home_team} — check manually. (${err.message})`);
+      warnings.push(`Could not re-confirm the probable starters for ${g.away_team} @ ${g.home_team} — check manually. (${err.message})`);
+      continue;
+    }
+    if (!fresh) continue;
+    const sides = [
+      { side: 'home', col: 'home_starter', freshId: fresh.homeStarterId, freshName: fresh.homeStarterName, oldId: g.home_starter_id, oldName: g.home_starter_name },
+      { side: 'away', col: 'away_starter', freshId: fresh.awayStarterId, freshName: fresh.awayStarterName, oldId: g.away_starter_id, oldName: g.away_starter_name },
+    ];
+    for (const s of sides) {
+      if (!s.freshId || s.freshId === s.oldId) continue;
+      pitcherSwaps++;
+      warnings.push(
+        `${s.side === 'home' ? g.home_team : g.away_team}'s probable starter changed: was ${s.oldName ?? 'unknown'}, ` +
+          `now ${s.freshName ?? 'unknown'}. Refreshed before scoring this pick.`
+      );
+      await pool.query(
+        `UPDATE games SET ${s.col}_id = $1, ${s.col}_name = $2 WHERE mlb_game_id = $3`,
+        [s.freshId, s.freshName, g.mlb_game_id]
+      );
+      try {
+        await ensurePitcherForm(s.freshId, s.freshName);
+      } catch (err) {
+        warnings.push(`Could not load form for ${s.freshName ?? s.freshId} — check manually. (${err.message})`);
+      }
     }
   }
   if (bandGames.length) {

@@ -691,15 +691,36 @@ function playerCell(b, extraPills = '') {
     </div>`;
 }
 
+// Two-line ERA readout for a starter: last-5-starts figure with the
+// season figure alongside, whichever exists.
+function starterEra(name, trailing, season, highlight) {
+  const primary = trailing ?? season;
+  const cls = highlight ? 'era-good' : primary !== null && primary >= 6 ? 'era-bad' : '';
+  return `
+    <div class="ml-starter">
+      <div class="ml-starter-name">${esc(name ?? 'TBD')}</div>
+      <div class="ml-starter-era">
+        <span class="${cls}">${fmtNum(trailing)}</span> <span class="faint">last 5</span>
+        &nbsp;·&nbsp; ${fmtNum(season)} <span class="faint">season</span>
+      </div>
+    </div>`;
+}
+
 function moneylinePickCard(p) {
   const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '—';
+  const edge = p.eraEdge !== null && p.eraEdge !== undefined ? fmtNum(p.eraEdge) : null;
   return `
     <div class="sig-card">
       <div class="sig-head">
         <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)}</span>
         <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
       </div>
-      <div class="sig-sub">To beat ${esc(p.awayTeam)}. ${esc(p.awayStarterName ?? 'Their starter')} carries a <strong>${fmtNum(p.awayStarterTrailingEra)} ERA over his last 3 starts</strong> (season ${fmtNum(p.awayStarterSeasonEra)}).</div>
+      <div class="sig-sub">To beat ${esc(p.awayTeam)} at home${edge ? ` — home starter's ERA is <strong>${edge} runs better</strong> (${esc(p.eraBasis ?? '')})` : ''}.</div>
+      <div class="ml-matchup">
+        ${starterEra(p.homeStarterName, p.homeStarterTrailingEra, p.homeStarterSeasonEra, true)}
+        <span class="ml-vs">vs</span>
+        ${starterEra(p.awayStarterName, p.awayStarterTrailingEra, p.awayStarterSeasonEra, false)}
+      </div>
       <div class="sig-note">Needs to win ${breakeven} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.</div>
       <div style="margin-top:10px">${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${fmtOdds(p.homeMl)}) vs ${p.awayTeam}`, odds: p.homeMl, mlbGameId: p.mlbGameId }))}</div>
     </div>`;
@@ -707,7 +728,7 @@ function moneylinePickCard(p) {
 
 function moneylineCards(ml) {
   if (ml.signal === 'SIT' || !ml.picks?.length) {
-    return emptyHtml('SIT — no qualifying games', 'No matchup today pairs a home favorite between -100 and -200 with a visiting starter carrying a 6.00+ ERA over his last three starts. The nearest misses are listed below.');
+    return emptyHtml('SIT — no qualifying games', 'No home favorite between -100 and -250 today whose starting pitcher has the better ERA than the visitor. The nearest misses are listed below.');
   }
   return `<div class="sig-cards">${ml.picks.map(moneylinePickCard).join('')}</div>`;
 }
@@ -844,7 +865,7 @@ async function renderSignals() {
         <span class="section-freshness">${d.updatedAt ? `Screener last ran ${esc(fmtRunTime(d.updatedAt))}` : 'Screener has not run yet'}</span>
         <button class="btn small" style="margin-left:auto" data-add-manual-pick>Add a pick</button>
       </div>
-      <p class="section-sub">Home favorites between -100 and -200 whose opposing starter has been getting hit.</p>
+      <p class="section-sub">Home favorites between -100 and -250 whose starting pitcher has the better ERA (last 5 starts) than the visitor.</p>
       ${manualPickCards(d.manualPicks)}
       ${moneylineCards(d.moneyline)}
 

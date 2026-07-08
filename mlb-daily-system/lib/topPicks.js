@@ -1,9 +1,7 @@
 import { fmtOdds, fmtNum } from './util/format.js';
-import { BAND_LOW, BAND_HIGH } from './filters/moneyline.js';
 
 const ERA_STRUGGLE_GATE = 6.0;
 const UNCONFIRMED_LINEUP_PENALTY = 2.5;
-const BAND_MID = (BAND_LOW + BAND_HIGH) / 2;
 
 function lineupWarning(lineupConfirmed) {
   return lineupConfirmed === false
@@ -22,17 +20,18 @@ function lineupWarning(lineupConfirmed) {
 // real edge.
 function moneylineCandidates(moneyline) {
   return (moneyline?.picks || []).map((p) => {
-    const era = p.awayStarterTrailingEra ?? ERA_STRUGGLE_GATE;
-    const centeredBonus = Math.max(0, 2.5 - Math.abs(p.homeMl - BAND_MID) / 10);
+    // Score = how big the home starter's ERA advantage is, scaled to sit
+    // on the same rough range as the batter signals' scores.
+    const edge = p.eraEdge ?? 0;
     return {
       type: 'moneyline',
       key: `ml:${p.homeTeam}:${p.awayTeam}`,
-      score: era + centeredBonus,
+      score: 6 + edge * 1.5,
       mlbGameId: p.mlbGameId ?? null,
       homeTeam: p.homeTeam,
       awayTeam: p.awayTeam,
       headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}`,
-      detail: `${p.awayStarterName ?? 'Their starting pitcher'} has a ${fmtNum(p.awayStarterTrailingEra)} ERA over his last 3 starts — he's been getting hit hard.`,
+      detail: `${p.homeStarterName ?? 'The home starter'} (${fmtNum(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)} ERA) holds the pitching edge over ${p.awayStarterName ?? 'the visitor'} (${fmtNum(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)}), ${p.eraBasis ?? 'recent form'}.`,
     };
   });
 }

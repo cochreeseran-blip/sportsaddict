@@ -1043,8 +1043,6 @@ async function renderSignals() {
         <span class="toolbar-note" style="margin-left:auto">Percentages are estimates from recent form, not guarantees.</span>
       </div>
 
-      ${digestWarningBanner(d.warnings)}
-
       <div class="board-head">
         <h2 class="board-title">Moneyline</h2>
         <button class="btn small" data-add-manual-pick>Add a pick</button>
@@ -1062,7 +1060,9 @@ async function renderSignals() {
       ${strikeoutSection(d.strikeouts)}
 
       <h2 class="board-title">Close Calls</h2>
-      ${nearMissCards(d.moneyline.otherGames) || emptyHtml('Nothing else evaluated', 'Every home favorite today either qualified or there were none.')}`;
+      ${nearMissCards(d.moneyline.otherGames) || emptyHtml('Nothing else evaluated', 'Every home favorite today either qualified or there were none.')}
+
+      ${digestWarningBanner(d.warnings)}`;
 
     $('#signalsDate').addEventListener('change', (e) => {
       state.signalsDate = e.target.value;

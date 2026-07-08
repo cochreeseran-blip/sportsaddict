@@ -3,7 +3,6 @@ import http from 'node:http';
 import { pool } from './lib/db.js';
 import { runMigrations } from './lib/migrate.js';
 import { runPipeline, todayIsoDate } from './lib/pipeline.js';
-import { buildTopPicks } from './lib/topPicks.js';
 import { fmtOdds, fmtNum } from './lib/util/format.js';
 
 // Railway injects PORT dynamically — binding to a fixed port would fail.
@@ -109,12 +108,6 @@ function pitcherBadge(era) {
     : `<span class="badge good">PITCHING WELL (${fmtNum(era)} ERA)</span>`;
 }
 
-const TOP_PICK_LABEL = {
-  moneyline: '💰 Moneyline',
-  hit_streak: '🔥 Hot hitter',
-  wind_hr: '💨 Home run weather',
-};
-
 function renderLast5(results) {
   if (!results || !results.length) return '<span class="muted">no data</span>';
   return `<span class="last5">${results.map((hit) => (hit ? '✅' : '❌')).join(' ')}</span>`;
@@ -124,28 +117,6 @@ function lineupBadge(confirmed) {
   if (confirmed === true) return '<span class="badge good">✅ Confirmed lineup</span>';
   if (confirmed === false) return '<span class="badge warn">⚠️ Projected — not confirmed</span>';
   return '';
-}
-
-function renderTopPicks(topPicks) {
-  if (!topPicks.length) {
-    return `<p class="empty">Not enough qualifying signals today for a top 3 — check the sections below, or try again once more games have data.</p>`;
-  }
-  const cards = topPicks
-    .map(
-      (p, i) => `
-      <div class="card top-pick">
-        <div class="top-pick-rank">#${i + 1}</div>
-        <div class="top-pick-body">
-          <div class="badge hot">${TOP_PICK_LABEL[p.type] ?? 'Pick'}</div>
-          ${p.lineupConfirmed !== undefined ? `<div>${lineupBadge(p.lineupConfirmed)}</div>` : ''}
-          <div class="card-title">${escapeHtml(p.headline)}</div>
-          <div class="card-row muted">${escapeHtml(p.detail)}</div>
-          ${p.last5Results ? `<div class="card-row">Last 5 games: ${renderLast5(p.last5Results)}</div>` : ''}
-        </div>
-      </div>`
-    )
-    .join('');
-  return `<div class="cards top-picks">${cards}</div>`;
 }
 
 function renderOtherGames(otherGames) {
@@ -177,6 +148,7 @@ function renderMoneylineSection(moneyline) {
                 ${pitcherBadge(p.awayStarterTrailingEra)}
                 <span class="muted">(his ERA for the whole season is ${fmtNum(p.awayStarterSeasonEra)} — this pick only cares about his last 3 starts, not the full season)</span>
               </div>
+              <div class="card-row muted">Needs to hit ${p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : 'n/a'} of the time at this price (${fmtOdds(p.homeMl)}) just to break even — not a claim it actually will.</div>
             </div>`
           )
           .join('')}</div>`;
@@ -286,9 +258,6 @@ function renderPage({ gameDate, availableDates, digest }) {
   .glossary summary { cursor: pointer; color: inherit; font-size: 0.9rem; margin-bottom: 8px; }
   .glossary ul { margin: 8px 0 0; padding-left: 20px; }
   .glossary li { margin-bottom: 6px; }
-  .top-picks .card.top-pick { display: flex; gap: 14px; align-items: flex-start; border-left: 4px solid #d97706; }
-  .top-pick-rank { font-size: 1.6rem; font-weight: 700; color: #d97706; min-width: 34px; }
-  .top-pick-body .badge { margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -305,11 +274,7 @@ function renderPage({ gameDate, availableDates, digest }) {
   </p>
   <p class="muted" style="margin-top:-6px;">Automatic checks run daily around ${REFRESH_HOURS_UTC.map(etLabel).join(', ')} ET. Lineups usually aren't posted until 1-3 hours before a given game, so for the most accurate ✅/⚠️ status, hit "Refresh now" yourself shortly before first pitch.</p>
 
-  <h2 style="margin-top:1rem;">🏆 Top 3 Picks Today</h2>
-  ${renderTopPicks(buildTopPicks(digest))}
-  <p class="muted" style="margin-top:8px;">The strongest pick from each category, pooled and ranked together — not a recommendation to parlay them, just today's best individual looks.</p>
-
-  <p class="intro">This page looks for three simple situations in today's MLB games: a home team favored against a struggling opposing pitcher, hitters who are on a hot streak, and parks where the wind is helping the ball fly out for home runs. Nothing here is a guarantee — it's just numbers worth a second look.</p>
+  <p class="intro">This page looks for three separate, unrelated situations in today's MLB games — a home team favored against a struggling opposing pitcher, hitters who are on a hot streak, and parks where the wind is helping the ball fly out for home runs. Each section below stands on its own; there's no blended "best pick" ranking across categories, since there isn't yet enough graded history to know how they should be weighted against each other. See <code>npm run report</code> once results start accumulating.</p>
 
   <details class="glossary">
     <summary>What do these terms mean?</summary>

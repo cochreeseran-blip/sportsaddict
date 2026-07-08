@@ -9,6 +9,7 @@ import { runMoneylineFilter } from './filters/moneyline.js';
 import { runHitStreakFilter } from './filters/hitStreak.js';
 import { runWindHrFilter } from './filters/windHr.js';
 import { saveDigest } from './digest.js';
+import { recordTrackedPicks } from './trackedPicks.js';
 
 export function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
@@ -180,10 +181,11 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     if (g.venue && !venues.has(g.venue)) venues.set(g.venue, g.gameDate);
   }
   let windOk = 0;
+  let windSkippedUnverified = 0;
   for (const [venue, gameTimeUtc] of venues) {
     try {
       const { rows } = await pool.query(
-        'SELECT latitude, longitude, out_bearing_degrees FROM park_orientations WHERE lower(venue) = lower($1)',
+        'SELECT latitude, longitude, out_bearing_degrees, confidence FROM park_orientations WHERE lower(venue) = lower($1)',
         [venue]
       );
       if (!rows.length) {
@@ -191,6 +193,19 @@ export async function runPipeline(gameDate = todayIsoDate()) {
         continue;
       }
       const { latitude, longitude, out_bearing_degrees } = rows[0];
+      if (out_bearing_degrees === null) {
+        // Bearing is unverified (see migration 004) — computing "blowing
+        // out" from an unknown orientation would be exactly the silent
+        // guess this table was fixed to stop doing. Explicitly clear any
+        // stale wind_blowing_out from a prior run rather than leaving it.
+        windSkippedUnverified++;
+        warnings.push(`Park orientation for "${venue}" is unverified (no confirmed bearing) — wind check skipped.`);
+        await pool.query('UPDATE games SET wind_speed_mph = NULL, wind_blowing_out = NULL WHERE game_date = $1 AND venue = $2', [
+          gameDate,
+          venue,
+        ]);
+        continue;
+      }
       const wind = await fetchWindAt(latitude, longitude, gameTimeUtc);
       if (!wind) {
         warnings.push(`Weather data unavailable for ${venue} — check manually.`);
@@ -209,16 +224,20 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       console.warn(`  Weather fetch failed for ${venue}: ${err.message}`);
     }
   }
-  log(`Weather: ${windOk}/${venues.size} venue(s) updated.`);
+  log(`Weather: ${windOk}/${venues.size} venue(s) updated (${windSkippedUnverified} skipped — unverified park orientation).`);
 
   // Filters + digest
   const moneyline = await runMoneylineFilter(pool, gameDate);
   const hitStreak = await runHitStreakFilter(pool, gameDate);
   const windHr = await runWindHrFilter(pool, gameDate);
+  warnings.push(...(windHr.warnings || []));
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
   await saveDigest(pool, gameDate, 'wind_hr', windHr);
+
+  const trackedCount = await recordTrackedPicks(pool, gameDate, { moneyline, hitStreak, windHr });
+  log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
 
   return { gameDate, warnings, moneyline, hitStreak, windHr };
 }

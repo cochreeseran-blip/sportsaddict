@@ -1,5 +1,4 @@
 import { fmtOdds } from './util/format.js';
-import { buildTopPicks } from './topPicks.js';
 
 function fmtLast5(results) {
   if (!results || !results.length) return 'no data';
@@ -30,26 +29,16 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
     for (const w of warnings) console.log(`  - ${w}`);
   }
 
-  const topPicks = buildTopPicks({ moneyline, hitStreak, windHr });
-  console.log('\n--- TOP 3 PICKS TODAY ---');
-  if (!topPicks.length) {
-    console.log('  Not enough qualifying signals today for a top 3.');
-  } else {
-    topPicks.forEach((p, i) => {
-      console.log(`  ${i + 1}. ${p.headline}`);
-      console.log(`     ${p.detail}`);
-    });
-  }
-
-  console.log('\n--- MONEYLINE ---');
+  console.log('\n--- MONEYLINE (capped at 2, sorted by closeness to -155) ---');
   if (moneyline.signal === 'SIT') {
     console.log('  SIT — no qualifying games today.');
   } else {
     for (const p of moneyline.picks) {
+      const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : 'n/a';
       console.log(
         `  ${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam} — ` +
           `${p.awayStarterName ?? 'TBD'} trailing ERA ${p.awayStarterTrailingEra?.toFixed(2)} ` +
-          `(season ${p.awayStarterSeasonEra !== null ? p.awayStarterSeasonEra.toFixed(2) : 'n/a'})`
+          `(season ${p.awayStarterSeasonEra !== null ? p.awayStarterSeasonEra.toFixed(2) : 'n/a'}) — needs to hit ${breakeven} to break even`
       );
     }
   }

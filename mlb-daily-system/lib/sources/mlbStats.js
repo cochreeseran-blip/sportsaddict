@@ -67,6 +67,21 @@ export async function fetchBatterGameLog(batterId, season) {
   return [...splits].sort((a, b) => new Date(b.date) - new Date(a.date));
 }
 
+// Final score + status for a specific game, used by the grading script.
+export async function fetchGameResult(gamePk) {
+  const url = `${BASE}/schedule?gamePk=${gamePk}`;
+  const data = await fetchJson(url);
+  const game = data.dates?.[0]?.games?.[0];
+  if (!game) return null;
+  return {
+    isFinal: game.status?.abstractGameState === 'Final',
+    homeTeam: game.teams?.home?.team?.name ?? null,
+    awayTeam: game.teams?.away?.team?.name ?? null,
+    homeScore: game.teams?.home?.score ?? null,
+    awayScore: game.teams?.away?.score ?? null,
+  };
+}
+
 // Best-effort today's lineup for a team/game. MLB only posts official
 // lineups a couple of hours before first pitch, so this can legitimately
 // come back empty earlier in the day - callers fall back to the active

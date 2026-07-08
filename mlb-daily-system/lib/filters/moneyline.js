@@ -1,4 +1,5 @@
 import { fmtOdds } from '../util/format.js';
+import { breakevenPct } from '../breakeven.js';
 
 const BAND_LOW = -180;
 const BAND_HIGH = -130;
@@ -17,7 +18,7 @@ const MAX_OTHER_GAMES = 5;
 // 2-pick cap) are returned as `otherGames`.
 export async function runMoneylineFilter(pool, gameDate) {
   const { rows } = await pool.query(
-    `SELECT g.id AS game_id, g.home_team, g.away_team, g.home_ml, g.away_starter_id, g.away_starter_name,
+    `SELECT g.id AS game_id, g.mlb_game_id, g.home_team, g.away_team, g.home_ml, g.away_starter_id, g.away_starter_name,
             pf.trailing_era AS away_trailing_era, pf.season_era AS away_season_era
      FROM games g
      LEFT JOIN pitcher_form pf
@@ -56,9 +57,11 @@ export async function runMoneylineFilter(pool, gameDate) {
 
     return {
       gameId: r.game_id,
+      mlbGameId: r.mlb_game_id,
       homeTeam: r.home_team,
       awayTeam: r.away_team,
       homeMl,
+      breakevenPct: breakevenPct(homeMl),
       awayStarterName: r.away_starter_name,
       awayStarterTrailingEra: trailingEra,
       awayStarterSeasonEra: r.away_season_era !== null ? Number(r.away_season_era) : null,

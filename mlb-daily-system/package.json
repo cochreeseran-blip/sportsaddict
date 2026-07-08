@@ -11,7 +11,11 @@
     "migrate": "node scripts/migrate.js",
     "job": "node job.js",
     "serve": "node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "grade": "node scripts/grade.js",
+    "report": "node scripts/report.js",
+    "closing": "node scripts/closing.js",
+    "parks": "node scripts/parks.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

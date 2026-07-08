@@ -1,6 +1,7 @@
 const ERA_GATE = 6.0;
 
 export async function runWindHrFilter(pool, gameDate) {
+  const warnings = [];
   const { rows: allBatters } = await pool.query('SELECT * FROM batter_form WHERE game_date = $1', [gameDate]);
 
   const hrRates = allBatters
@@ -9,7 +10,7 @@ export async function runWindHrFilter(pool, gameDate) {
     .sort((a, b) => a - b);
 
   if (!hrRates.length) {
-    return { watchList: [], highConfidence: [], hrRateThreshold: null };
+    return { watchList: [], highConfidence: [], hrRateThreshold: null, warnings };
   }
 
   // Top third of today's full batter set, computed dynamically rather than
@@ -17,10 +18,30 @@ export async function runWindHrFilter(pool, gameDate) {
   const cutoffIdx = Math.floor((2 / 3) * (hrRates.length - 1));
   const hrRateThreshold = hrRates[cutoffIdx];
 
+  // Independent guard against unverified park orientation, on top of
+  // pipeline.js already refusing to set wind_blowing_out=true for those
+  // parks. This belt-and-suspenders check protects against stale
+  // wind_blowing_out=true rows left over from before park orientations
+  // were verified (see migration 004) — this filter should never trust
+  // that flag without re-confirming the park's bearing is actually known.
   const { rows: windGames } = await pool.query(
-    'SELECT * FROM games WHERE game_date = $1 AND wind_blowing_out = true',
+    `SELECT g.*
+     FROM games g
+     LEFT JOIN park_orientations po ON lower(po.venue) = lower(g.venue)
+     WHERE g.game_date = $1 AND g.wind_blowing_out = true AND po.out_bearing_degrees IS NOT NULL`,
     [gameDate]
   );
+
+  const { rows: staleWindGames } = await pool.query(
+    `SELECT g.venue
+     FROM games g
+     LEFT JOIN park_orientations po ON lower(po.venue) = lower(g.venue)
+     WHERE g.game_date = $1 AND g.wind_blowing_out = true AND po.out_bearing_degrees IS NULL`,
+    [gameDate]
+  );
+  for (const g of staleWindGames) {
+    warnings.push(`Skipped wind/HR check at "${g.venue}" — park orientation is unverified, ignoring a stale wind_blowing_out flag.`);
+  }
 
   const { rows: pitchers } = await pool.query(
     'SELECT pitcher_id, trailing_era FROM pitcher_form WHERE game_date = $1',
@@ -53,6 +74,8 @@ export async function runWindHrFilter(pool, gameDate) {
         const hrRate = b.trailing_15_hr_rate !== null ? Number(b.trailing_15_hr_rate) : null;
         if (hrRate === null || hrRate < hrRateThreshold) continue;
         watchList.push({
+          mlbGameId: g.mlb_game_id,
+          batterId: b.batter_id,
           batterName: b.batter_name,
           team,
           trailing15HrRate: hrRate,
@@ -72,5 +95,6 @@ export async function runWindHrFilter(pool, gameDate) {
     watchList,
     highConfidence: watchList.filter((r) => r.highConfidence),
     hrRateThreshold,
+    warnings,
   };
 }

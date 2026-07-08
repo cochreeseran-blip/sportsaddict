@@ -7,9 +7,12 @@ export async function runHitStreakFilter(pool, gameDate) {
 
   // Opponent starter for a given team's batters (the *other* team's starter).
   const opponentByTeam = new Map();
+  const gameIdByTeam = new Map();
   for (const g of games) {
     opponentByTeam.set(g.home_team, { starterId: g.away_starter_id, starterName: g.away_starter_name });
     opponentByTeam.set(g.away_team, { starterId: g.home_starter_id, starterName: g.home_starter_name });
+    gameIdByTeam.set(g.home_team, g.mlb_game_id);
+    gameIdByTeam.set(g.away_team, g.mlb_game_id);
   }
 
   const { rows: pitchers } = await pool.query(
@@ -30,6 +33,8 @@ export async function runHitStreakFilter(pool, gameDate) {
     const opponentTrailingEra =
       opp?.starterId != null ? trailingEraByPitcherId.get(opp.starterId) ?? null : null;
     return {
+      mlbGameId: gameIdByTeam.get(b.team) ?? null,
+      batterId: b.batter_id,
       batterName: b.batter_name,
       team: b.team,
       hitStreak: b.hit_streak,

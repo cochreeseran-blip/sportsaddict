@@ -86,14 +86,14 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       );
     }
   } catch (err) {
-    warnings.push(`MLB schedule unavailable — check manually. (${err.message})`);
+    warnings.push(`MLB schedule unavailable, check manually. (${err.message})`);
     console.warn(`  Schedule fetch failed: ${err.message}`);
   }
 
-  // 2. Odds — matched against the in-memory schedule by team name. A
+  // 2. Odds, matched against the in-memory schedule by team name. A
   // single unmatched/missing game is logged and skipped, not fatal.
   if (!process.env.ODDS_API_KEY) {
-    warnings.push('Odds data unavailable — ODDS_API_KEY not set. Check manually.');
+    warnings.push('Odds data unavailable, ODDS_API_KEY not set. Check manually.');
   } else {
     try {
       const moneylines = await fetchMoneylines(process.env.ODDS_API_KEY);
@@ -107,7 +107,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
         );
         if (!m || (m.homeMl === null && m.awayMl === null)) {
           unmatched.push(`${g.awayTeamName} @ ${g.homeTeamName}`);
-          console.warn(`  Odds: no match/line for ${g.awayTeamName} @ ${g.homeTeamName} — skipping.`);
+          console.warn(`  Odds: no match/line for ${g.awayTeamName} @ ${g.homeTeamName}, skipping.`);
           continue;
         }
         await pool.query('UPDATE games SET home_ml = $1, away_ml = $2 WHERE mlb_game_id = $3', [
@@ -119,25 +119,25 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       }
       log(`Odds: matched ${matched}/${scheduleGames.length} game(s).`);
       // Per-game mismatches used to only go to console.warn, which nobody
-      // using the site could ever see — this was the second half of the
+      // using the site could ever see, this was the second half of the
       // "moneyline is empty and nobody knows why" bug (the first half was
       // the top-level ODDS_API_KEY check above). Surface it for real.
       if (scheduleGames.length > 0 && matched === 0) {
         const sample = moneylines.slice(0, 5).map((m) => `${m.awayTeam} @ ${m.homeTeam}`).join('; ');
         warnings.push(
-          `Odds data fetched but matched 0 of ${scheduleGames.length} games by team name — check manually. ` +
+          `Odds data fetched but matched 0 of ${scheduleGames.length} games by team name, check manually. ` +
             `The Odds API returned ${moneylines.length} game(s)${sample ? `, e.g. ${sample}` : ''}.`
         );
       } else if (unmatched.length) {
         warnings.push(`No moneyline found for ${unmatched.length} game(s): ${unmatched.join('; ')}`);
       }
     } catch (err) {
-      warnings.push(`Odds data unavailable — check manually. (${err.message})`);
+      warnings.push(`Odds data unavailable, check manually. (${err.message})`);
       console.warn(`  Odds fetch failed: ${err.message}`);
     }
   }
 
-  // 3. Full active roster — every pitcher and every position player on
+  // 3. Full active roster, every pitcher and every position player on
   // both teams' 26-man active rosters, for every game today. Not just
   // today's two probable starters and the confirmed lineup: the whole
   // staff and the whole bench. Many more API calls than pulling just the
@@ -146,7 +146,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // MLB Stats API. Every signal ends up scored off a complete roster
   // picture, and a probable-pitcher swap or a hot bench bat doesn't need
   // its own extra live
-  // fetch — the data's already on file from this pass.
+  // fetch, the data's already on file from this pass.
   const gameSideByTeam = new Map(); // teamId -> { gamePk, side }
   const teamNameById = new Map();
   for (const g of scheduleGames) {
@@ -174,7 +174,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
         const confirmed = await mlb.fetchConfirmedLineup(gameSide.gamePk, gameSide.side);
         if (confirmed.length) confirmedSet = new Set(confirmed.map((p) => p.id));
       } catch (err) {
-        warnings.push(`Batter lineup unavailable for ${team} — check manually. (${err.message})`);
+        warnings.push(`Batter lineup unavailable for ${team}, check manually. (${err.message})`);
         console.warn(`  Lineup fetch failed for ${team}: ${err.message}`);
       }
     }
@@ -186,7 +186,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     try {
       roster = await mlb.fetchActiveRoster(teamId);
     } catch (err) {
-      warnings.push(`Active roster unavailable for ${team} — check manually. (${err.message})`);
+      warnings.push(`Active roster unavailable for ${team}, check manually. (${err.message})`);
       console.warn(`  Roster fetch failed for ${team}: ${err.message}`);
       continue;
     }
@@ -203,7 +203,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
         await upsertPitcherForm(pool, { gameDate, pitcherId: pitcher.id, pitcherName: pitcher.fullName, seasonEra, ...trailing, ...strikeouts });
         pitcherOk++;
       } catch (err) {
-        warnings.push(`Pitcher form unavailable for ${pitcher.fullName ?? pitcher.id} — check manually. (${err.message})`);
+        warnings.push(`Pitcher form unavailable for ${pitcher.fullName ?? pitcher.id}, check manually. (${err.message})`);
       }
     });
 
@@ -224,7 +224,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
         });
         battersOk++;
       } catch (err) {
-        warnings.push(`Batter form unavailable for ${hitter.fullName ?? hitter.id} — check manually. (${err.message})`);
+        warnings.push(`Batter form unavailable for ${hitter.fullName ?? hitter.id}, check manually. (${err.message})`);
       }
     });
   }
@@ -236,7 +236,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // broken when nothing is wrong.
   if (lineupsPending.length) {
     warnings.push(
-      `Lineups not posted yet for ${lineupsPending.length} of ${teamNameById.size} team(s) — normal until 1-3 hours ` +
+      `Lineups not posted yet for ${lineupsPending.length} of ${teamNameById.size} team(s), normal until 1-3 hours ` +
         `before each game. Their batters show as projected, and refresh again closer to game time to pick them up.`
     );
   }
@@ -249,7 +249,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // fetch. Scoped to just the odds-qualifying games (typically a
   // handful, not the whole slate). The full-roster pass above already
   // has trailing ERA on file for whoever's on the active roster, so a
-  // swap usually needs no extra fetch here — only an emergency call-up
+  // swap usually needs no extra fetch here, only an emergency call-up
   // who wasn't on the roster yet at pull time falls back to a live one.
   const { rows: bandGames } = await pool.query(
     `SELECT mlb_game_id, home_team, away_team,
@@ -289,7 +289,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     try {
       fresh = await mlb.fetchGameProbables(g.mlb_game_id);
     } catch (err) {
-      warnings.push(`Could not re-confirm the probable starters for ${g.away_team} @ ${g.home_team} — check manually. (${err.message})`);
+      warnings.push(`Could not re-confirm the probable starters for ${g.away_team} @ ${g.home_team}, check manually. (${err.message})`);
       continue;
     }
     if (!fresh) continue;
@@ -311,7 +311,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       try {
         await ensurePitcherForm(s.freshId, s.freshName);
       } catch (err) {
-        warnings.push(`Could not load form for ${s.freshName ?? s.freshId} — check manually. (${err.message})`);
+        warnings.push(`Could not load form for ${s.freshName ?? s.freshId}, check manually. (${err.message})`);
       }
     }
   }
@@ -319,7 +319,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     log(`Pitcher re-confirmation: checked ${bandGames.length} moneyline-band game(s), ${pitcherSwaps} swap(s) found.`);
   }
 
-  // 4b. Park bearings — sync every venue's field orientation from MLB's
+  // 4b. Park bearings, sync every venue's field orientation from MLB's
   // venues endpoint (one request), validated against the league-wide
   // orientation band before anything is stored. This is what feeds the
   // wind/HR filter; without it every park sits at "unverified" and the
@@ -330,7 +330,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   }
   log(`Park bearings: ${bearingSync.updated} venue(s) synced from MLB${bearingSync.skipped ? `, ${bearingSync.skipped} skipped` : ''}.`);
 
-  // 5. Weather — one lookup per unique venue playing today.
+  // 5. Weather, one lookup per unique venue playing today.
   const venues = new Map();
   for (const g of scheduleGames) {
     if (g.venue && !venues.has(g.venue)) venues.set(g.venue, g.gameDate);
@@ -350,7 +350,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       }
       const { latitude, longitude, out_bearing_degrees } = rows[0];
       if (out_bearing_degrees === null) {
-        // Bearing is unverified — computing "blowing out" from an unknown
+        // Bearing is unverified, computing "blowing out" from an unknown
         // orientation would be a silent guess. Explicitly clear any stale
         // wind_blowing_out from a prior run rather than leaving it.
         windSkippedUnverified++;
@@ -363,7 +363,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       }
       const wind = await fetchWindAt(latitude, longitude, gameTimeUtc);
       if (!wind) {
-        warnings.push(`Weather data unavailable for ${venue} — check manually.`);
+        warnings.push(`Weather data unavailable for ${venue}, check manually.`);
         continue;
       }
       const blowingOut = isWindBlowingOut(wind.windDirectionFromDegrees, Number(out_bearing_degrees), wind.windSpeedMph);
@@ -375,7 +375,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       ]);
       windOk++;
     } catch (err) {
-      warnings.push(`Weather data unavailable for ${venue} — check manually. (${err.message})`);
+      warnings.push(`Weather data unavailable for ${venue}, check manually. (${err.message})`);
       console.warn(`  Weather fetch failed for ${venue}: ${err.message}`);
     }
   }
@@ -384,7 +384,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       `Wind check skipped at ${unverifiedVenues.length} park(s) with no verified orientation: ${unverifiedVenues.join(', ')}.`
     );
   }
-  log(`Weather: ${windOk}/${venues.size} venue(s) updated (${windSkippedUnverified} skipped — unverified park orientation).`);
+  log(`Weather: ${windOk}/${venues.size} venue(s) updated (${windSkippedUnverified} skipped, unverified park orientation).`);
 
   // Filters + digest
   const moneyline = await runMoneylineFilter(pool, gameDate);
@@ -394,7 +394,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   warnings.push(...(windHr.warnings || []));
 
   // Pooled cross-category ranking for the dashboard's Top 3 hero section.
-  // Heuristic and explainable, not a model — see lib/topPicks.js.
+  // Heuristic and explainable, not a model, see lib/topPicks.js.
   const topPicks = buildTopPicks({ moneyline, hitStreak, windHr });
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);

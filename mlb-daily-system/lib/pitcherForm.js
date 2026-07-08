@@ -4,7 +4,7 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
-// Trailing ERA over a pitcher's last N starts (default 5 — the moneyline
+// Trailing ERA over a pitcher's last N starts (default 5, the moneyline
 // screener compares recent form across both starters on that window),
 // computed from true outs (not the .1/.2 IP notation) so partial innings
 // sum correctly: ERA = earned runs * 27 / outs.

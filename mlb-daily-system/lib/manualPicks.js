@@ -26,7 +26,7 @@ export async function listManualPicks(pool, gameDate) {
 // is unambiguous). Falls back to what was typed if nothing matches.
 async function findGame(pool, gameDate, homeTeam, awayTeam) {
   // Try both sides first, then home-only (covers a misspelled or omitted
-  // opponent — the schedule fills the rest in).
+  // opponent, the schedule fills the rest in).
   const both = await pool.query(
     `SELECT mlb_game_id, home_team, away_team FROM games
      WHERE game_date = $1

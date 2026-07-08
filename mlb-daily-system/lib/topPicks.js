@@ -5,17 +5,17 @@ const UNCONFIRMED_LINEUP_PENALTY = 2.5;
 
 function lineupWarning(lineupConfirmed) {
   return lineupConfirmed === false
-    ? " Today's lineup isn't posted yet — this is a projected regular, not a confirmed starter."
+    ? " Today's lineup isn't posted yet, this is a projected regular, not a confirmed starter."
     : '';
 }
 
 // Every signal type here already gates on "the opposing/away pitcher is
-// struggling" (trailing ERA >= 6.00) — that's the one thing moneyline,
+// struggling" (trailing ERA >= 6.00), that's the one thing moneyline,
 // hit-streak, and wind/HR picks all have in common, so it anchors the
 // score across categories. Each type adds its own bonus on top for how
 // strong that category's specific signal is (how bad the ERA really is,
 // how hot the hitter is, how much wind/power is in play). This is a
-// simple, explainable heuristic, not a statistical model — good enough to
+// simple, explainable heuristic, not a statistical model, good enough to
 // rank "which of these is the strongest single pick today," not to size a
 // real edge.
 function moneylineCandidates(moneyline) {

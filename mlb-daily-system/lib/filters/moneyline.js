@@ -10,7 +10,7 @@ const MAX_OTHER_GAMES = 5;
 //   1. all of today's games
 //   2. home favorites only (skip home underdogs)
 //   3. odds between -100 and -250
-//   4. both starters known — confirmed from the posted lineup when it's
+//   4. both starters known, confirmed from the posted lineup when it's
 //      out, otherwise the projected/probable starter MLB has published
 //   5. the HOME starter has the better (lower) ERA than the visitor,
 //      compared on last 5 starts (season ERA as fallback)
@@ -86,21 +86,21 @@ export async function runMoneylineFilter(pool, gameDate) {
 
     const reasons = [];
     if (hasLine && !homeIsFavorite) {
-      reasons.push(`${r.home_team} is the underdog (${fmtOdds(homeMl)}) at home — the screener only plays home favorites`);
+      reasons.push(`${r.home_team} is the underdog (${fmtOdds(homeMl)}) at home, the screener only plays home favorites`);
     } else if (homeIsFavorite && !inBand) {
       reasons.push(
         homeMl > BAND_HIGH
-          ? `${r.home_team} is not favored strongly enough (${fmtOdds(homeMl)}) — the screener wants ${BAND_HIGH} to ${BAND_LOW}`
-          : `${r.home_team} is too big a favorite (${fmtOdds(homeMl)}) — huge favorites don't pay, so we cap it at ${BAND_LOW}`
+          ? `${r.home_team} is not favored strongly enough (${fmtOdds(homeMl)}), the screener wants ${BAND_HIGH} to ${BAND_LOW}`
+          : `${r.home_team} is too big a favorite (${fmtOdds(homeMl)}), huge favorites don't pay, so we cap it at ${BAND_LOW}`
       );
     }
     if (!startersKnown) {
-      reasons.push('a starter has not been announced yet for this game — check back once MLB posts it');
+      reasons.push('a starter has not been announced yet for this game, check back once MLB posts it');
     } else if (cmp === null) {
-      reasons.push(`no ERA data yet for ${home.trailingEra === null && home.seasonEra === null ? r.home_starter_name : r.away_starter_name} — check back after he has made a start`);
+      reasons.push(`no ERA data yet for ${home.trailingEra === null && home.seasonEra === null ? r.home_starter_name : r.away_starter_name}, check back after he has made a start`);
     } else if (!homeHasBetterEra) {
       reasons.push(
-        `${r.away_starter_name} (${fmtNum(cmp.awayEra)} ERA, ${cmp.basis}) has the better arm than ${r.home_starter_name} (${fmtNum(cmp.homeEra)}) — the home pitcher has to hold the edge`
+        `${r.away_starter_name} (${fmtNum(cmp.awayEra)} ERA, ${cmp.basis}) has the better arm than ${r.home_starter_name} (${fmtNum(cmp.homeEra)}), the home pitcher has to hold the edge`
       );
     }
 
@@ -143,7 +143,7 @@ export async function runMoneylineFilter(pool, gameDate) {
     .filter((g) => !pickIds.has(g.gameId))
     .map((g) =>
       g.qualifies
-        ? { ...g, closeness: -1, reason: `Qualified too, but only the top ${MAX_PICKS} make the card — this one's ERA edge (${fmtNum(g.eraEdge)} runs) was smaller.` }
+        ? { ...g, closeness: -1, reason: `Qualified too, but only the top ${MAX_PICKS} make the card, this one's ERA edge (${fmtNum(g.eraEdge)} runs) was smaller.` }
         : g
     )
     .sort((a, b) => a.closeness - b.closeness)
@@ -153,7 +153,7 @@ export async function runMoneylineFilter(pool, gameDate) {
   return {
     signal: picks.length ? 'PLAY' : 'SIT',
     // True when at least one pick is riding on projected (not yet posted)
-    // starters or has no betting line — lets the UI show one banner.
+    // starters or has no betting line, lets the UI show one banner.
     hasProjected: picks.some((p) => !p.startersConfirmed || p.lineStatus === 'no-line'),
     picks: picks.map(({ gameId, qualifies, closeness, reason, ...p }) => p),
     otherGames,

@@ -5,7 +5,7 @@
 // CREATE TABLE IF NOT EXISTS silently keeps those tables, and then any
 // INSERT from this app dies on a legacy NOT NULL column it never heard
 // of. For every table this app inserts into, drop NOT NULL from columns
-// that (a) this app's schema doesn't define and (b) have no default —
+// that (a) this app's schema doesn't define and (b) have no default -
 // data stays untouched, but unknown legacy columns can never block a
 // write again.
 //

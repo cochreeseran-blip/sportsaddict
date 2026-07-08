@@ -33,7 +33,7 @@ async function insertTrackedPick(pool, record) {
 // Writes every qualifying pick from all three filters into the permanent
 // ledger. Idempotent per (game_date, signal_type, mlb_game_id, batter) so
 // running the pipeline 3x/day (or on manual refresh) doesn't spam
-// duplicate rows for the same underlying pick — the price/metrics from
+// duplicate rows for the same underlying pick, the price/metrics from
 // the FIRST time a pick qualified that day are what get "locked in",
 // same as if you'd actually placed the bet then.
 export async function recordTrackedPicks(pool, gameDate, { moneyline, hitStreak, windHr }) {
@@ -45,7 +45,7 @@ export async function recordTrackedPicks(pool, gameDate, { moneyline, hitStreak,
       gameDate,
       signalType: 'moneyline',
       mlbGameId: p.mlbGameId,
-      description: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam} — ${p.homeStarterName ?? 'home starter'} (ERA ${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? 'n/a'}) over ${p.awayStarterName ?? 'visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? 'n/a'})`,
+      description: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}, ${p.homeStarterName ?? 'home starter'} (ERA ${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? 'n/a'}) over ${p.awayStarterName ?? 'visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? 'n/a'})`,
       lockedPrice: p.homeMl,
       breakevenPct: p.breakevenPct,
       qualifyingMetrics: p,
@@ -59,9 +59,9 @@ export async function recordTrackedPicks(pool, gameDate, { moneyline, hitStreak,
       gameDate,
       signalType: 'hit_streak',
       mlbGameId: b.mlbGameId,
-      description: `${b.batterName} (${b.team}) to get a hit — streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3) ?? 'n/a'}, vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`,
+      description: `${b.batterName} (${b.team}) to get a hit, streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3) ?? 'n/a'}, vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`,
       lockedPrice: null,
-      breakevenPct: null, // not applicable — this isn't a fixed-odds pick
+      breakevenPct: null, // not applicable, this isn't a fixed-odds pick
       qualifyingMetrics: b,
     });
     inserted++;
@@ -73,7 +73,7 @@ export async function recordTrackedPicks(pool, gameDate, { moneyline, hitStreak,
       gameDate,
       signalType: 'wind_hr',
       mlbGameId: b.mlbGameId,
-      description: `${b.batterName} (${b.team}) to go deep — HR rate ${b.trailing15HrRate?.toFixed(3) ?? 'n/a'}, wind ${b.windSpeedMph?.toFixed(1) ?? 'n/a'} mph out at ${b.venue}, vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`,
+      description: `${b.batterName} (${b.team}) to go deep, HR rate ${b.trailing15HrRate?.toFixed(3) ?? 'n/a'}, wind ${b.windSpeedMph?.toFixed(1) ?? 'n/a'} mph out at ${b.venue}, vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`,
       lockedPrice: null,
       breakevenPct: null,
       qualifyingMetrics: b,
@@ -106,7 +106,7 @@ async function gradeOnePick(pick) {
     const pickDateStr = new Date(pick.game_date).toISOString().slice(0, 10);
     const split = log.find((s) => (s.date || '').slice(0, 10) === pickDateStr);
     // Game is final and the batter has no logged plate appearance that day
-    // (didn't play, or was subbed out before recording a stat) — that's a
+    // (didn't play, or was subbed out before recording a stat), that's a
     // loss for "gets a hit" / "goes deep" purposes, not still-pending.
     const hits = Number(split?.stat?.hits ?? 0);
     const homeRuns = Number(split?.stat?.homeRuns ?? 0);

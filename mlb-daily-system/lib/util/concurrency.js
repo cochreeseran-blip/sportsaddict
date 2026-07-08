@@ -1,5 +1,5 @@
 // Bounded-concurrency worker pool. Runs `worker` over every item with at
-// most `limit` in flight at once — a middle ground between a fully
+// most `limit` in flight at once, a middle ground between a fully
 // sequential for-loop (safe but slow once a roster pull means hundreds of
 // players) and Promise.all over everything (fast but hammers a free,
 // unauthenticated API with hundreds of simultaneous connections). One

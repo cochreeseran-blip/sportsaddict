@@ -1,4 +1,4 @@
-/* SlateFinder client — vanilla JS single-page app, no build step.
+/* SlateFinder client, vanilla JS single-page app, no build step.
    Views: Slate (today's games), Signals (daily edge digest), Performance
    (tracked pick ledger). All data comes from this server's /api/*
    endpoints; logos and headshots load from MLB's public CDN. */
@@ -127,8 +127,8 @@ function avatarSvg(seed, size = 34) {
 // --- tiny helpers -----------------------------------------------------------
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmtOdds = (ml) => (ml === null || ml === undefined ? '—' : ml > 0 ? `+${ml}` : `${ml}`);
-const fmtNum = (n, d = 2) => (n === null || n === undefined ? '—' : Number(n).toFixed(d));
+const fmtOdds = (ml) => (ml === null || ml === undefined ? '-' : ml > 0 ? `+${ml}` : `${ml}`);
+const fmtNum = (n, d = 2) => (n === null || n === undefined ? '-' : Number(n).toFixed(d));
 
 function longDate(dateStr) {
   return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
@@ -149,7 +149,7 @@ function fmtRunTime(iso) {
 }
 
 // Image fallbacks use a delegated capture-phase error listener (see
-// init) instead of inline onerror handlers — the CSP forbids inline
+// init) instead of inline onerror handlers, the CSP forbids inline
 // script, and that's the point: no inline JS anywhere in this app.
 function logoHtml(teamId, teamName, size = 34) {
   const id = teamId ?? TEAMS[teamName]?.id ?? null;
@@ -169,7 +169,7 @@ function headshotHtml(personId, name) {
 }
 
 function form5Html(results) {
-  if (!results || !results.length) return '<span class="faint" style="font-size:11px">—</span>';
+  if (!results || !results.length) return '<span class="faint" style="font-size:11px">-</span>';
   return `<span class="form5">${results.map((hit) => `<i class="${hit ? 'hit' : ''}"></i>`).join('')}</span>`;
 }
 
@@ -201,7 +201,7 @@ async function apiSend(path, method, body) {
 
 // ---------------------------------------------------------------------------
 // Estimated cash probabilities for the board. These are simple, honest
-// estimates from recent form — labeled "est" in the UI, never presented as
+// estimates from recent form, labeled "est" in the UI, never presented as
 // odds. Hit: chance of 1+ hit in ~4 at-bats at his last-15 average.
 // HR: his own last-15 HR-per-game rate. K over: recent-start hit rate with
 // Laplace smoothing so 5-for-5 doesn't read as 100%. ML: the market's own
@@ -227,7 +227,7 @@ function probChip(p, label = 'est') {
 }
 
 function fmtMoney(n, withSign = false) {
-  if (n === null || n === undefined) return '—';
+  if (n === null || n === undefined) return '-';
   const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (n < 0) return `-$${abs}`;
   return withSign ? `+$${abs}` : `$${abs}`;
@@ -239,7 +239,7 @@ function emptyHtml(title, msg) {
 }
 
 // ---------------------------------------------------------------------------
-// SLATE VIEW — today's games only. Open a game for lineups, batting order,
+// SLATE VIEW, today's games only. Open a game for lineups, batting order,
 // and pitcher form.
 function renderSlateShell() {
   $('#view-slate').innerHTML = `
@@ -269,7 +269,7 @@ function gameCardHtml(g) {
       ${logoHtml(t.id, t.name)}
       <span class="gc-name">${esc(t.name || 'TBD')}<span class="gc-record">${esc(t.record || '')}</span></span>
       ${started
-        ? `<span class="gc-score ${winner ? 'winner' : ''}">${t.score ?? '—'}</span>`
+        ? `<span class="gc-score ${winner ? 'winner' : ''}">${t.score ?? '-'}</span>`
         : `<span class="gc-odds ${ml !== null && ml > 0 ? 'dog' : ''}">${fmtOdds(ml)}</span>`}
     </div>`;
 
@@ -312,7 +312,7 @@ async function loadSlateGames() {
     if (!slate) {
       slate = await api(`/api/slate?date=${encodeURIComponent(date)}`);
       state.slateCache.set(date, slate);
-      // Today's games are live — don't let the cache go stale.
+      // Today's games are live, don't let the cache go stale.
       setTimeout(() => state.slateCache.delete(date), 120000);
     }
     if (!slate.games.length) {
@@ -352,8 +352,8 @@ function lineupRows(side) {
       </div>
       <div class="lu-stats">
         ${b.battingLine ? `<div class="lu-stat"><div class="v">${b.battingLine.hits}-${b.battingLine.atBats}</div><div class="k">Today</div></div>` : ''}
-        <div class="lu-stat"><div class="v">${b.hitStreak ?? '—'}</div><div class="k">Streak</div></div>
-        <div class="lu-stat"><div class="v">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? fmtNum(b.trailing15Avg, 3) : '—'}</div><div class="k">L15 avg</div></div>
+        <div class="lu-stat"><div class="v">${b.hitStreak ?? '-'}</div><div class="k">Streak</div></div>
+        <div class="lu-stat"><div class="v">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? fmtNum(b.trailing15Avg, 3) : '-'}</div><div class="k">L15 avg</div></div>
         <div class="lu-stat">${form5Html(b.last5Results)}<div class="k">Last 5</div></div>
       </div>
     </div>`).join('')}</div>`;
@@ -451,7 +451,7 @@ function closeGamePanel() {
 }
 
 // ---------------------------------------------------------------------------
-// BET TRACKING — "Track" buttons carry a prefill payload by id so no JSON
+// BET TRACKING, "Track" buttons carry a prefill payload by id so no JSON
 // ends up in HTML attributes.
 let trackSeq = 0;
 const trackData = new Map();
@@ -507,7 +507,7 @@ async function submitBet(e) {
     hint.hidden = false;
     setTimeout(() => {
       closeBetModal();
-      if (state.view === 'bets') renderBets();
+      if (state.view === 'performance') renderBets();
     }, 550);
   } catch (ex) {
     $('#betSave').disabled = false;
@@ -593,14 +593,14 @@ function betRow(b) {
 
   const autoTag = b.betKind !== 'manual' && b.result === 'pending' ? '<span class="auto-tag">auto-settles</span>' : '';
   const profitCell = b.result === 'pending'
-    ? '<span class="faint">—</span>'
+    ? '<span class="faint">-</span>'
     : `<span class="${(b.profit ?? 0) > 0 ? 'profit-pos' : (b.profit ?? 0) < 0 ? 'profit-neg' : 'dim'}">${fmtMoney(b.profit, true)}</span>`;
 
   return `
     <tr>
       <td class="mono faint" style="white-space:nowrap">${esc(b.gameDate)}</td>
       <td><div class="bet-desc">${esc(b.description)}${autoTag}${b.book ? `<div class="bk">${esc(b.book)}</div>` : ''}</div></td>
-      <td class="mono">${b.odds !== null ? fmtOdds(b.odds) : '—'}</td>
+      <td class="mono">${b.odds !== null ? fmtOdds(b.odds) : '-'}</td>
       <td class="mono">${fmtMoney(b.stake)}</td>
       <td>${b.result === 'pending' ? resultPill('pending') : resultPill(b.result)}</td>
       <td class="mono">${profitCell}</td>
@@ -608,8 +608,8 @@ function betRow(b) {
     </tr>`;
 }
 
-async function renderBets() {
-  const host = $('#view-bets');
+async function renderBets(host = $('#betsBlock')) {
+  if (!host) return;
   host.innerHTML = loadingHtml;
   try {
     const d = await api('/api/bets');
@@ -636,7 +636,7 @@ async function renderBets() {
         </div>
         <div class="stat-tile">
           <div class="st-label">Return on stake</div>
-          <div class="st-value ${profitCls}">${s.roi !== null ? (s.roi * 100).toFixed(1) : '—'}<span class="unit">%</span></div>
+          <div class="st-value ${profitCls}">${s.roi !== null ? (s.roi * 100).toFixed(1) : '-'}<span class="unit">%</span></div>
           <div class="st-sub">Profit divided by total staked</div>
         </div>
         <div class="stat-tile">
@@ -646,13 +646,12 @@ async function renderBets() {
         </div>
       </div>
 
-      <div class="section-head"><h2 class="section-title">All bets</h2></div>
       ${d.bets.length
         ? `<div class="table-wrap"><table class="data-table">
             <thead><tr><th>Date</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>Profit</th><th></th></tr></thead>
             <tbody>${d.bets.map(betRow).join('')}</tbody>
           </table></div>`
-        : emptyHtml('No bets yet', 'Hit "Track bet" on any pick in Signals, or add one manually with the button above.')}`;
+        : emptyHtml('No bets yet', 'Hit Track bet on any pick, or add one manually with the button above.')}`;
 
     $('#addBetBtn').addEventListener('click', () => openBetModal());
     $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
@@ -738,7 +737,7 @@ function starterEra(name, trailing, season, highlight) {
 
 function moneylinePickCard(p) {
   const noLine = p.lineStatus === 'no-line' || p.homeMl === null || p.homeMl === undefined;
-  const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '—';
+  const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '-';
   const edge = p.eraEdge !== null && p.eraEdge !== undefined ? fmtNum(p.eraEdge) : null;
 
   const flags = [];
@@ -749,8 +748,8 @@ function moneylinePickCard(p) {
 
   const oddsLabel = noLine ? 'No line' : fmtOdds(p.homeMl);
   const note = noLine
-    ? 'No betting line posted yet — this is the pitching matchup only. The odds band gets checked once a price is available.'
-    : `Needs to win ${breakeven} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.`;
+    ? 'No betting line posted yet. This is the pitching matchup only. The odds band gets checked once a price is available.'
+    : `Needs to win ${breakeven} of the time at ${fmtOdds(p.homeMl)} just to break even. Not a prediction it will.`;
 
   return `
     <div class="sig-card">
@@ -758,7 +757,7 @@ function moneylinePickCard(p) {
         <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)}</span>
         <span class="sig-odds${noLine ? ' faint' : ''}">${oddsLabel}</span>
       </div>
-      <div class="sig-sub">To beat ${esc(p.awayTeam)} at home${edge ? ` — home starter's ERA is <strong>${edge} runs better</strong> (${esc(p.eraBasis ?? '')})` : ''}.</div>
+      <div class="sig-sub">To beat ${esc(p.awayTeam)} at home${edge ? `. Home starter's ERA is <strong>${edge} runs better</strong> (${esc(p.eraBasis ?? '')})` : ''}.</div>
       <div class="ml-matchup">
         ${starterEra(p.homeStarterName, p.homeStarterTrailingEra, p.homeStarterSeasonEra, true)}
         <span class="ml-vs">vs</span>
@@ -772,7 +771,7 @@ function moneylinePickCard(p) {
 
 function moneylineCards(ml) {
   if (ml.signal === 'SIT' || !ml.picks?.length) {
-    return emptyHtml('SIT — no qualifying games', 'No home favorite today whose starting pitcher has the better ERA than the visitor. The nearest misses are listed below.');
+    return emptyHtml('No qualifying games', 'No home favorite today whose starting pitcher has the better ERA than the visitor. The nearest misses are listed below.');
   }
   return `<div class="sig-cards">${ml.picks.map(moneylinePickCard).join('')}</div>`;
 }
@@ -786,7 +785,7 @@ function manualPickCards(picks) {
         <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
       </div>
       <div class="sig-sub">To beat ${esc(p.awayTeam)}.${p.reason ? ` ${esc(p.reason)}` : ''}</div>
-      <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '—'} of the time at ${fmtOdds(p.homeMl)} just to break even.</div>
+      <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '-'} of the time at ${fmtOdds(p.homeMl)} just to break even.</div>
       <div style="margin-top:10px;display:flex;gap:10px">
         ${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${fmtOdds(p.homeMl)}) vs ${p.awayTeam}`, odds: p.homeMl, mlbGameId: p.mlbGameId }))}
         <button class="btn ghost small" data-delete-manual-pick="${p.id}">Remove</button>
@@ -797,7 +796,6 @@ function manualPickCards(picks) {
 function nearMissCards(otherGames) {
   if (!otherGames?.length) return '';
   return `
-    <p class="section-sub" style="margin-top:18px">Close calls</p>
     <div class="sig-cards">${otherGames.map((g) => `
       <div class="sig-card miss">
         <div class="sig-head">
@@ -892,7 +890,7 @@ function hitStreakSection(hs) {
     why: [
       whyRow('Form', b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)}`),
       whyRow('Last 15 avg', fmtNum(b.trailing15Avg, 3)),
-      whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? ` — ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
+      whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `, ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
     ].join(''),
     track: trackBtn(pickPrefill({ type: 'hit_streak', headline: `${b.batterName} to record a hit`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
   }));
@@ -916,8 +914,8 @@ function windHrSection(wh) {
     ].join(''),
     why: [
       whyRow('Power', `${fmtNum(b.trailing15HrRate, 2)} HR per game, last 15`),
-      whyRow('Park', b.venue ? `${esc(b.venue)}${b.windBlowingOut ? ` — wind out ${fmtNum(b.windSpeedMph, 0)} mph` : ''}` : null),
-      whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? ` — ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
+      whyRow('Park', b.venue ? `${esc(b.venue)}${b.windBlowingOut ? `, wind out ${fmtNum(b.windSpeedMph, 0)} mph` : ''}` : null),
+      whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `, ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
     ].join(''),
     track: trackBtn(pickPrefill({ type: 'wind_hr', headline: `${b.batterName} to hit a home run`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
   }));
@@ -950,7 +948,7 @@ function strikeoutSection(so) {
     ].join(''),
     track: trackBtn({ description: `${p.pitcherName} over ${p.suggestedLine.toFixed(1)} strikeouts`, odds: null, betKind: 'manual', mlbGameId: p.mlbGameId, batterId: null, gameDate: state.signalsDate || state.today }),
   }));
-  return `<div class="pick-grid">${cards.join('')}</div>`;
+  return `<div class="pick-grid center">${cards.join('')}</div>`;
 }
 
 // --- jumbotron ---------------------------------------------------------------
@@ -1013,7 +1011,7 @@ function yesterdayStrip(perf, today) {
   for (const s of perf.summary || []) { wins += s.wins; losses += s.losses; pushes += s.pushes; }
   const pct = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(0) : null;
   const chips = graded.slice(0, 8).map((r) => {
-    const short = r.description.split(' — ')[0].split(' to ')[0];
+    const short = r.description.split(', ')[0].split(' to ')[0];
     return `<span class="yd-chip ${r.result}"><b>${r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}</b>${esc(short)}</span>`;
   }).join('');
   return `
@@ -1049,28 +1047,23 @@ async function renderSignals() {
 
       ${digestWarningBanner(d.warnings)}
 
-      <div class="section-head">
-        <h2 class="section-title">Moneyline</h2>
-        <button class="btn small" style="margin-left:auto" data-add-manual-pick>Add a pick</button>
+      <div class="board-head">
+        <h2 class="board-title">Moneyline</h2>
+        <button class="btn small" data-add-manual-pick>Add a pick</button>
       </div>
-      <p class="section-sub">Home favorites between -100 and -250 whose starting pitcher has the better ERA (last 5 starts) than the visitor.</p>
       ${manualPickCards(d.manualPicks)}
       ${moneylineCards(d.moneyline)}
 
-      <div class="section-head"><h2 class="section-title">Projected to get a hit</h2></div>
-      <p class="section-sub">Today's hottest bats, ranked by form and the arm they're facing. Tap a card for the why.</p>
+      <h2 class="board-title">+1 Hits</h2>
       ${hitStreakSection(d.hitStreak)}
 
-      <div class="section-head"><h2 class="section-title">Projected to go deep</h2></div>
-      <p class="section-sub">Top home-run rates over the last 15 games. Wind out is a bonus flag, not a requirement.</p>
+      <h2 class="board-title">Home Runs</h2>
       ${windHrSection(d.windHr)}
 
-      <div class="section-head"><h2 class="section-title">Strikeout watch</h2></div>
-      <p class="section-sub">Starters whose recent K counts hold a consistent floor. The line is what his own starts support, not a book line.</p>
+      <h2 class="board-title center">Strikeout Watch</h2>
       ${strikeoutSection(d.strikeouts)}
 
-      <div class="section-head"><h2 class="section-title">All home favorites considered</h2></div>
-      <p class="section-sub">Everything the screener evaluated and why each game did or did not make it.</p>
+      <h2 class="board-title">Close Calls</h2>
       ${nearMissCards(d.moneyline.otherGames) || emptyHtml('Nothing else evaluated', 'Every home favorite today either qualified or there were none.')}`;
 
     $('#signalsDate').addEventListener('change', (e) => {
@@ -1080,6 +1073,94 @@ async function renderSignals() {
   } catch (err) {
     host.innerHTML = emptyHtml('Signals unavailable', err.message);
   }
+}
+
+// ---------------------------------------------------------------------------
+// LIVE CHAT VIEW, one flat room, polled. Signed-in users only can post;
+// anyone can read. Denormalized username + avatar come back on each row.
+let chatTimer = null;
+let chatLastId = 0;
+const chatSeen = new Set();
+
+function chatTime(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+function chatMessageHtml(m) {
+  const mine = state.user && m.userId === state.user.id;
+  return `
+    <div class="chat-msg${mine ? ' mine' : ''}">
+      <span class="chat-avatar">${avatarSvg(m.avatarSeed, 30)}</span>
+      <div class="chat-bubble">
+        <div class="chat-meta"><span class="chat-user">${esc(m.username)}</span><span class="chat-time">${esc(chatTime(m.createdAt))}</span></div>
+        <div class="chat-body">${esc(m.body)}</div>
+      </div>
+    </div>`;
+}
+
+function stopChatPolling() {
+  if (chatTimer) { clearTimeout(chatTimer); chatTimer = null; }
+}
+
+async function pollChat() {
+  stopChatPolling();
+  try {
+    const { messages } = await api(`/api/chat?since=${chatLastId}`);
+    const feed = $('#chatFeed');
+    if (feed && messages.length) {
+      const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+      const fresh = messages.filter((m) => !chatSeen.has(m.id));
+      for (const m of fresh) chatSeen.add(m.id);
+      if (fresh.length) {
+        if ($('#chatEmpty')) $('#chatEmpty').remove();
+        feed.insertAdjacentHTML('beforeend', fresh.map(chatMessageHtml).join(''));
+        chatLastId = Math.max(chatLastId, ...fresh.map((m) => m.id));
+        if (nearBottom) feed.scrollTop = feed.scrollHeight;
+      }
+    }
+  } catch { /* transient; next tick retries */ }
+  if (state.view === 'chat') chatTimer = setTimeout(pollChat, 4000);
+}
+
+function renderChat() {
+  const host = $('#view-chat');
+  chatLastId = 0;
+  chatSeen.clear();
+  const canPost = Boolean(state.user);
+  host.innerHTML = `
+    <h2 class="board-title">Live Chat</h2>
+    <div class="chat-wrap">
+      <div class="chat-feed" id="chatFeed"><div class="empty-state" id="chatEmpty"><div class="es-title">Quiet in here</div>Be the first to say something.</div></div>
+      ${canPost
+        ? `<form class="chat-form" id="chatForm">
+             <span class="chat-you">${avatarSvg(state.user.avatarSeed, 26)}</span>
+             <input type="text" id="chatInput" maxlength="500" autocomplete="off" placeholder="Talk some slate...">
+             <button type="submit" class="btn primary" id="chatSend">Send</button>
+           </form>`
+        : `<div class="chat-locked">Sign in to join the chat. You can still read along.</div>`}
+    </div>`;
+
+  if (canPost) {
+    $('#chatForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = $('#chatInput');
+      const body = input.value.trim();
+      if (!body) return;
+      $('#chatSend').disabled = true;
+      try {
+        await apiSend('/api/chat', 'POST', { body });
+        input.value = '';
+        await pollChat();
+      } catch (ex) {
+        input.placeholder = ex.message;
+      } finally {
+        $('#chatSend').disabled = false;
+        input.focus();
+      }
+    });
+  }
+  pollChat();
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,10 +1178,10 @@ async function renderPerformance() {
       return `
         <div class="stat-tile">
           <div class="st-label">${esc(SIGNAL_NAMES[s.signalType] || s.signalType)}</div>
-          <div class="st-value">${wr !== null ? `${wr}<span class="unit">%</span>` : '—'}</div>
+          <div class="st-value">${wr !== null ? `${wr}<span class="unit">%</span>` : '-'}</div>
           <div class="st-sub">${s.wins}W / ${s.losses}L${s.pushes ? ` / ${s.pushes} push` : ''} · ${s.pending} pending${
             edge !== null ? `<br>Edge vs break-even: <span class="${edge >= 0 ? 'pos' : 'neg'} mono">${edge >= 0 ? '+' : ''}${edge.toFixed(1)} pts</span>` : ''
-          }${s.graded > 0 && s.graded < 20 ? `<br><span class="faint">Only ${s.graded} graded — too small a sample to mean anything yet.</span>` : ''}</div>
+          }${s.graded > 0 && s.graded < 20 ? `<br><span class="faint">Only ${s.graded} graded, too small a sample to mean anything yet.</span>` : ''}</div>
         </div>`;
     }).join('') : '';
 
@@ -1109,16 +1190,21 @@ async function renderPerformance() {
         <td class="mono faint" style="white-space:nowrap">${esc(r.gameDate)}</td>
         <td><span class="pill dim">${esc(SIGNAL_NAMES[r.signalType] || r.signalType)}</span></td>
         <td>${esc(r.description)}</td>
-        <td class="mono">${r.lockedPrice !== null ? fmtOdds(r.lockedPrice) : '—'}</td>
+        <td class="mono">${r.lockedPrice !== null ? fmtOdds(r.lockedPrice) : '-'}</td>
         <td><span class="result-pill ${esc(r.result)}">${esc(r.result.charAt(0).toUpperCase() + r.result.slice(1))}</span></td>
       </tr>`);
 
     host.innerHTML = `
-      <div class="section-head"><h2 class="section-title">How the signals have done</h2></div>
+      <h2 class="board-title">Track Record</h2>
       ${tiles ? `<div class="stat-tiles">${tiles}</div>` : emptyHtml('No picks tracked yet', 'Picks accumulate as the daily refresh finds qualifying signals.')}
 
-      <div class="section-head"><h2 class="section-title">Recent picks</h2></div>
-      ${d.recent.length ? batterTable(recentRows, ['Date', 'Signal', 'Pick', 'Price', 'Result']) : emptyHtml('Nothing recorded yet', 'Recent picks will appear here as the pipeline runs.')}`;
+      <h2 class="board-title">Recent Picks</h2>
+      ${d.recent.length ? batterTable(recentRows, ['Date', 'Signal', 'Pick', 'Price', 'Result']) : emptyHtml('Nothing recorded yet', 'Recent picks will appear here as the pipeline runs.')}
+
+      <h2 class="board-title">My Bets</h2>
+      <div id="betsBlock">${loadingHtml}</div>`;
+
+    renderBets($('#betsBlock'));
   } catch (err) {
     host.innerHTML = emptyHtml('Performance unavailable', err.message);
   }
@@ -1150,7 +1236,7 @@ async function pollStatus(fast = false) {
     btn.disabled = false;
     btn.classList.remove('spinning');
     if (fast) {
-      // A sync just finished — drop caches and re-render the active view.
+      // A sync just finished, drop caches and re-render the active view.
       state.slateCache.clear();
       showView(state.view, true);
     }
@@ -1187,8 +1273,9 @@ function showView(name, force = false) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'slate') { renderSlateShell(); loadSlateGames(); }
   if (name === 'signals') renderSignals();
-  if (name === 'bets') renderBets();
+  if (name === 'chat') renderChat();
   if (name === 'performance') renderPerformance();
+  if (name !== 'chat') stopChatPolling();
 }
 
 async function init() {
@@ -1235,7 +1322,7 @@ async function init() {
     const form = e.currentTarget;
     try {
       await apiSend('/api/subscribe', 'POST', { email: $('#subscribeEmail').value });
-      form.innerHTML = '<span class="subscribe-done">You are on the list — first email goes out with the next morning digest.</span>';
+      form.innerHTML = '<span class="subscribe-done">You are on the list. First email goes out with the next morning digest.</span>';
     } catch (ex) {
       let err = form.querySelector('.subscribe-err');
       if (!err) {

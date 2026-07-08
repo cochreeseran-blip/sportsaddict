@@ -16,8 +16,8 @@ async function fetchJson(url, timeoutMs = 15000) {
 }
 
 // Today's schedule with probable starters. This is the same feed that
-// backs mlb.com/probable-pitchers — that page is just a render of
-// statsapi's schedule endpoint with probablePitcher hydration — so we use
+// backs mlb.com/probable-pitchers, that page is just a render of
+// statsapi's schedule endpoint with probablePitcher hydration, so we use
 // the identical request (probablePitcher(note),venue) and read the same
 // fields. There is no separate probable-pitchers API to scrape.
 export async function fetchScheduleWithProbables(dateStr) {
@@ -50,7 +50,7 @@ export async function fetchScheduleWithProbables(dateStr) {
 
 // Multi-day schedule for the interactive slate view: statuses, scores
 // (linescore), venues, probable starters, and team ids/abbreviations in a
-// single request. `lineups` hydration is best-effort — when the API
+// single request. `lineups` hydration is best-effort, when the API
 // returns it we can tell lineups are posted without a per-game boxscore
 // call; when it doesn't, callers fall back gracefully.
 export async function fetchScheduleRange(startDate, endDate) {

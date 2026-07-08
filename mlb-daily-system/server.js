@@ -11,11 +11,12 @@ import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets 
 import { listManualPicks, addManualPick, deleteManualPick } from './lib/manualPicks.js';
 import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newsletter.js';
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
+import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Railway injects PORT dynamically — binding to a fixed port would fail.
+// Railway injects PORT dynamically, binding to a fixed port would fail.
 const PORT = process.env.PORT || 3000;
 
 // Which code is actually running. Railway sets RAILWAY_GIT_COMMIT_SHA on
@@ -83,7 +84,7 @@ function scheduleDailyRunAt(hourUtc) {
   console.log(`Next scheduled pipeline run at ${hourUtc}:00 UTC (~${etLabel(hourUtc)} ET) in ${(delay / 3600000).toFixed(1)}h.`);
   setTimeout(async () => {
     await triggerPipelineRun();
-    // Yesterday's games are final by any of these run times — settle
+    // Yesterday's games are final by any of these run times, settle
     // whatever auto-gradable bets are still pending.
     try {
       const { graded, checked } = await gradePendingBets(pool);
@@ -148,7 +149,7 @@ async function loadDigest(gameDate) {
     [gameDate]
   );
   const byType = Object.fromEntries(rows.map((r) => [r.signal_type, r.details]));
-  // Newest created_at across every signal for the date — lets the client
+  // Newest created_at across every signal for the date, lets the client
   // show "as of HH:MM" next to a signal so it's obvious whether what's on
   // screen is from the latest pipeline run or older/stale data, instead of
   // silently trusting an empty section is correct.
@@ -331,7 +332,7 @@ async function buildPerformance() {
 }
 
 // ---------------------------------------------------------------------------
-// Static assets: the SlateFinder single-page app. Whitelisted files only —
+// Static assets: the SlateFinder single-page app. Whitelisted files only -
 // no directory traversal surface.
 const STATIC_FILES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
@@ -369,7 +370,7 @@ function rateLimited(req, key, maxHits, windowMs) {
 }
 
 // Mutating endpoints (bets, manual picks, refresh) require a logged-in
-// session — without this, anyone on the internet could delete bets or
+// session, without this, anyone on the internet could delete bets or
 // publish picks onto the site. Read-only research data stays public.
 async function requireUser(req, res) {
   const user = await userForSession(pool, parseCookies(req).sf_session);
@@ -435,7 +436,7 @@ const server = http.createServer(async (req, res) => {
 
     if ((url.pathname === '/api/refresh' || url.pathname === '/refresh') && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
-      if (rateLimited(req, 'refresh', 6, 10 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down — refresh is already running on a schedule.' });
+      if (rateLimited(req, 'refresh', 6, 10 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down, refresh is already running on a schedule.' });
       triggerPipelineRun(); // fire-and-forget; client polls /api/status
       sendJson(res, 202, { started: true });
       return;
@@ -445,7 +446,7 @@ const server = http.createServer(async (req, res) => {
     // The account gate lives in the frontend; the data API stays open so a
     // broken auth flow can never brick the research pages.
     if (url.pathname === '/api/auth/signup' && req.method === 'POST') {
-      if (rateLimited(req, 'signup', 10, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many signups from this address — try again later.' });
+      if (rateLimited(req, 'signup', 10, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many signups from this address, try again later.' });
       const { email, password, rememberMe } = await readJsonBody(req);
       const cleanEmail = String(email || '').trim();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return sendJson(res, 400, { error: 'That email does not look right.' });
@@ -463,7 +464,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
-      if (rateLimited(req, 'login', 20, 15 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many login attempts — wait a few minutes and try again.' });
+      if (rateLimited(req, 'login', 20, 15 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many login attempts, wait a few minutes and try again.' });
       const { email, password, rememberMe } = await readJsonBody(req);
       const user = await authenticate(pool, String(email || '').trim(), String(password || ''));
       if (!user) return sendJson(res, 401, { error: 'Wrong email or password.' });
@@ -483,6 +484,28 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/auth/me') {
       const user = await userForSession(pool, parseCookies(req).sf_session);
       sendJson(res, 200, { user });
+      return;
+    }
+
+    // --- live chat --------------------------------------------------------
+    if (url.pathname === '/api/chat' && req.method === 'GET') {
+      const sinceId = Number(url.searchParams.get('since') || 0) || 0;
+      const messages = await listMessages(pool, sinceId);
+      sendJson(res, 200, { messages });
+      return;
+    }
+
+    if (url.pathname === '/api/chat' && req.method === 'POST') {
+      const user = await requireUser(req, res);
+      if (!user) return;
+      if (rateLimited(req, 'chat', 30, 60 * 1000)) return sendJson(res, 429, { error: 'Easy on the spam. Give it a second.' });
+      const { body } = await readJsonBody(req);
+      try {
+        const message = await postMessage(pool, user, body);
+        sendJson(res, 201, { message });
+      } catch (err) {
+        sendJson(res, 400, { error: err.message });
+      }
       return;
     }
 
@@ -517,7 +540,7 @@ const server = http.createServer(async (req, res) => {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
       // Guardrail so the live proxy can't be used to crawl arbitrary
-      // history — the app itself only navigates a +/- 15 day window.
+      // history, the app itself only navigates a +/- 15 day window.
       const today = todayIsoDate();
       if (date < shiftIso(today, -15) || date > shiftIso(today, 15)) {
         return sendJson(res, 400, { error: 'date outside the supported slate window' });
@@ -633,7 +656,7 @@ const server = http.createServer(async (req, res) => {
 
     // --- newsletter ------------------------------------------------------
     if (url.pathname === '/api/subscribe' && req.method === 'POST') {
-      if (rateLimited(req, 'subscribe', 8, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many attempts — try again later.' });
+      if (rateLimited(req, 'subscribe', 8, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many attempts, try again later.' });
       const { email } = await readJsonBody(req);
       try {
         await addSubscriber(pool, email);
@@ -672,7 +695,7 @@ async function start() {
   // left behind by older apps sharing this database (see lib/schemaGuard.js).
   await ensureInsertSafety(pool);
 
-  // Bind the port immediately so Railway's healthcheck passes right away —
+  // Bind the port immediately so Railway's healthcheck passes right away -
   // don't make first boot wait on a full pipeline run (batter form alone
   // can take ~a minute against ~400 hitters).
   server.listen(PORT, () => {

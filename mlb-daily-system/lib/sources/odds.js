@@ -38,8 +38,8 @@ const ODDS_API_BASE = process.env.ODDS_API_BASE || 'https://api.the-odds-api.com
 
 export async function fetchMoneylines(apiKey) {
   // oddsFormat=american is REQUIRED: the API defaults to decimal odds
-  // (e.g. 1.67), but every downstream consumer here — the -100/-250 band,
-  // the home_ml < 0 favorite test, break-even math — assumes American
+  // (e.g. 1.67), but every downstream consumer here, the -100/-250 band,
+  // the home_ml < 0 favorite test, break-even math, assumes American
   // odds (e.g. -150). Without this the whole moneyline screener misreads
   // every price.
   const url = `${ODDS_API_BASE}/v4/sports/baseball_mlb/odds?apiKey=${apiKey}&regions=us&markets=h2h&oddsFormat=american`;

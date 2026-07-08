@@ -24,7 +24,7 @@ export async function saveDigest(pool, gameDate, signalType, details) {
 export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, topPicks }) {
   const line = '='.repeat(60);
   console.log(`\n${line}`);
-  console.log(`SLATEFINDER DAILY DIGEST — ${gameDate}`);
+  console.log(`SLATEFINDER DAILY DIGEST, ${gameDate}`);
   console.log(line);
 
   if (warnings.length) {
@@ -44,14 +44,14 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, 
 
   console.log('\n--- MONEYLINE (home favorites, home starter holds the ERA edge) ---');
   if (moneyline.signal === 'SIT') {
-    console.log('  SIT — no qualifying games today.');
+    console.log('  SIT, no qualifying games today.');
   } else {
     for (const p of moneyline.picks) {
       const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : 'n/a';
       console.log(
-        `  ${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam} — ` +
+        `  ${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam}, ` +
           `${p.homeStarterName ?? 'TBD'} (${fmtNum(p.homeStarterTrailingEra)} last 5 / ${fmtNum(p.homeStarterSeasonEra)} season) ` +
-          `vs ${p.awayStarterName ?? 'TBD'} (${fmtNum(p.awayStarterTrailingEra)} last 5 / ${fmtNum(p.awayStarterSeasonEra)} season) — ` +
+          `vs ${p.awayStarterName ?? 'TBD'} (${fmtNum(p.awayStarterTrailingEra)} last 5 / ${fmtNum(p.awayStarterSeasonEra)} season), ` +
           `needs to hit ${breakeven} to break even`
       );
     }
@@ -59,7 +59,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, 
   if (moneyline.otherGames?.length) {
     console.log('  Other home favorites considered:');
     for (const g of moneyline.otherGames) {
-      console.log(`    - ${g.awayTeam} @ ${g.homeTeam} (${fmtOdds(g.homeMl)}) — ${g.reason}`);
+      console.log(`    - ${g.awayTeam} @ ${g.homeTeam} (${fmtOdds(g.homeMl)}), ${g.reason}`);
     }
   }
 
@@ -70,7 +70,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, 
     for (const b of hitStreak.watchList) {
       const tag = b.highConfidence ? '[HIGH CONFIDENCE] ' : '';
       console.log(
-        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}] — streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} ` +
+        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}], streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} ` +
           `vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`
       );
     }
@@ -84,7 +84,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, 
     for (const b of windHr.watchList) {
       const tag = b.highConfidence ? '[HIGH CONFIDENCE] ' : '';
       console.log(
-        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}] — HR rate ${b.trailing15HrRate?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} @ ${b.venue} ` +
+        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}], HR rate ${b.trailing15HrRate?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} @ ${b.venue} ` +
           `(wind ${b.windSpeedMph?.toFixed(1)} mph out) vs ${b.opposingStarterName ?? 'TBD'} ` +
           `(ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`
       );

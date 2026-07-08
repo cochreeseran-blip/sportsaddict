@@ -57,7 +57,7 @@ export function generateAvatarSeed() {
 // Schema self-heal, run at every server boot. The migrations directory
 // normally handles this, but a deploy that boots older migration files
 // against a newer database (or vice versa) must never be able to brick
-// signups — CREATE TABLE IF NOT EXISTS silently skips a pre-existing
+// signups, CREATE TABLE IF NOT EXISTS silently skips a pre-existing
 // users table, which is exactly how avatar_seed went missing in
 // production. Everything here is idempotent.
 export async function ensureAuthSchema(pool) {

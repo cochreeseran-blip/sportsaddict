@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 // Daily email digest via Resend (https://resend.com). Fully dormant until
-// RESEND_API_KEY is set — subscribing still works, sends are just skipped
+// RESEND_API_KEY is set, subscribing still works, sends are just skipped
 // and logged, so the list can grow before email is wired up.
 //
 // Env:
@@ -43,7 +43,7 @@ async function activeSubscribers(pool) {
 
 // --- email rendering ---------------------------------------------------------
 // Email HTML has to be old-school: tables-free simple divs, inline styles,
-// no external CSS. Kept deliberately plain — it reads like a note, not a
+// no external CSS. Kept deliberately plain, it reads like a note, not a
 // marketing blast.
 
 const S = {
@@ -76,14 +76,14 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
 
   const top = digest.topPicks?.length
     ? digest.topPicks.map((p, i) => pickBlock({ ...p, headline: `${i + 1}. ${p.headline}` })).join('')
-    : `<p style="${S.pick}${S.detail}">Nothing cleared the bar today — a sit day.</p>`;
+    : `<p style="${S.pick}${S.detail}">Nothing cleared the bar today, a sit day.</p>`;
 
   const ml = digest.moneyline?.picks?.length
     ? digest.moneyline.picks
         .map((p) =>
           pickBlock({
             headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam}`,
-            detail: `${p.homeStarterName ?? 'The home starter'} (${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? '—'} ERA) has the edge over ${p.awayStarterName ?? 'the visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? '—'}).`,
+            detail: `${p.homeStarterName ?? 'The home starter'} (${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? '-'} ERA) has the edge over ${p.awayStarterName ?? 'the visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? '-'}).`,
           })
         )
         .join('')
@@ -165,7 +165,7 @@ export async function sendDailyNewsletter(pool, gameDate) {
     return { sent: 0, skipped: 'no subscribers' };
   }
   if (!apiKey || !from) {
-    console.log(`Newsletter: ${subs.length} subscriber(s) waiting, but RESEND_API_KEY/NEWSLETTER_FROM not set — skipping send.`);
+    console.log(`Newsletter: ${subs.length} subscriber(s) waiting, but RESEND_API_KEY/NEWSLETTER_FROM not set, skipping send.`);
     return { sent: 0, skipped: 'not configured' };
   }
 

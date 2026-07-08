@@ -63,7 +63,7 @@ function shiftIso(dateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 function dowLabel(dateStr) {
-  return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }).toUpperCase();
+  return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
 }
 function shortDate(dateStr) {
   const d = new Date(`${dateStr}T12:00:00Z`);
@@ -101,7 +101,7 @@ function headshotHtml(personId, name) {
 }
 
 function form5Html(results) {
-  if (!results || !results.length) return '<span class="faint mono" style="font-size:0.62rem">NO DATA</span>';
+  if (!results || !results.length) return '<span class="faint" style="font-size:11px">—</span>';
   return `<span class="form5">${results.map((hit) => `<i class="${hit ? 'hit' : ''}"></i>`).join('')}</span>`;
 }
 
@@ -120,7 +120,7 @@ async function api(path) {
   return res.json();
 }
 
-const loadingHtml = '<div class="loading"><span class="spinner"></span>Acquiring data</div>';
+const loadingHtml = '<div class="loading"><span class="spinner"></span>Loading</div>';
 function emptyHtml(title, msg) {
   return `<div class="empty-state"><div class="es-title">${esc(title)}</div>${esc(msg)}</div>`;
 }
@@ -136,14 +136,12 @@ function slateWindow() {
 function renderSlateShell() {
   const days = slateWindow();
   $('#view-slate').innerHTML = `
-    <div class="section-head"><h2 class="section-title"><span class="idx">01</span>Slate Browser</h2><span class="section-line"></span></div>
-    <p class="section-sub">Ten-day operational window — the last five days with final scores, today's board, and the next four days of scheduled matchups. Select a day, then open any game for full lineups, batting order, and pitching intel.</p>
+    <p class="section-sub">The last five days, today, and the next four. Open a game for lineups, batting order, and pitcher form.</p>
     <div class="date-strip" id="dateStrip">
       ${days.map((d) => `
         <div class="date-chip ${d < state.today ? 'past' : ''} ${d === state.today ? 'today' : ''} ${d === state.slateDate ? 'selected' : ''}" data-date="${d}">
-          <div class="dc-dow">${dowLabel(d)}</div>
+          <div class="dc-dow">${d === state.today ? 'Today' : dowLabel(d)}</div>
           <div class="dc-date">${shortDate(d)}</div>
-          <div class="dc-note">${d < state.today ? 'FINALS' : d === state.today ? 'LIVE BOARD' : 'UPCOMING'}</div>
         </div>`).join('')}
     </div>
     <div id="slateGames">${loadingHtml}</div>`;
@@ -158,9 +156,9 @@ function renderSlateShell() {
 }
 
 function statusLabel(g) {
-  if (g.abstractState === 'Final') return { text: g.status.toUpperCase(), cls: 'final' };
+  if (g.abstractState === 'Final') return { text: g.status, cls: 'final' };
   if (g.abstractState === 'Live') {
-    const inn = g.inning ? `${(g.inningState || '').toUpperCase()} ${g.inning}` : 'LIVE';
+    const inn = g.inning ? `${g.inningState || 'Live'} ${g.inning}` : 'Live';
     return { text: inn, cls: 'live' };
   }
   return { text: etTime(g.gameDate), cls: '' };
@@ -219,14 +217,14 @@ async function loadSlateGames() {
   try {
     let slate = state.slateCache.get(date);
     if (!slate) {
-      slate = await api(`/api/slate?date=${date}`);
+      slate = await api(`/api/slate?date=${encodeURIComponent(date)}`);
       state.slateCache.set(date, slate);
       // Keep live days fresh: today/live games shouldn't stick around.
       if (date >= state.today) setTimeout(() => state.slateCache.delete(date), 120000);
     }
     if (state.slateDate !== date) return; // user already clicked elsewhere
     if (!slate.games.length) {
-      host.innerHTML = emptyHtml('No games scheduled', `The league board is dark on ${longDate(date)}.`);
+      host.innerHTML = emptyHtml('No games', `There are no MLB games scheduled on ${longDate(date)}.`);
       return;
     }
     host.innerHTML = `<div class="game-grid">${slate.games.map(gameCardHtml).join('')}</div>`;
@@ -247,7 +245,7 @@ function eraClass(era) {
 
 function lineupRows(side) {
   if (!side.posted || !side.batters.length) {
-    return emptyHtml('Lineup not posted', 'MLB usually posts official lineups 1-3 hours before first pitch. Hit Sync Data closer to game time.');
+    return emptyHtml('Lineup not posted yet', 'Teams usually post official lineups 1-3 hours before first pitch. Check back closer to game time.');
   }
   return `<div class="lineup-list">${side.batters.map((b) => `
     <div class="lu-row">
@@ -263,7 +261,7 @@ function lineupRows(side) {
       <div class="lu-stats">
         ${b.battingLine ? `<div class="lu-stat"><div class="v">${b.battingLine.hits}-${b.battingLine.atBats}</div><div class="k">Today</div></div>` : ''}
         <div class="lu-stat"><div class="v">${b.hitStreak ?? '—'}</div><div class="k">Streak</div></div>
-        <div class="lu-stat"><div class="v">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? fmtNum(b.trailing15Avg, 3) : '—'}</div><div class="k">L15 AVG</div></div>
+        <div class="lu-stat"><div class="v">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? fmtNum(b.trailing15Avg, 3) : '—'}</div><div class="k">L15 avg</div></div>
         <div class="lu-stat">${form5Html(b.last5Results)}<div class="k">Last 5</div></div>
       </div>
     </div>`).join('')}</div>`;
@@ -292,8 +290,8 @@ async function openGamePanel(gamePk, date) {
         <div class="lbl">${esc(label)}</div>
         <div class="who">${esc(s.name || 'TBD')}</div>
         <div class="eras">
-          L3 STARTS ERA <span class="${eraClass(s.trailingEra)}">${fmtNum(s.trailingEra)}</span><br>
-          SEASON ERA <span>${fmtNum(s.seasonEra)}</span>
+          Last 3 starts: <span class="${eraClass(s.trailingEra)}">${fmtNum(s.trailingEra)} ERA</span><br>
+          Season: ${fmtNum(s.seasonEra)} ERA
         </div>
       </div>`;
 
@@ -317,7 +315,7 @@ async function openGamePanel(gamePk, date) {
           <div class="rec">${esc(slateGame?.away?.record || '')}</div>
           ${started ? `<div class="gp-score">${slateGame?.away?.score ?? ''}</div>` : ''}
         </div>
-        <div class="gp-at">${started ? esc(statusLabel(slateGame).text) : 'AT'}</div>
+        <div class="gp-at">${started ? esc(statusLabel(slateGame).text) : 'at'}</div>
         <div class="gp-side">
           ${logoHtml(home.id, home.name, 62)}
           <div class="nm">${esc(home.name || 'Home')}</div>
@@ -325,7 +323,7 @@ async function openGamePanel(gamePk, date) {
           ${started ? `<div class="gp-score">${slateGame?.home?.score ?? ''}</div>` : ''}
         </div>
       </div>
-      <div style="text-align:center" class="mono faint" >${esc(longDate(date))}${slateGame && !started ? ` · ${esc(etTime(slateGame.gameDate))}` : ''}${d.venue ? ` · ${esc(d.venue)}` : ''}</div>
+      <div class="gp-when">${esc(longDate(date))}${slateGame && !started ? ` · ${esc(etTime(slateGame.gameDate))}` : ''}${d.venue ? ` · ${esc(d.venue)}` : ''}</div>
       ${metaPills.length ? `<div class="gp-meta">${metaPills.join('')}</div>` : ''}
 
       <div class="gp-block">
@@ -363,16 +361,16 @@ function closeGamePanel() {
 // ---------------------------------------------------------------------------
 // SIGNALS VIEW
 function topPickCard(p, i) {
-  const typeLabel = { moneyline: 'Moneyline Edge', hit_streak: 'Contact Signal', wind_hr: 'Power + Weather' }[p.type] || p.type;
+  const typeLabel = { moneyline: 'Moneyline', hit_streak: 'Hot hitter', wind_hr: 'Home run weather' }[p.type] || p.type;
   const foot = [];
   if (p.lineupConfirmed === true) foot.push(lineupPill(true, null));
   if (p.lineupConfirmed === false) foot.push(lineupPill(false, null));
-  if (p.last5Results) foot.push(`<span class="pill dim">L5 ${form5Html(p.last5Results)}</span>`);
+  if (p.last5Results) foot.push(`<span class="pill dim">Last 5 ${form5Html(p.last5Results)}</span>`);
   return `
     <div class="tp-card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div><div class="tp-rank">0${i + 1}</div><div class="tp-type">${esc(typeLabel)}</div></div>
-        ${p.batterId ? headshotHtml(p.batterId, p.headline) : p.homeTeam ? logoHtml(null, p.homeTeam, 44) : ''}
+        <div><span class="tp-rank">${i + 1}</span><div class="tp-type">${esc(typeLabel)}</div></div>
+        ${p.batterId ? headshotHtml(p.batterId, p.headline) : p.homeTeam ? logoHtml(null, p.homeTeam, 38) : ''}
       </div>
       <div class="tp-head">${esc(p.headline)}</div>
       <div class="tp-detail">${esc(p.detail)}</div>
@@ -406,7 +404,7 @@ function moneylineCards(ml) {
         <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
       </div>
       <div class="sig-sub">To beat ${esc(p.awayTeam)}. ${esc(p.awayStarterName ?? 'Their starter')} carries a <strong>${fmtNum(p.awayStarterTrailingEra)} ERA over his last 3 starts</strong> (season ${fmtNum(p.awayStarterSeasonEra)}).</div>
-      <div class="sig-note">BREAK-EVEN ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '—'} AT ${fmtOdds(p.homeMl)} — the win rate this price must clear, not a prediction it will.</div>
+      <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '—'} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.</div>
     </div>`).join('')}</div>`;
 }
 
@@ -436,9 +434,9 @@ function hitStreakSection(hs) {
   const rows = hs.watchList.map((b) => `
     <tr class="${b.highConfidence ? 'hc' : ''}">
       <td>${playerCell(b)}</td>
-      <td><span class="mono">${b.hitStreak >= 5 ? `${b.hitStreak}-game streak` : `${fmtNum(b.trailing15Avg, 3)} L15`}</span><div class="faint mono" style="font-size:0.6rem;margin-top:2px">${fmtNum(b.trailing15Avg, 3)} AVG LAST 15</div></td>
+      <td><span class="mono">${b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)}`}</span><div class="faint" style="font-size:11px;margin-top:2px">${fmtNum(b.trailing15Avg, 3)} avg last 15</div></td>
       <td>${form5Html(b.last5Results)}</td>
-      <td>${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `<div class="mono ${b.opposingStarterTrailingEra >= 6 ? 'neg' : 'pos'}" style="font-size:0.66rem;margin-top:2px">${fmtNum(b.opposingStarterTrailingEra)} ERA L3</div>` : ''}</td>
+      <td>${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `<div class="mono ${b.opposingStarterTrailingEra >= 6 ? 'neg' : 'pos'}" style="font-size:11px;margin-top:2px">${fmtNum(b.opposingStarterTrailingEra)} ERA last 3</div>` : ''}</td>
       <td>${lineupPill(b.lineupConfirmed, null)}${b.highConfidence ? '<div style="margin-top:4px"><span class="pill info"><span class="pill-dot"></span>Prime matchup</span></div>' : ''}</td>
     </tr>`);
   return batterTable(rows, ['Hitter', 'Form', 'Last 5', 'Opposing starter', 'Status']);
@@ -449,10 +447,10 @@ function windHrSection(wh) {
   const rows = wh.watchList.map((b) => `
     <tr class="${b.highConfidence ? 'hc' : ''}">
       <td>${playerCell(b)}</td>
-      <td><span class="mono">${fmtNum(b.trailing15HrRate, 2)}</span><div class="faint mono" style="font-size:0.6rem;margin-top:2px">HR / GAME L15</div></td>
-      <td>${esc(b.venue ?? '')}<div class="mono faint" style="font-size:0.66rem;margin-top:2px">WIND OUT ${fmtNum(b.windSpeedMph, 1)} MPH</div></td>
+      <td><span class="mono">${fmtNum(b.trailing15HrRate, 2)}</span><div class="faint" style="font-size:11px;margin-top:2px">HR per game, last 15</div></td>
+      <td>${esc(b.venue ?? '')}<div class="faint" style="font-size:11px;margin-top:2px">Wind out ${fmtNum(b.windSpeedMph, 1)} mph</div></td>
       <td>${form5Html(b.last5Results)}</td>
-      <td>${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `<div class="mono ${b.opposingStarterTrailingEra >= 6 ? 'neg' : 'pos'}" style="font-size:0.66rem;margin-top:2px">${fmtNum(b.opposingStarterTrailingEra)} ERA L3</div>` : ''}</td>
+      <td>${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `<div class="mono ${b.opposingStarterTrailingEra >= 6 ? 'neg' : 'pos'}" style="font-size:11px;margin-top:2px">${fmtNum(b.opposingStarterTrailingEra)} ERA last 3</div>` : ''}</td>
       <td>${lineupPill(b.lineupConfirmed, null)}</td>
     </tr>`);
   return batterTable(rows, ['Power hitter', 'HR rate', 'Park + wind', 'Last 5', 'Opposing starter', 'Status']);
@@ -471,24 +469,24 @@ async function renderSignals() {
     host.innerHTML = `
       <div class="signals-toolbar">
         <select class="date-select" id="signalsDate">${dateOptions}</select>
-        <span class="toolbar-note">DIGEST FOR ${esc(longDate(d.date)).toUpperCase()}</span>
+        <span class="toolbar-note">Signals for ${esc(longDate(d.date))}</span>
       </div>
 
-      <div class="section-head"><h2 class="section-title"><span class="idx">01</span>Top 3 Picks</h2><span class="section-line"></span></div>
-      <p class="section-sub">The strongest signals of the day, pooled and ranked across all three categories. Scored by a transparent heuristic — how badly the opposing pitcher is struggling, plus how strong each category's own signal is — not a statistical model.</p>
-      ${d.topPicks?.length ? `<div class="top-picks">${d.topPicks.map(topPickCard).join('')}</div>` : emptyHtml('No pooled picks', 'No signal cleared its bar today, so nothing rose to the top.')}
+      <div class="section-head"><h2 class="section-title">Top 3 picks</h2></div>
+      <p class="section-sub">The day's strongest signals, ranked across all three categories. Scored by a simple, transparent heuristic — not a statistical model.</p>
+      ${d.topPicks?.length ? `<div class="top-picks">${d.topPicks.map(topPickCard).join('')}</div>` : emptyHtml('Nothing today', 'No signal cleared its bar today, so nothing rose to the top.')}
 
-      <div class="section-head"><h2 class="section-title"><span class="idx">02</span>Moneyline Edge</h2><span class="section-line"></span></div>
+      <div class="section-head"><h2 class="section-title">Moneyline</h2></div>
       <p class="section-sub">Home teams favored between -130 and -180 facing a visiting starter with a 6.00+ ERA over his last three starts.</p>
       ${moneylineCards(d.moneyline)}
       ${nearMissCards(d.moneyline.otherGames)}
 
-      <div class="section-head"><h2 class="section-title"><span class="idx">03</span>Contact Signal</h2><span class="section-line"></span></div>
-      <p class="section-sub">Hitters riding a 5+ game hit streak or batting .320+ over their last 15 games. Prime matchup marks a hot hitter facing a struggling starter.</p>
+      <div class="section-head"><h2 class="section-title">Hot hitters</h2></div>
+      <p class="section-sub">Hitters riding a 5+ game hit streak or batting .320+ over their last 15 games. Prime matchup means the opposing starter is struggling too.</p>
       ${hitStreakSection(d.hitStreak)}
 
-      <div class="section-head"><h2 class="section-title"><span class="idx">04</span>Power + Weather</h2><span class="section-line"></span></div>
-      <p class="section-sub">Parks with verified orientation where wind is blowing out at 10+ mph, crossed with the top third of today's hitters by recent home-run rate.</p>
+      <div class="section-head"><h2 class="section-title">Home run weather</h2></div>
+      <p class="section-sub">Parks where the wind is blowing out at 10+ mph, crossed with the top third of today's hitters by recent home-run rate.</p>
       ${windHrSection(d.windHr)}`;
 
     $('#signalsDate').addEventListener('change', (e) => {
@@ -502,7 +500,7 @@ async function renderSignals() {
 
 // ---------------------------------------------------------------------------
 // PERFORMANCE VIEW
-const SIGNAL_NAMES = { moneyline: 'Moneyline Edge', hit_streak: 'Contact Signal', wind_hr: 'Power + Weather' };
+const SIGNAL_NAMES = { moneyline: 'Moneyline', hit_streak: 'Hot hitters', wind_hr: 'HR weather' };
 
 async function renderPerformance() {
   const host = $('#view-performance');
@@ -528,15 +526,15 @@ async function renderPerformance() {
         <td><span class="pill dim">${esc(SIGNAL_NAMES[r.signalType] || r.signalType)}</span></td>
         <td>${esc(r.description)}</td>
         <td class="mono">${r.lockedPrice !== null ? fmtOdds(r.lockedPrice) : '—'}</td>
-        <td><span class="result-pill ${esc(r.result)}">${esc(r.result.toUpperCase())}</span></td>
+        <td><span class="result-pill ${esc(r.result)}">${esc(r.result.charAt(0).toUpperCase() + r.result.slice(1))}</span></td>
       </tr>`);
 
     host.innerHTML = `
-      <div class="section-head"><h2 class="section-title"><span class="idx">01</span>Signal Performance</h2><span class="section-line"></span></div>
-      <p class="section-sub">Every qualifying pick is written to a permanent ledger the first time it appears each day, then graded against real results. Win rate has to beat the break-even rate implied by the locked price before a signal means anything.</p>
-      ${tiles ? `<div class="stat-tiles">${tiles}</div>` : emptyHtml('Ledger is empty', 'No tracked picks yet. They accumulate automatically as the daily pipeline finds qualifying signals.')}
+      <div class="section-head"><h2 class="section-title">How the signals have done</h2></div>
+      <p class="section-sub">Every qualifying pick is recorded the first time it appears each day, then graded against real results. A signal only means something once its win rate beats the break-even rate implied by the price.</p>
+      ${tiles ? `<div class="stat-tiles">${tiles}</div>` : emptyHtml('No picks tracked yet', 'Picks accumulate automatically as the daily refresh finds qualifying signals.')}
 
-      <div class="section-head"><h2 class="section-title"><span class="idx">02</span>Recent Ledger</h2><span class="section-line"></span></div>
+      <div class="section-head"><h2 class="section-title">Recent picks</h2></div>
       ${d.recent.length ? batterTable(recentRows, ['Date', 'Signal', 'Pick', 'Price', 'Result']) : emptyHtml('Nothing recorded yet', 'Recent picks will appear here as the pipeline runs.')}`;
   } catch (err) {
     host.innerHTML = emptyHtml('Performance unavailable', err.message);
@@ -559,7 +557,7 @@ async function pollStatus(fast = false) {
     if (s.isRefreshing) {
       dot.className = 'pulse-dot busy';
       const secs = s.refreshStartedAt ? Math.round((Date.now() - new Date(s.refreshStartedAt).getTime()) / 1000) : 0;
-      txt.textContent = `Syncing ${secs}s`;
+      txt.textContent = `Refreshing (${secs}s)`;
       btn.disabled = true;
       btn.classList.add('spinning');
       statusTimer = setTimeout(() => pollStatus(true), 2500);
@@ -574,10 +572,10 @@ async function pollStatus(fast = false) {
     }
     if (s.lastRunError) {
       dot.className = 'pulse-dot err';
-      txt.textContent = 'Last sync failed';
+      txt.textContent = 'Last refresh failed';
     } else if (s.lastRunAt) {
       dot.className = 'pulse-dot';
-      txt.textContent = `Synced ${new Date(s.lastRunAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+      txt.textContent = `Updated ${new Date(s.lastRunAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
     } else {
       dot.className = 'pulse-dot';
       txt.textContent = 'Online';

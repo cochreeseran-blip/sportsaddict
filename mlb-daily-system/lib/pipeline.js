@@ -3,15 +3,17 @@ import * as mlb from './sources/mlbStats.js';
 import { fetchMoneylines, normalizeTeam } from './sources/odds.js';
 import { fetchWindAt } from './sources/weather.js';
 import { isWindBlowingOut } from './geo.js';
-import { computeTrailingPitcherStats, upsertPitcherForm } from './pitcherForm.js';
+import { computeTrailingPitcherStats, computeStrikeoutStats, upsertPitcherForm } from './pitcherForm.js';
 import { computeBatterStats, upsertBatterForm } from './batterForm.js';
 import { runMoneylineFilter, BAND_LOW, BAND_HIGH } from './filters/moneyline.js';
 import { runHitStreakFilter } from './filters/hitStreak.js';
 import { runWindHrFilter } from './filters/windHr.js';
+import { runStrikeoutFilter } from './filters/strikeouts.js';
 import { saveDigest } from './digest.js';
 import { buildTopPicks } from './topPicks.js';
 import { recordTrackedPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
+import { syncParkBearings } from './parkBearings.js';
 
 // How many player stat lookups run in flight at once during the full-roster
 // pass. Sequential would mean ~1,000+ calls back to back on a full slate;
@@ -151,6 +153,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   let battersOk = 0;
   let battersTotal = 0;
 
+  const lineupsPending = [];
   for (const [teamId, team] of teamNameById) {
     const gameSide = gameSideByTeam.get(teamId);
     let confirmedSet = null;
@@ -164,7 +167,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       }
     }
     if (!confirmedSet) {
-      warnings.push(`${team}'s lineup isn't posted yet — batter status will show as projected until it is.`);
+      lineupsPending.push(team);
     }
 
     let roster;
@@ -184,7 +187,8 @@ export async function runPipeline(gameDate = todayIsoDate()) {
           mlb.fetchPitcherSeasonEra(pitcher.id, season),
         ]);
         const trailing = computeTrailingPitcherStats(gameLog);
-        await upsertPitcherForm(pool, { gameDate, pitcherId: pitcher.id, pitcherName: pitcher.fullName, seasonEra, ...trailing });
+        const strikeouts = computeStrikeoutStats(gameLog);
+        await upsertPitcherForm(pool, { gameDate, pitcherId: pitcher.id, pitcherName: pitcher.fullName, seasonEra, ...trailing, ...strikeouts });
         pitcherOk++;
       } catch (err) {
         warnings.push(`Pitcher form unavailable for ${pitcher.fullName ?? pitcher.id} — check manually. (${err.message})`);
@@ -214,6 +218,16 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   }
   log(`Pitcher form: ${pitcherOk}/${pitcherTotal} pitcher(s) updated across ${teamNameById.size} team(s).`);
   log(`Batter form: ${battersOk}/${battersTotal} batter(s) updated across ${teamNameById.size} team(s).`);
+  // One status line, not one warning per team. Unposted lineups before
+  // game time are normal (MLB posts them 1-3 hours before first pitch),
+  // and a 30-line wall of "lineup isn't posted" reads like the app is
+  // broken when nothing is wrong.
+  if (lineupsPending.length) {
+    warnings.push(
+      `Lineups not posted yet for ${lineupsPending.length} of ${teamNameById.size} team(s) — normal until 1-3 hours ` +
+        `before each game. Their batters show as projected, and refresh again closer to game time to pick them up.`
+    );
+  }
 
   // 3b. Re-confirm the away starter for games that already clear the
   // moneyline odds band. Probable starters are usually announced well
@@ -255,12 +269,14 @@ export async function runPipeline(gameDate = todayIsoDate()) {
             mlb.fetchPitcherSeasonEra(fresh.awayStarterId, season),
           ]);
           const trailing = computeTrailingPitcherStats(gameLog);
+          const strikeouts = computeStrikeoutStats(gameLog);
           await upsertPitcherForm(pool, {
             gameDate,
             pitcherId: fresh.awayStarterId,
             pitcherName: fresh.awayStarterName,
             seasonEra,
             ...trailing,
+            ...strikeouts,
           });
         }
       }
@@ -272,6 +288,17 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     log(`Pitcher re-confirmation: checked ${bandGames.length} moneyline-band game(s), ${pitcherSwaps} swap(s) found.`);
   }
 
+  // 4b. Park bearings — sync every venue's field orientation from MLB's
+  // venues endpoint (one request), validated against the league-wide
+  // orientation band before anything is stored. This is what feeds the
+  // wind/HR filter; without it every park sits at "unverified" and the
+  // whole wind category stays dark.
+  const bearingSync = await syncParkBearings(pool, season);
+  if (bearingSync.warning) {
+    warnings.push(bearingSync.warning);
+  }
+  log(`Park bearings: ${bearingSync.updated} venue(s) synced from MLB${bearingSync.skipped ? `, ${bearingSync.skipped} skipped` : ''}.`);
+
   // 5. Weather — one lookup per unique venue playing today.
   const venues = new Map();
   for (const g of scheduleGames) {
@@ -279,6 +306,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   }
   let windOk = 0;
   let windSkippedUnverified = 0;
+  const unverifiedVenues = [];
   for (const [venue, gameTimeUtc] of venues) {
     try {
       const { rows } = await pool.query(
@@ -286,17 +314,16 @@ export async function runPipeline(gameDate = todayIsoDate()) {
         [venue]
       );
       if (!rows.length) {
-        warnings.push(`No park orientation data for venue "${venue}" — wind check skipped.`);
+        unverifiedVenues.push(venue);
         continue;
       }
       const { latitude, longitude, out_bearing_degrees } = rows[0];
       if (out_bearing_degrees === null) {
-        // Bearing is unverified (see migration 004) — computing "blowing
-        // out" from an unknown orientation would be exactly the silent
-        // guess this table was fixed to stop doing. Explicitly clear any
-        // stale wind_blowing_out from a prior run rather than leaving it.
+        // Bearing is unverified — computing "blowing out" from an unknown
+        // orientation would be a silent guess. Explicitly clear any stale
+        // wind_blowing_out from a prior run rather than leaving it.
         windSkippedUnverified++;
-        warnings.push(`Park orientation for "${venue}" is unverified (no confirmed bearing) — wind check skipped.`);
+        unverifiedVenues.push(venue);
         await pool.query('UPDATE games SET wind_speed_mph = NULL, wind_blowing_out = NULL WHERE game_date = $1 AND venue = $2', [
           gameDate,
           venue,
@@ -321,12 +348,18 @@ export async function runPipeline(gameDate = todayIsoDate()) {
       console.warn(`  Weather fetch failed for ${venue}: ${err.message}`);
     }
   }
+  if (unverifiedVenues.length) {
+    warnings.push(
+      `Wind check skipped at ${unverifiedVenues.length} park(s) with no verified orientation: ${unverifiedVenues.join(', ')}.`
+    );
+  }
   log(`Weather: ${windOk}/${venues.size} venue(s) updated (${windSkippedUnverified} skipped — unverified park orientation).`);
 
   // Filters + digest
   const moneyline = await runMoneylineFilter(pool, gameDate);
   const hitStreak = await runHitStreakFilter(pool, gameDate);
   const windHr = await runWindHrFilter(pool, gameDate);
+  const strikeouts = await runStrikeoutFilter(pool, gameDate);
   warnings.push(...(windHr.warnings || []));
 
   // Pooled cross-category ranking for the dashboard's Top 3 hero section.
@@ -336,6 +369,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
   await saveDigest(pool, gameDate, 'wind_hr', windHr);
+  await saveDigest(pool, gameDate, 'strikeouts', strikeouts);
   await saveDigest(pool, gameDate, 'top_picks', { picks: topPicks });
   // Persisted so a past date's digest still shows why its data may be
   // incomplete (e.g. odds unavailable that day), not just the most recent
@@ -345,5 +379,5 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   const trackedCount = await recordTrackedPicks(pool, gameDate, { moneyline, hitStreak, windHr });
   log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
 
-  return { gameDate, warnings, moneyline, hitStreak, windHr, topPicks };
+  return { gameDate, warnings, moneyline, hitStreak, windHr, strikeouts, topPicks };
 }

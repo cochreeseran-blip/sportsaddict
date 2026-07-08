@@ -209,6 +209,23 @@ export async function fetchConfirmedLineup(gamePk, side) {
   });
 }
 
+// Every MLB venue with location hydration, one request for the league.
+// location.azimuthAngle is the park's field orientation straight from
+// MLB's own database, and defaultCoordinates carries lat/long. See
+// lib/parkBearings.js for how the angles are validated before being
+// trusted by the wind math.
+export async function fetchVenues(season) {
+  const url = `${BASE}/venues?sportId=1&hydrate=location&season=${season}`;
+  const data = await fetchJson(url);
+  return (data.venues || []).map((v) => ({
+    id: v.id,
+    name: v.name,
+    azimuthAngle: typeof v.location?.azimuthAngle === 'number' ? v.location.azimuthAngle : null,
+    latitude: v.location?.defaultCoordinates?.latitude ?? null,
+    longitude: v.location?.defaultCoordinates?.longitude ?? null,
+  }));
+}
+
 // Full active roster (both pitchers and position players) in one call, so
 // the pipeline can track every rostered player's form daily instead of
 // just today's probable starters and confirmed lineup. One roster fetch,

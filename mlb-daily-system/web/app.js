@@ -1071,11 +1071,34 @@ async function init() {
 // ACCOUNT GATE
 let authMode = 'signup';
 
+// "Remember me": the session cookie handles staying logged in; this just
+// remembers the email locally so a returning user opens straight onto the
+// login form with their address filled in.
+function rememberedEmail() {
+  try { return localStorage.getItem('sf_email') || ''; } catch { return ''; }
+}
+function setRememberedEmail(email) {
+  try {
+    if (email) localStorage.setItem('sf_email', email);
+    else localStorage.removeItem('sf_email');
+  } catch { /* private mode etc. */ }
+}
+
 function openAuthGate() {
   $('#authGate').hidden = false;
   $('#authFormWrap').hidden = false;
   $('#authReveal').hidden = true;
-  setAuthMode('signup');
+  // Never carry a previous session's password (or its visibility) over.
+  const pw = $('#authPassword');
+  pw.value = '';
+  pw.type = 'password';
+  $('#authShowPw').textContent = 'Show';
+  const saved = rememberedEmail();
+  setAuthMode(saved ? 'login' : 'signup');
+  if (saved) {
+    $('#authEmail').value = saved;
+    pw.focus();
+  }
 }
 
 function closeAuthGate() {
@@ -1110,15 +1133,30 @@ function updateAccountChip() {
 function wireAuth() {
   $('#authToggle').addEventListener('click', () => setAuthMode(authMode === 'signup' ? 'login' : 'signup'));
 
+  $('#authShowPw').addEventListener('click', () => {
+    const input = $('#authPassword');
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    $('#authShowPw').textContent = showing ? 'Show' : 'Hide';
+    $('#authShowPw').setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+    input.focus();
+  });
+
   $('#authForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const err = $('#authError');
     err.hidden = true;
     $('#authSubmit').disabled = true;
     try {
-      const body = { email: $('#authEmail').value.trim(), password: $('#authPassword').value };
+      const remember = $('#authRemember').checked;
+      const body = {
+        email: $('#authEmail').value.trim(),
+        password: $('#authPassword').value,
+        rememberMe: remember,
+      };
       const path = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
       const { user } = await apiSend(path, 'POST', body);
+      setRememberedEmail(remember ? body.email : '');
       state.user = user;
       updateAccountChip();
       if (authMode === 'signup') {

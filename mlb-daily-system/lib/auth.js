@@ -54,6 +54,36 @@ export function generateAvatarSeed() {
 }
 
 // ---------------------------------------------------------------------------
+// Schema self-heal, run at every server boot. The migrations directory
+// normally handles this, but a deploy that boots older migration files
+// against a newer database (or vice versa) must never be able to brick
+// signups — CREATE TABLE IF NOT EXISTS silently skips a pre-existing
+// users table, which is exactly how avatar_seed went missing in
+// production. Everything here is idempotent.
+export async function ensureAuthSchema(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      username TEXT UNIQUE NOT NULL,
+      avatar_seed INTEGER,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_seed INTEGER;
+    UPDATE users SET avatar_seed = ((id::bigint * 2654435761) % 2147483647)::integer
+      WHERE avatar_seed IS NULL;
+  `);
+}
+
+// ---------------------------------------------------------------------------
 // Sessions: opaque random tokens stored server-side.
 const SESSION_DAYS = 90;
 
@@ -134,8 +164,12 @@ export function parseCookies(req) {
   return out;
 }
 
-export function sessionCookie(token, req, clear = false) {
+// remember=true pins the cookie for SESSION_DAYS; remember=false makes it
+// a browser-session cookie (no Max-Age), so closing the browser logs out.
+// The server-side session row expires on its own schedule either way.
+export function sessionCookie(token, req, { clear = false, remember = true } = {}) {
   const secure = (req.headers['x-forwarded-proto'] || '').includes('https');
-  const maxAge = clear ? 0 : SESSION_DAYS * 24 * 60 * 60;
-  return `sf_session=${clear ? '' : token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+  const base = `sf_session=${clear ? '' : token}; Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
+  if (clear) return `${base}; Max-Age=0`;
+  return remember ? `${base}; Max-Age=${SESSION_DAYS * 24 * 60 * 60}` : base;
 }

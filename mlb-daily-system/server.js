@@ -10,7 +10,7 @@ import * as mlb from './lib/sources/mlbStats.js';
 import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
 import { listManualPicks, addManualPick, deleteManualPick } from './lib/manualPicks.js';
 import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newsletter.js';
-import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie } from './lib/auth.js';
+import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -389,14 +389,14 @@ const server = http.createServer(async (req, res) => {
     // The account gate lives in the frontend; the data API stays open so a
     // broken auth flow can never brick the research pages.
     if (url.pathname === '/api/auth/signup' && req.method === 'POST') {
-      const { email, password } = await readJsonBody(req);
+      const { email, password, rememberMe } = await readJsonBody(req);
       const cleanEmail = String(email || '').trim();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return sendJson(res, 400, { error: 'That email does not look right.' });
       if (typeof password !== 'string' || password.length < 8) return sendJson(res, 400, { error: 'Password needs at least 8 characters.' });
       try {
         const user = await createUser(pool, cleanEmail, password);
         const token = await createSession(pool, user.id);
-        res.setHeader('Set-Cookie', sessionCookie(token, req));
+        res.setHeader('Set-Cookie', sessionCookie(token, req, { remember: rememberMe !== false }));
         sendJson(res, 201, { user });
       } catch (err) {
         if (err.code === '23505') return sendJson(res, 409, { error: 'That email already has an account. Log in instead.' });
@@ -406,18 +406,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
-      const { email, password } = await readJsonBody(req);
+      const { email, password, rememberMe } = await readJsonBody(req);
       const user = await authenticate(pool, String(email || '').trim(), String(password || ''));
       if (!user) return sendJson(res, 401, { error: 'Wrong email or password.' });
       const token = await createSession(pool, user.id);
-      res.setHeader('Set-Cookie', sessionCookie(token, req));
+      res.setHeader('Set-Cookie', sessionCookie(token, req, { remember: rememberMe !== false }));
       sendJson(res, 200, { user });
       return;
     }
 
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
       await destroySession(pool, parseCookies(req).sf_session);
-      res.setHeader('Set-Cookie', sessionCookie('', req, true));
+      res.setHeader('Set-Cookie', sessionCookie('', req, { clear: true }));
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -599,6 +599,9 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   await runMigrations(pool);
+  // Never trust migration-file state for auth: re-assert the users/sessions
+  // schema (incl. avatar_seed) on every boot. Idempotent and fast.
+  await ensureAuthSchema(pool);
 
   // Bind the port immediately so Railway's healthcheck passes right away —
   // don't make first boot wait on a full pipeline run (batter form alone

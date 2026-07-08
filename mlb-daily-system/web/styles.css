@@ -441,6 +441,22 @@ select.date-select:focus { outline: 1px solid var(--accent); }
 .auth-sub { color: var(--text-3); font-size: 12.5px; line-height: 1.55; margin: 0 0 16px; }
 .auth-card form { text-align: left; }
 .auth-submit { width: 100%; margin-top: 4px; height: 36px; }
+
+.password-wrap { position: relative; display: block; }
+.password-wrap input { padding-right: 56px; }
+.password-toggle {
+  position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+  font: 550 11px var(--font); color: var(--text-2);
+  background: var(--panel-2); border: 1px solid var(--border-strong); border-radius: 5px;
+  padding: 3px 8px; cursor: pointer;
+}
+.password-toggle:hover { color: var(--text); }
+
+.remember-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 12.5px; color: var(--text-2); margin: 2px 0 12px; user-select: none;
+}
+.remember-row input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
 .auth-toggle-row { margin-top: 14px; font-size: 12px; color: var(--text-3); display: flex; gap: 6px; justify-content: center; }
 .auth-toggle { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; }
 .auth-toggle:hover { text-decoration: underline; }

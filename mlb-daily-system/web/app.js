@@ -451,14 +451,12 @@ function closeGamePanel() {
 }
 
 // ---------------------------------------------------------------------------
-// BET TRACKING, "Track" buttons carry a prefill payload by id so no JSON
-// ends up in HTML attributes.
-let trackSeq = 0;
-const trackData = new Map();
-function trackBtn(prefill, label = 'Track bet') {
-  const id = ++trackSeq;
-  trackData.set(id, prefill);
-  return `<button class="btn-track" data-track="${id}">${label}</button>`;
+// Bet tracking was removed with the My Bets / Performance tabs. trackBtn is
+// kept as a no-op so the pick render functions don't need to change, and
+// there are no dead "Track bet" buttons pointing at a screen that no longer
+// exists.
+function trackBtn() {
+  return '';
 }
 
 function openBetModal(prefill = {}) {
@@ -1274,7 +1272,6 @@ function showView(name, force = false) {
   if (name === 'slate') { renderSlateShell(); loadSlateGames(); }
   if (name === 'signals') renderSignals();
   if (name === 'chat') renderChat();
-  if (name === 'performance') renderPerformance();
   if (name !== 'chat') stopChatPolling();
 }
 
@@ -1287,20 +1284,8 @@ async function init() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeGamePanel();
-      closeBetModal();
       closeManualPickModal();
     }
-  });
-
-  // Bet modal wiring + delegated "Track bet" buttons.
-  $('#betForm').addEventListener('submit', submitBet);
-  $('#betCancel').addEventListener('click', closeBetModal);
-  $('#betModal').addEventListener('click', (e) => { if (e.target === $('#betModal')) closeBetModal(); });
-  document.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-track]');
-    if (!btn) return;
-    const prefill = trackData.get(Number(btn.dataset.track));
-    if (prefill) openBetModal(prefill);
   });
 
   // Manual pick modal wiring + delegated add/delete buttons.

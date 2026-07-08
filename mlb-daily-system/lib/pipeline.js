@@ -116,37 +116,107 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     }
   }
 
-  // 3. Pitcher form — every probable starter, home and away, deduped.
-  const starterIds = new Map();
+  // 3. Full active roster — every pitcher and every position player on
+  // both teams' 26-man active rosters, for every game today. Not just
+  // today's two probable starters and the confirmed lineup: the whole
+  // staff and the whole bench. More API calls and a longer run than
+  // pulling just the narrow slice, done sequentially on purpose (kinder
+  // to the free, unauthenticated MLB Stats API), but it means every
+  // signal is scored off a complete roster picture, and a probable-
+  // pitcher swap or a hot bench bat doesn't need its own extra live
+  // fetch — the data's already on file from this pass.
+  const gameSideByTeam = new Map(); // teamId -> { gamePk, side }
+  const teamNameById = new Map();
   for (const g of scheduleGames) {
-    if (g.homeStarterId) starterIds.set(g.homeStarterId, g.homeStarterName);
-    if (g.awayStarterId) starterIds.set(g.awayStarterId, g.awayStarterName);
-  }
-  let pitcherOk = 0;
-  for (const [pitcherId, pitcherName] of starterIds) {
-    try {
-      const [gameLog, seasonEra] = await Promise.all([
-        mlb.fetchPitcherGameLog(pitcherId, season),
-        mlb.fetchPitcherSeasonEra(pitcherId, season),
-      ]);
-      const trailing = computeTrailingPitcherStats(gameLog);
-      await upsertPitcherForm(pool, { gameDate, pitcherId, pitcherName, seasonEra, ...trailing });
-      pitcherOk++;
-    } catch (err) {
-      warnings.push(`Pitcher form unavailable for ${pitcherName ?? pitcherId} — check manually. (${err.message})`);
-      console.warn(`  Pitcher form failed for ${pitcherName ?? pitcherId}: ${err.message}`);
+    if (g.homeTeamId) {
+      teamNameById.set(g.homeTeamId, g.homeTeamName);
+      if (!gameSideByTeam.has(g.homeTeamId)) gameSideByTeam.set(g.homeTeamId, { gamePk: g.gamePk, side: 'home' });
+    }
+    if (g.awayTeamId) {
+      teamNameById.set(g.awayTeamId, g.awayTeamName);
+      if (!gameSideByTeam.has(g.awayTeamId)) gameSideByTeam.set(g.awayTeamId, { gamePk: g.gamePk, side: 'away' });
     }
   }
-  log(`Pitcher form: ${pitcherOk}/${starterIds.size} pitcher(s) updated.`);
+
+  let pitcherOk = 0;
+  let pitcherTotal = 0;
+  let battersOk = 0;
+  let battersTotal = 0;
+
+  for (const [teamId, team] of teamNameById) {
+    const gameSide = gameSideByTeam.get(teamId);
+    let confirmedSet = null;
+    if (gameSide) {
+      try {
+        const confirmed = await mlb.fetchConfirmedLineup(gameSide.gamePk, gameSide.side);
+        if (confirmed.length) confirmedSet = new Set(confirmed.map((p) => p.id));
+      } catch (err) {
+        warnings.push(`Batter lineup unavailable for ${team} — check manually. (${err.message})`);
+        console.warn(`  Lineup fetch failed for ${team}: ${err.message}`);
+      }
+    }
+    if (!confirmedSet) {
+      warnings.push(`${team}'s lineup isn't posted yet — batter status will show as projected until it is.`);
+    }
+
+    let roster;
+    try {
+      roster = await mlb.fetchActiveRoster(teamId);
+    } catch (err) {
+      warnings.push(`Active roster unavailable for ${team} — check manually. (${err.message})`);
+      console.warn(`  Roster fetch failed for ${team}: ${err.message}`);
+      continue;
+    }
+
+    for (const pitcher of roster.pitchers) {
+      pitcherTotal++;
+      try {
+        const [gameLog, seasonEra] = await Promise.all([
+          mlb.fetchPitcherGameLog(pitcher.id, season),
+          mlb.fetchPitcherSeasonEra(pitcher.id, season),
+        ]);
+        const trailing = computeTrailingPitcherStats(gameLog);
+        await upsertPitcherForm(pool, { gameDate, pitcherId: pitcher.id, pitcherName: pitcher.fullName, seasonEra, ...trailing });
+        pitcherOk++;
+      } catch (err) {
+        warnings.push(`Pitcher form unavailable for ${pitcher.fullName ?? pitcher.id} — check manually. (${err.message})`);
+      }
+    }
+
+    for (const hitter of roster.hitters) {
+      battersTotal++;
+      try {
+        const batterLog = await mlb.fetchBatterGameLog(hitter.id, season);
+        const stats = computeBatterStats(batterLog);
+        await upsertBatterForm(pool, {
+          gameDate,
+          batterId: hitter.id,
+          batterName: hitter.fullName,
+          team,
+          lineupConfirmed: confirmedSet ? confirmedSet.has(hitter.id) : false,
+          position: hitter.position,
+          jerseyNumber: hitter.jerseyNumber,
+          ...stats,
+        });
+        battersOk++;
+      } catch (err) {
+        warnings.push(`Batter form unavailable for ${hitter.fullName ?? hitter.id} — check manually. (${err.message})`);
+      }
+    }
+  }
+  log(`Pitcher form: ${pitcherOk}/${pitcherTotal} pitcher(s) updated across ${teamNameById.size} team(s).`);
+  log(`Batter form: ${battersOk}/${battersTotal} batter(s) updated across ${teamNameById.size} team(s).`);
 
   // 3b. Re-confirm the away starter for games that already clear the
   // moneyline odds band. Probable starters are usually announced well
   // before game day and are far more stable than same-day lineups, but a
   // late scratch or doubleheader shuffle would otherwise silently lock a
   // pick to whichever pitcher was probable at the last full schedule
-  // fetch. This is deliberately scoped to just the odds-qualifying games
-  // (typically a handful, not the whole slate) so it stays cheap enough
-  // to run on every pull.
+  // fetch. Scoped to just the odds-qualifying games (typically a
+  // handful, not the whole slate). The full-roster pass above already
+  // has trailing ERA on file for whoever's on the active roster, so a
+  // swap usually needs no extra fetch here — only an emergency call-up
+  // who wasn't on the roster yet at pull time falls back to a live one.
   const { rows: bandGames } = await pool.query(
     'SELECT mlb_game_id, home_team, away_team, away_starter_id, away_starter_name FROM games WHERE game_date = $1 AND home_ml IS NOT NULL AND home_ml BETWEEN $2 AND $3',
     [gameDate, BAND_LOW, BAND_HIGH]
@@ -167,18 +237,24 @@ export async function runPipeline(gameDate = todayIsoDate()) {
           fresh.awayStarterName,
           g.mlb_game_id,
         ]);
-        const [gameLog, seasonEra] = await Promise.all([
-          mlb.fetchPitcherGameLog(fresh.awayStarterId, season),
-          mlb.fetchPitcherSeasonEra(fresh.awayStarterId, season),
-        ]);
-        const trailing = computeTrailingPitcherStats(gameLog);
-        await upsertPitcherForm(pool, {
-          gameDate,
-          pitcherId: fresh.awayStarterId,
-          pitcherName: fresh.awayStarterName,
-          seasonEra,
-          ...trailing,
-        });
+        const { rows: existing } = await pool.query(
+          'SELECT 1 FROM pitcher_form WHERE game_date = $1 AND pitcher_id = $2',
+          [gameDate, fresh.awayStarterId]
+        );
+        if (!existing.length) {
+          const [gameLog, seasonEra] = await Promise.all([
+            mlb.fetchPitcherGameLog(fresh.awayStarterId, season),
+            mlb.fetchPitcherSeasonEra(fresh.awayStarterId, season),
+          ]);
+          const trailing = computeTrailingPitcherStats(gameLog);
+          await upsertPitcherForm(pool, {
+            gameDate,
+            pitcherId: fresh.awayStarterId,
+            pitcherName: fresh.awayStarterName,
+            seasonEra,
+            ...trailing,
+          });
+        }
       }
     } catch (err) {
       warnings.push(`Could not re-confirm the probable starter for ${g.away_team} @ ${g.home_team} — check manually. (${err.message})`);
@@ -187,60 +263,6 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   if (bandGames.length) {
     log(`Pitcher re-confirmation: checked ${bandGames.length} moneyline-band game(s), ${pitcherSwaps} swap(s) found.`);
   }
-
-  // 4. Batter form — confirmed lineup if it's out yet, else active roster
-  // position players as a "regulars" stand-in. Calls are sequential on
-  // purpose: this hits the free, unauthenticated MLB Stats API dozens of
-  // times a day and sequential requests are kinder to it than a burst.
-  let battersOk = 0;
-  let battersTotal = 0;
-  for (const g of scheduleGames) {
-    const sides = [
-      { side: 'home', teamId: g.homeTeamId, team: g.homeTeamName },
-      { side: 'away', teamId: g.awayTeamId, team: g.awayTeamName },
-    ];
-    for (const { side, teamId, team } of sides) {
-      let hitters = [];
-      let lineupConfirmed = false;
-      try {
-        hitters = await mlb.fetchConfirmedLineup(g.gamePk, side);
-        if (hitters.length) {
-          lineupConfirmed = true;
-        } else {
-          hitters = await mlb.fetchActiveHitters(teamId);
-          lineupConfirmed = false;
-        }
-      } catch (err) {
-        warnings.push(`Batter lineup unavailable for ${team} — check manually. (${err.message})`);
-        console.warn(`  Lineup fetch failed for ${team}: ${err.message}`);
-        continue;
-      }
-      if (!lineupConfirmed) {
-        warnings.push(`${team}'s lineup isn't posted yet — showing active roster regulars instead (may not match tonight's actual batting order).`);
-      }
-      for (const hitter of hitters) {
-        battersTotal++;
-        try {
-          const batterLog = await mlb.fetchBatterGameLog(hitter.id, season);
-          const stats = computeBatterStats(batterLog);
-          await upsertBatterForm(pool, {
-            gameDate,
-            batterId: hitter.id,
-            batterName: hitter.fullName,
-            team,
-            lineupConfirmed,
-            position: hitter.position,
-            jerseyNumber: hitter.jerseyNumber,
-            ...stats,
-          });
-          battersOk++;
-        } catch (err) {
-          warnings.push(`Batter form unavailable for ${hitter.fullName ?? hitter.id} — check manually. (${err.message})`);
-        }
-      }
-    }
-  }
-  log(`Batter form: ${battersOk}/${battersTotal} batter(s) updated.`);
 
   // 5. Weather — one lookup per unique venue playing today.
   const venues = new Map();

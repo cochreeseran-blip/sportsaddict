@@ -209,17 +209,22 @@ export async function fetchConfirmedLineup(gamePk, side) {
   });
 }
 
-// Fallback roster of position players ("regulars") when no lineup is out yet.
-export async function fetchActiveHitters(teamId) {
+// Full active roster (both pitchers and position players) in one call, so
+// the pipeline can track every rostered player's form daily instead of
+// just today's probable starters and confirmed lineup. One roster fetch,
+// split by position, rather than a separate call per group.
+export async function fetchActiveRoster(teamId) {
   const url = `${BASE}/teams/${teamId}/roster?rosterType=active`;
   const data = await fetchJson(url);
   const roster = data.roster || [];
-  return roster
-    .filter((p) => p.position?.abbreviation && p.position.abbreviation !== 'P')
-    .map((p) => ({
-      id: p.person.id,
-      fullName: p.person.fullName,
-      jerseyNumber: p.jerseyNumber || null,
-      position: p.position?.abbreviation || null,
-    }));
+  const toPlayer = (p) => ({
+    id: p.person.id,
+    fullName: p.person.fullName,
+    jerseyNumber: p.jerseyNumber || null,
+    position: p.position?.abbreviation || null,
+  });
+  return {
+    pitchers: roster.filter((p) => p.position?.abbreviation === 'P').map(toPlayer),
+    hitters: roster.filter((p) => p.position?.abbreviation && p.position.abbreviation !== 'P').map(toPlayer),
+  };
 }

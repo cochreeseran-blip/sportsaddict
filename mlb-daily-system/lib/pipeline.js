@@ -77,6 +77,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     try {
       const moneylines = await fetchMoneylines(process.env.ODDS_API_KEY);
       let matched = 0;
+      const unmatched = [];
       for (const g of scheduleGames) {
         const m = moneylines.find(
           (o) =>
@@ -84,6 +85,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
             normalizeTeam(o.awayTeam) === normalizeTeam(g.awayTeamName)
         );
         if (!m || (m.homeMl === null && m.awayMl === null)) {
+          unmatched.push(`${g.awayTeamName} @ ${g.homeTeamName}`);
           console.warn(`  Odds: no match/line for ${g.awayTeamName} @ ${g.homeTeamName} — skipping.`);
           continue;
         }
@@ -95,6 +97,19 @@ export async function runPipeline(gameDate = todayIsoDate()) {
         matched++;
       }
       log(`Odds: matched ${matched}/${scheduleGames.length} game(s).`);
+      // Per-game mismatches used to only go to console.warn, which nobody
+      // using the site could ever see — this was the second half of the
+      // "moneyline is empty and nobody knows why" bug (the first half was
+      // the top-level ODDS_API_KEY check above). Surface it for real.
+      if (scheduleGames.length > 0 && matched === 0) {
+        const sample = moneylines.slice(0, 5).map((m) => `${m.awayTeam} @ ${m.homeTeam}`).join('; ');
+        warnings.push(
+          `Odds data fetched but matched 0 of ${scheduleGames.length} games by team name — check manually. ` +
+            `The Odds API returned ${moneylines.length} game(s)${sample ? `, e.g. ${sample}` : ''}.`
+        );
+      } else if (unmatched.length) {
+        warnings.push(`No moneyline found for ${unmatched.length} game(s): ${unmatched.join('; ')}`);
+      }
     } catch (err) {
       warnings.push(`Odds data unavailable — check manually. (${err.message})`);
       console.warn(`  Odds fetch failed: ${err.message}`);

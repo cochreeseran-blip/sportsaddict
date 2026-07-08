@@ -34,6 +34,8 @@ export async function runHitStreakFilter(pool, gameDate) {
       team: b.team,
       hitStreak: b.hit_streak,
       trailing15Avg: b.trailing_15_avg !== null ? Number(b.trailing_15_avg) : null,
+      lineupConfirmed: b.lineup_confirmed,
+      last5Results: b.last5_results ?? [],
       opposingStarterName: opp?.starterName ?? null,
       opposingStarterTrailingEra: opponentTrailingEra,
       highConfidence: opponentTrailingEra !== null && opponentTrailingEra >= ERA_GATE,

@@ -1,6 +1,17 @@
 import { fmtOdds } from './util/format.js';
 import { buildTopPicks } from './topPicks.js';
 
+function fmtLast5(results) {
+  if (!results || !results.length) return 'no data';
+  return results.map((hit) => (hit ? 'H' : '-')).join('');
+}
+
+function fmtLineup(confirmed) {
+  if (confirmed === true) return 'confirmed lineup';
+  if (confirmed === false) return 'PROJECTED, not confirmed';
+  return 'lineup status unknown';
+}
+
 export async function saveDigest(pool, gameDate, signalType, details) {
   await pool.query(
     'INSERT INTO daily_digest (game_date, signal_type, details) VALUES ($1, $2, $3)',
@@ -56,7 +67,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
     for (const b of hitStreak.watchList) {
       const tag = b.highConfidence ? '[HIGH CONFIDENCE] ' : '';
       console.log(
-        `  ${tag}${b.batterName} (${b.team}) — streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3)} ` +
+        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}] — streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} ` +
           `vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`
       );
     }
@@ -70,7 +81,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
     for (const b of windHr.watchList) {
       const tag = b.highConfidence ? '[HIGH CONFIDENCE] ' : '';
       console.log(
-        `  ${tag}${b.batterName} (${b.team}) — HR rate ${b.trailing15HrRate?.toFixed(3)} @ ${b.venue} ` +
+        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}] — HR rate ${b.trailing15HrRate?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} @ ${b.venue} ` +
           `(wind ${b.windSpeedMph?.toFixed(1)} mph out) vs ${b.opposingStarterName ?? 'TBD'} ` +
           `(ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`
       );

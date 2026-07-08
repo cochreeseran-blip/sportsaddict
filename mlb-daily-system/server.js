@@ -90,6 +90,17 @@ const TOP_PICK_LABEL = {
   wind_hr: '💨 Home run weather',
 };
 
+function renderLast5(results) {
+  if (!results || !results.length) return '<span class="muted">no data</span>';
+  return `<span class="last5">${results.map((hit) => (hit ? '✅' : '❌')).join(' ')}</span>`;
+}
+
+function lineupBadge(confirmed) {
+  if (confirmed === true) return '<span class="badge good">✅ Confirmed lineup</span>';
+  if (confirmed === false) return '<span class="badge warn">⚠️ Projected — not confirmed</span>';
+  return '';
+}
+
 function renderTopPicks(topPicks) {
   if (!topPicks.length) {
     return `<p class="empty">Not enough qualifying signals today for a top 3 — check the sections below, or try again once more games have data.</p>`;
@@ -101,8 +112,10 @@ function renderTopPicks(topPicks) {
         <div class="top-pick-rank">#${i + 1}</div>
         <div class="top-pick-body">
           <div class="badge hot">${TOP_PICK_LABEL[p.type] ?? 'Pick'}</div>
+          ${p.lineupConfirmed !== undefined ? `<div>${lineupBadge(p.lineupConfirmed)}</div>` : ''}
           <div class="card-title">${escapeHtml(p.headline)}</div>
           <div class="card-row muted">${escapeHtml(p.detail)}</div>
+          ${p.last5Results ? `<div class="card-row">Last 5 games: ${renderLast5(p.last5Results)}</div>` : ''}
         </div>
       </div>`
     )
@@ -148,8 +161,9 @@ function renderMoneylineSection(moneyline) {
 function renderBatterRow(b, headline, subline) {
   return `
     <tr class="${b.highConfidence ? 'hc' : ''}">
-      <td>${escapeHtml(b.batterName)}<div class="muted">${escapeHtml(b.team)}</div></td>
+      <td>${escapeHtml(b.batterName)}<div class="muted">${escapeHtml(b.team)}</div><div>${lineupBadge(b.lineupConfirmed)}</div></td>
       <td>${headline}<div class="muted">${subline}</div></td>
+      <td>${renderLast5(b.last5Results)}</td>
       <td>${escapeHtml(b.opposingStarterName ?? 'TBD')}<div>${pitcherBadge(b.opposingStarterTrailingEra)}</div></td>
       <td>${b.highConfidence ? '<span class="badge hot">🎯 GREAT MATCHUP</span>' : ''}</td>
     </tr>`;
@@ -169,7 +183,7 @@ function renderHitStreakSection(hitStreak) {
     )
     .join('');
   return `<p class="muted">Batters who are hitting well right now (5+ game hit streak, or batting .320+ over their last 15 games).</p>
-    <table><thead><tr><th>Hot hitter</th><th>Recent form</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    <table><thead><tr><th>Hot hitter</th><th>Recent form</th><th>Last 5 games</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderWindHrSection(windHr) {
@@ -186,7 +200,7 @@ function renderWindHrSection(windHr) {
     )
     .join('');
   return `<p class="muted">Wind is blowing out today (helps fly balls carry over the fence) at these parks — showing power hitters (top third of everyone playing today by recent home-run rate) on both teams.</p>
-    <table><thead><tr><th>Power hitter</th><th>Conditions</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    <table><thead><tr><th>Power hitter</th><th>Conditions</th><th>Last 5 games</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderPage({ gameDate, availableDates, digest }) {
@@ -226,6 +240,8 @@ function renderPage({ gameDate, availableDates, digest }) {
   .badge.hot { background: #d97706; color: white; }
   .badge.bad { background: rgba(220, 38, 38, 0.15); color: #dc2626; }
   .badge.good { background: rgba(22, 163, 74, 0.15); color: #16a34a; }
+  .badge.warn { background: rgba(217, 119, 6, 0.15); color: #d97706; }
+  .last5 { letter-spacing: 2px; white-space: nowrap; }
   .empty { color: #888; font-style: italic; }
   .muted { color: #888; font-size: 0.85rem; }
   .cards { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
@@ -277,6 +293,8 @@ function renderPage({ gameDate, availableDates, digest }) {
       <li><strong>Hit streak</strong> — number of games in a row where a batter has gotten at least 1 hit.</li>
       <li><strong>HR rate</strong> — home runs per game over a batter's last 15 games played.</li>
       <li><strong>Wind blowing out</strong> — the wind is blowing from the infield toward the outfield fence, which helps fly balls carry for home runs.</li>
+      <li><strong>Last 5 games</strong> — whether the batter got a hit (✅) or not (❌) in each of his last 5 games played, oldest game on the left, most recent on the right.</li>
+      <li><strong>✅ Confirmed lineup / ⚠️ Projected</strong> — MLB usually doesn't post the actual starting lineup until a couple hours before first pitch. Until then, batters shown are the team's regular starters based on their active roster, not a guarantee they're playing tonight. Always double check an ⚠️ batter is actually starting before betting on him.</li>
       <li><strong>🎯 Great matchup</strong> — a hot hitter facing a pitcher who is also struggling. Both signs point the same way.</li>
     </ul>
   </details>

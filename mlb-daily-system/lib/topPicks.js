@@ -1,6 +1,13 @@
 import { fmtOdds, fmtNum } from './util/format.js';
 
 const ERA_STRUGGLE_GATE = 6.0;
+const UNCONFIRMED_LINEUP_PENALTY = 2.5;
+
+function lineupWarning(lineupConfirmed) {
+  return lineupConfirmed === false
+    ? " ⚠️ Today's lineup isn't posted yet — this is a projected regular, not a confirmed starter."
+    : '';
+}
 
 // Every signal type here already gates on "the opposing/away pitcher is
 // struggling" (trailing ERA >= 6.00) — that's the one thing moneyline,
@@ -29,12 +36,15 @@ function hitStreakCandidates(hitStreak) {
   return (hitStreak?.highConfidence || []).map((b) => {
     const era = b.opposingStarterTrailingEra ?? ERA_STRUGGLE_GATE;
     const hotBonus = (b.hitStreak ?? 0) * 0.3 + Math.max(0, (b.trailing15Avg ?? 0) - 0.3) * 20;
+    const penalty = b.lineupConfirmed === false ? UNCONFIRMED_LINEUP_PENALTY : 0;
     return {
       type: 'hit_streak',
       key: `batter:${b.batterName}:${b.team}`,
-      score: era + hotBonus,
+      score: era + hotBonus - penalty,
+      lineupConfirmed: b.lineupConfirmed,
+      last5Results: b.last5Results,
       headline: `${b.batterName} (${b.team}) to get a hit`,
-      detail: `${b.hitStreak >= 5 ? `On a ${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 games`}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).`,
+      detail: `${b.hitStreak >= 5 ? `On a ${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 games`}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
     };
   });
 }
@@ -43,12 +53,15 @@ function windHrCandidates(windHr) {
   return (windHr?.highConfidence || []).map((b) => {
     const era = b.opposingStarterTrailingEra ?? ERA_STRUGGLE_GATE;
     const powerBonus = (b.trailing15HrRate ?? 0) * 5 + Math.max(0, (b.windSpeedMph ?? 10) - 10) * 0.1;
+    const penalty = b.lineupConfirmed === false ? UNCONFIRMED_LINEUP_PENALTY : 0;
     return {
       type: 'wind_hr',
       key: `batter:${b.batterName}:${b.team}`,
-      score: era + powerBonus,
+      score: era + powerBonus - penalty,
+      lineupConfirmed: b.lineupConfirmed,
+      last5Results: b.last5Results,
       headline: `${b.batterName} (${b.team}) to go deep`,
-      detail: `Wind blowing out ${fmtNum(b.windSpeedMph, 1)} mph at ${b.venue}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).`,
+      detail: `Wind blowing out ${fmtNum(b.windSpeedMph, 1)} mph at ${b.venue}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
     };
   });
 }

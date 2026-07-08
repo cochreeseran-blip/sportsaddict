@@ -135,22 +135,36 @@ export async function runPipeline(gameDate = todayIsoDate()) {
     ];
     for (const { side, teamId, team } of sides) {
       let hitters = [];
+      let lineupConfirmed = false;
       try {
         hitters = await mlb.fetchConfirmedLineup(g.gamePk, side);
-        if (!hitters.length) {
+        if (hitters.length) {
+          lineupConfirmed = true;
+        } else {
           hitters = await mlb.fetchActiveHitters(teamId);
+          lineupConfirmed = false;
         }
       } catch (err) {
         warnings.push(`Batter lineup unavailable for ${team} — check manually. (${err.message})`);
         console.warn(`  Lineup fetch failed for ${team}: ${err.message}`);
         continue;
       }
+      if (!lineupConfirmed) {
+        warnings.push(`${team}'s lineup isn't posted yet — showing active roster regulars instead (may not match tonight's actual batting order).`);
+      }
       for (const hitter of hitters) {
         battersTotal++;
         try {
           const batterLog = await mlb.fetchBatterGameLog(hitter.id, season);
           const stats = computeBatterStats(batterLog);
-          await upsertBatterForm(pool, { gameDate, batterId: hitter.id, batterName: hitter.fullName, team, ...stats });
+          await upsertBatterForm(pool, {
+            gameDate,
+            batterId: hitter.id,
+            batterName: hitter.fullName,
+            team,
+            lineupConfirmed,
+            ...stats,
+          });
           battersOk++;
         } catch (err) {
           warnings.push(`Batter form unavailable for ${hitter.fullName ?? hitter.id} — check manually. (${err.message})`);

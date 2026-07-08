@@ -56,6 +56,8 @@ export async function runWindHrFilter(pool, gameDate) {
           batterName: b.batter_name,
           team,
           trailing15HrRate: hrRate,
+          lineupConfirmed: b.lineup_confirmed,
+          last5Results: b.last5_results ?? [],
           venue: g.venue,
           windSpeedMph: g.wind_speed_mph !== null ? Number(g.wind_speed_mph) : null,
           opposingStarterName: opp?.starterName ?? null,

@@ -15,7 +15,8 @@
     "grade": "node scripts/grade.js",
     "report": "node scripts/report.js",
     "closing": "node scripts/closing.js",
-    "parks": "node scripts/parks.js"
+    "parks": "node scripts/parks.js",
+    "newsletter": "node scripts/newsletter.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -7,6 +7,8 @@ import { pool } from './lib/db.js';
 import { runMigrations } from './lib/migrate.js';
 import { runPipeline, todayIsoDate } from './lib/pipeline.js';
 import * as mlb from './lib/sources/mlbStats.js';
+import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
+import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newsletter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +70,23 @@ function scheduleDailyRunAt(hourUtc) {
   console.log(`Next scheduled pipeline run at ${hourUtc}:00 UTC (~${etLabel(hourUtc)} ET) in ${(delay / 3600000).toFixed(1)}h.`);
   setTimeout(async () => {
     await triggerPipelineRun();
+    // Yesterday's games are final by any of these run times — settle
+    // whatever auto-gradable bets are still pending.
+    try {
+      const { graded, checked } = await gradePendingBets(pool);
+      if (checked) console.log(`Bets: auto-graded ${graded}/${checked} pending.`);
+    } catch (err) {
+      console.warn(`Bet grading pass failed: ${err.message}`);
+    }
+    // The earliest run of the day doubles as the newsletter send. No-op
+    // until RESEND_API_KEY / NEWSLETTER_FROM are configured.
+    if (hourUtc === Math.min(...REFRESH_HOURS_UTC)) {
+      try {
+        await sendDailyNewsletter(pool, todayIsoDate());
+      } catch (err) {
+        console.warn(`Newsletter send failed: ${err.message}`);
+      }
+    }
     scheduleDailyRunAt(hourUtc);
   }, delay);
 }
@@ -305,6 +324,28 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function readJsonBody(req, limit = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > limit) {
+        reject(new Error('body too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch {
+        reject(new Error('invalid JSON body'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -374,6 +415,85 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/performance') {
       sendJson(res, 200, await buildPerformance());
+      return;
+    }
+
+    // --- personal bet tracker ------------------------------------------
+    if (url.pathname === '/api/bets' && req.method === 'GET') {
+      sendJson(res, 200, await listBets(pool));
+      return;
+    }
+
+    if (url.pathname === '/api/bets' && req.method === 'POST') {
+      const b = await readJsonBody(req);
+      const stake = Number(b.stake);
+      const description = String(b.description || '').trim();
+      const gameDate = b.gameDate || todayIsoDate();
+      if (!description || description.length > 300) return sendJson(res, 400, { error: 'Description is required.' });
+      if (!Number.isFinite(stake) || stake <= 0 || stake > 1000000) return sendJson(res, 400, { error: 'Stake must be a positive number.' });
+      if (!ISO_DATE_RE.test(gameDate)) return sendJson(res, 400, { error: 'bad date' });
+      const odds = b.odds === null || b.odds === undefined || b.odds === '' ? null : Number(b.odds);
+      if (odds !== null && (!Number.isInteger(odds) || Math.abs(odds) < 100 || Math.abs(odds) > 100000)) {
+        return sendJson(res, 400, { error: 'Odds must be American style, e.g. -150 or +120.' });
+      }
+      const bet = await createBet(pool, {
+        gameDate,
+        description,
+        odds,
+        stake,
+        book: b.book ? String(b.book).slice(0, 60) : null,
+        betKind: b.betKind,
+        mlbGameId: b.mlbGameId ? String(b.mlbGameId).slice(0, 20) : null,
+        batterId: Number.isInteger(b.batterId) ? b.batterId : null,
+      });
+      sendJson(res, 201, bet);
+      return;
+    }
+
+    if (url.pathname === '/api/bets/grade' && req.method === 'POST') {
+      sendJson(res, 200, await gradePendingBets(pool));
+      return;
+    }
+
+    const betAction = url.pathname.match(/^\/api\/bets\/(\d+)(?:\/(settle|reopen))?$/);
+    if (betAction) {
+      const id = Number(betAction[1]);
+      if (betAction[2] === 'settle' && req.method === 'POST') {
+        const { result } = await readJsonBody(req);
+        const bet = await settleBet(pool, id, result);
+        return bet ? sendJson(res, 200, bet) : sendJson(res, 404, { error: 'not found' });
+      }
+      if (betAction[2] === 'reopen' && req.method === 'POST') {
+        const bet = await reopenBet(pool, id);
+        return bet ? sendJson(res, 200, bet) : sendJson(res, 404, { error: 'not found' });
+      }
+      if (!betAction[2] && req.method === 'DELETE') {
+        return (await deleteBet(pool, id))
+          ? sendJson(res, 200, { deleted: true })
+          : sendJson(res, 404, { error: 'not found' });
+      }
+    }
+
+    // --- newsletter ------------------------------------------------------
+    if (url.pathname === '/api/subscribe' && req.method === 'POST') {
+      const { email } = await readJsonBody(req);
+      try {
+        await addSubscriber(pool, email);
+        sendJson(res, 200, { subscribed: true });
+      } catch (err) {
+        sendJson(res, 400, { error: err.message });
+      }
+      return;
+    }
+
+    if (url.pathname === '/unsubscribe') {
+      const ok = await unsubscribe(pool, url.searchParams.get('token') || '');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#101216;color:#e7e9ee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+        <div style="text-align:center;padding:24px"><p style="font-size:16px;font-weight:600">${ok ? "You're unsubscribed." : 'That link has already been used or is invalid.'}</p>
+        <p style="color:#9ba3b0;font-size:13px">${ok ? 'No more daily emails. You can re-subscribe on the site any time.' : ''}</p>
+        <p><a href="/" style="color:#5b9cff;font-size:13px">Back to Slatefinder</a></p></div></body>`);
       return;
     }
 

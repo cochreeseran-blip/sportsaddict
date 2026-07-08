@@ -28,6 +28,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab active" data-view="slate">Slate</button>
     <button class="tab" data-view="signals">Signals</button>
+    <button class="tab" data-view="bets">My Bets</button>
     <button class="tab" data-view="performance">Performance</button>
   </nav>
 
@@ -46,8 +47,42 @@
 <main id="app">
   <section id="view-slate" class="view active"></section>
   <section id="view-signals" class="view"></section>
+  <section id="view-bets" class="view"></section>
   <section id="view-performance" class="view"></section>
 </main>
+
+<div id="betModal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-label="Track a bet">
+    <div class="modal-title" id="betModalTitle">Track a bet</div>
+    <form id="betForm">
+      <label class="field"><span>Bet</span>
+        <input type="text" id="betDesc" maxlength="300" required placeholder="e.g. Yankees ML vs Red Sox">
+      </label>
+      <div class="field-row">
+        <label class="field"><span>Odds</span>
+          <input type="text" id="betOdds" inputmode="numeric" placeholder="-150" autocomplete="off">
+        </label>
+        <label class="field"><span>Stake ($)</span>
+          <input type="number" id="betStake" min="0.01" step="0.01" required placeholder="10">
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Sportsbook <em>optional</em></span>
+          <input type="text" id="betBook" maxlength="60" placeholder="DraftKings">
+        </label>
+        <label class="field"><span>Game date</span>
+          <input type="date" id="betDate" required>
+        </label>
+      </div>
+      <div class="modal-error" id="betError" hidden></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="betCancel">Cancel</button>
+        <button type="submit" class="btn primary" id="betSave">Save bet</button>
+      </div>
+      <div class="modal-hint" id="betHint" hidden></div>
+    </form>
+  </div>
+</div>
 
 <aside id="gamePanel" class="game-panel" aria-hidden="true">
   <div class="game-panel-inner" id="gamePanelInner"></div>
@@ -55,7 +90,12 @@
 <div id="panelOverlay" class="panel-overlay"></div>
 
 <footer class="footer">
-  <span>Research signals only, not betting advice. Verify starters and lineups before first pitch.</span>
+  <form class="subscribe" id="subscribeForm">
+    <span class="subscribe-label">Get the picks by email every morning</span>
+    <input type="email" id="subscribeEmail" placeholder="you@example.com" required>
+    <button type="submit" class="btn primary small">Subscribe</button>
+  </form>
+  <span class="footer-note">Research signals only, not betting advice. Verify starters and lineups before first pitch.</span>
 </footer>
 
 <script src="/app.js"></script>

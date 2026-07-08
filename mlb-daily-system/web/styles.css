@@ -312,13 +312,96 @@ select.date-select {
 select.date-select:focus { outline: 1px solid var(--accent); }
 .toolbar-note { font-size: 12px; color: var(--text-3); }
 
+/* --- buttons / forms ---------------------------------------------------------------- */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 13px var(--font);
+  border-radius: 6px; padding: 6px 14px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text);
+}
+.btn:hover:not(:disabled) { background: #21252c; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #0c1524; font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: #6ea8ff; }
+.btn.ghost { background: none; }
+.btn.small { padding: 4px 11px; font-size: 12.5px; }
+
+.btn-track {
+  font: 500 11.5px var(--font);
+  color: var(--accent); background: rgba(91, 156, 255, 0.09);
+  border: 1px solid rgba(91, 156, 255, 0.25); border-radius: 5px;
+  padding: 2px 9px; cursor: pointer; white-space: nowrap;
+}
+.btn-track:hover { background: rgba(91, 156, 255, 0.18); }
+
+.btn-mini {
+  font: 600 11px var(--font);
+  border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text-2);
+  border-radius: 5px; padding: 2px 8px; cursor: pointer;
+}
+.btn-mini:hover { color: var(--text); background: #21252c; }
+.btn-mini.w:hover { color: var(--green); border-color: var(--green); }
+.btn-mini.l:hover { color: var(--red); border-color: var(--red); }
+.btn-mini.x { border: 0; background: none; color: var(--text-3); font-size: 13px; padding: 2px 5px; }
+.btn-mini.x:hover { color: var(--red); }
+
+/* --- bet modal ------------------------------------------------------------------------ */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(8, 9, 12, 0.6);
+  display: flex; align-items: center; justify-content: center; padding: 18px;
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  width: min(420px, 100%);
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 18px 20px 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+.modal-title { font-weight: 650; font-size: 15px; margin-bottom: 14px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 11px; flex: 1; }
+.field span { font-size: 11.5px; font-weight: 550; color: var(--text-2); }
+.field span em { font-style: normal; font-weight: 400; color: var(--text-3); }
+.field input {
+  font: 400 13.5px var(--font); color: var(--text);
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 7px 10px; width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+.field input:focus { outline: none; border-color: var(--accent); }
+.field-row { display: flex; gap: 10px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.modal-error { color: var(--red); font-size: 12.5px; margin-bottom: 8px; }
+.modal-hint { color: var(--green); font-size: 12.5px; margin-top: 10px; text-align: right; }
+
+/* --- my bets --------------------------------------------------------------------------- */
+.bets-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.bets-toolbar .spacer { flex: 1; }
+.profit-pos { color: var(--green); }
+.profit-neg { color: var(--red); }
+.bet-desc { line-height: 1.4; }
+.bet-desc .bk { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.auto-tag { font-size: 10.5px; color: var(--text-3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+.settle-group { display: inline-flex; gap: 4px; }
+
 /* --- footer ---------------------------------------------------------------------- */
+.subscribe { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.subscribe-label { font-size: 12.5px; color: var(--text-2); }
+.subscribe input {
+  font: 400 13px var(--font); color: var(--text);
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 5px 10px; width: 210px;
+}
+.subscribe input:focus { outline: none; border-color: var(--accent); }
+.subscribe-done { font-size: 12.5px; color: var(--green); }
+.footer-note { width: 100%; text-align: center; }
+
+/* --- footer (base) ------------------------------------------------------------------ */
 .footer {
-  display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;
-  padding: 18px 20px 26px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;
+  padding: 20px 20px 26px; border-top: 1px solid var(--border);
   font-size: 11.5px; color: var(--text-3);
 }
-.footer-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--border-strong); }
 
 /* --- responsive -------------------------------------------------------------------- */
 @media (max-width: 760px) {

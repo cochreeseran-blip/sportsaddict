@@ -120,6 +120,24 @@ async function api(path) {
   return res.json();
 }
 
+async function apiSend(path, method, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `${path} -> ${res.status}`);
+  return data;
+}
+
+function fmtMoney(n, withSign = false) {
+  if (n === null || n === undefined) return '—';
+  const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (n < 0) return `-$${abs}`;
+  return withSign ? `+$${abs}` : `$${abs}`;
+}
+
 const loadingHtml = '<div class="loading"><span class="spinner"></span>Loading</div>';
 function emptyHtml(title, msg) {
   return `<div class="empty-state"><div class="es-title">${esc(title)}</div>${esc(msg)}</div>`;
@@ -359,10 +377,211 @@ function closeGamePanel() {
 }
 
 // ---------------------------------------------------------------------------
+// BET TRACKING — "Track" buttons carry a prefill payload by id so no JSON
+// ends up in HTML attributes.
+let trackSeq = 0;
+const trackData = new Map();
+function trackBtn(prefill, label = 'Track bet') {
+  const id = ++trackSeq;
+  trackData.set(id, prefill);
+  return `<button class="btn-track" data-track="${id}">${label}</button>`;
+}
+
+function openBetModal(prefill = {}) {
+  const modal = $('#betModal');
+  const form = $('#betForm');
+  form.dataset.betKind = prefill.betKind || 'manual';
+  form.dataset.mlbGameId = prefill.mlbGameId || '';
+  form.dataset.batterId = prefill.batterId || '';
+  $('#betModalTitle').textContent = prefill.description ? 'Track this bet' : 'Add a bet';
+  $('#betDesc').value = prefill.description || '';
+  $('#betOdds').value = prefill.odds !== null && prefill.odds !== undefined ? String(prefill.odds) : '';
+  $('#betStake').value = state.lastStake || '';
+  $('#betBook').value = state.lastBook || '';
+  $('#betDate').value = prefill.gameDate || state.today;
+  $('#betError').hidden = true;
+  $('#betHint').hidden = true;
+  $('#betSave').disabled = false;
+  modal.hidden = false;
+  (prefill.description ? $('#betStake') : $('#betDesc')).focus();
+}
+
+function closeBetModal() { $('#betModal').hidden = true; }
+
+async function submitBet(e) {
+  e.preventDefault();
+  const form = $('#betForm');
+  const oddsRaw = $('#betOdds').value.trim().replace(/^\+/, '');
+  const payload = {
+    description: $('#betDesc').value.trim(),
+    odds: oddsRaw === '' ? null : Number(oddsRaw),
+    stake: Number($('#betStake').value),
+    book: $('#betBook').value.trim() || null,
+    gameDate: $('#betDate').value,
+    betKind: form.dataset.betKind,
+    mlbGameId: form.dataset.mlbGameId || null,
+    batterId: form.dataset.batterId ? Number(form.dataset.batterId) : null,
+  };
+  const err = $('#betError');
+  try {
+    $('#betSave').disabled = true;
+    await apiSend('/api/bets', 'POST', payload);
+    state.lastStake = $('#betStake').value;
+    state.lastBook = $('#betBook').value.trim();
+    const hint = $('#betHint');
+    hint.textContent = 'Saved to My Bets.';
+    hint.hidden = false;
+    setTimeout(() => {
+      closeBetModal();
+      if (state.view === 'bets') renderBets();
+    }, 550);
+  } catch (ex) {
+    $('#betSave').disabled = false;
+    err.textContent = ex.message;
+    err.hidden = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MY BETS VIEW
+function resultPill(result) {
+  const label = result.charAt(0).toUpperCase() + result.slice(1);
+  return `<span class="result-pill ${esc(result)}">${esc(label)}</span>`;
+}
+
+function betRow(b) {
+  const actions = [];
+  if (b.result === 'pending') {
+    actions.push(`
+      <span class="settle-group">
+        <button class="btn-mini w" data-settle="win" data-bet="${b.id}" title="Mark won">W</button>
+        <button class="btn-mini l" data-settle="loss" data-bet="${b.id}" title="Mark lost">L</button>
+        <button class="btn-mini" data-settle="push" data-bet="${b.id}" title="Mark push">P</button>
+      </span>`);
+  } else {
+    actions.push(`<button class="btn-mini" data-reopen="${b.id}" title="Undo and mark pending again">Undo</button>`);
+  }
+  actions.push(`<button class="btn-mini x" data-del="${b.id}" title="Delete bet">×</button>`);
+
+  const autoTag = b.betKind !== 'manual' && b.result === 'pending' ? '<span class="auto-tag">auto-settles</span>' : '';
+  const profitCell = b.result === 'pending'
+    ? '<span class="faint">—</span>'
+    : `<span class="${(b.profit ?? 0) > 0 ? 'profit-pos' : (b.profit ?? 0) < 0 ? 'profit-neg' : 'dim'}">${fmtMoney(b.profit, true)}</span>`;
+
+  return `
+    <tr>
+      <td class="mono faint" style="white-space:nowrap">${esc(b.gameDate)}</td>
+      <td><div class="bet-desc">${esc(b.description)}${autoTag}${b.book ? `<div class="bk">${esc(b.book)}</div>` : ''}</div></td>
+      <td class="mono">${b.odds !== null ? fmtOdds(b.odds) : '—'}</td>
+      <td class="mono">${fmtMoney(b.stake)}</td>
+      <td>${b.result === 'pending' ? resultPill('pending') : resultPill(b.result)}</td>
+      <td class="mono">${profitCell}</td>
+      <td style="white-space:nowrap;text-align:right">${actions.join(' ')}</td>
+    </tr>`;
+}
+
+async function renderBets() {
+  const host = $('#view-bets');
+  host.innerHTML = loadingHtml;
+  try {
+    const d = await api('/api/bets');
+    const s = d.summary;
+    const profitCls = s.profit > 0 ? 'profit-pos' : s.profit < 0 ? 'profit-neg' : '';
+
+    host.innerHTML = `
+      <div class="bets-toolbar">
+        <button class="btn primary" id="addBetBtn">Add a bet</button>
+        <button class="btn" id="gradeBetsBtn" ${s.pending ? '' : 'disabled'}>Check results</button>
+        <span class="spacer"></span>
+        <span class="toolbar-note">Bets tracked from a pick settle themselves once the game is final.</span>
+      </div>
+
+      <div class="stat-tiles">
+        <div class="stat-tile">
+          <div class="st-label">Profit</div>
+          <div class="st-value ${profitCls}">${fmtMoney(s.profit, true)}</div>
+          <div class="st-sub">${fmtMoney(s.staked)} staked on settled bets</div>
+        </div>
+        <div class="stat-tile">
+          <div class="st-label">Record</div>
+          <div class="st-value">${s.wins}<span class="unit">W</span> ${s.losses}<span class="unit">L</span>${s.pushes ? ` ${s.pushes}<span class="unit">P</span>` : ''}</div>
+          <div class="st-sub">${s.wins + s.losses + s.pushes} settled</div>
+        </div>
+        <div class="stat-tile">
+          <div class="st-label">Return on stake</div>
+          <div class="st-value ${profitCls}">${s.roi !== null ? (s.roi * 100).toFixed(1) : '—'}<span class="unit">%</span></div>
+          <div class="st-sub">Profit divided by total staked</div>
+        </div>
+        <div class="stat-tile">
+          <div class="st-label">Pending</div>
+          <div class="st-value">${s.pending}</div>
+          <div class="st-sub">Waiting on results</div>
+        </div>
+      </div>
+
+      <div class="section-head"><h2 class="section-title">All bets</h2></div>
+      ${d.bets.length
+        ? `<div class="table-wrap"><table class="data-table">
+            <thead><tr><th>Date</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>Profit</th><th></th></tr></thead>
+            <tbody>${d.bets.map(betRow).join('')}</tbody>
+          </table></div>`
+        : emptyHtml('No bets yet', 'Hit "Track bet" on any pick in Signals, or add one manually with the button above.')}`;
+
+    $('#addBetBtn').addEventListener('click', () => openBetModal());
+    $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Checking…';
+      try {
+        const r = await apiSend('/api/bets/grade', 'POST');
+        await renderBets();
+        if (!r.graded) {
+          const note = $('#view-bets .toolbar-note');
+          if (note) note.textContent = 'No finished games to settle yet — check back after tonight’s games.';
+        }
+      } catch (ex) {
+        btn.disabled = false;
+        btn.textContent = 'Check results';
+      }
+    });
+
+    host.querySelectorAll('[data-settle]').forEach((btn) => btn.addEventListener('click', async () => {
+      await apiSend(`/api/bets/${btn.dataset.bet}/settle`, 'POST', { result: btn.dataset.settle });
+      renderBets();
+    }));
+    host.querySelectorAll('[data-reopen]').forEach((btn) => btn.addEventListener('click', async () => {
+      await apiSend(`/api/bets/${btn.dataset.reopen}/reopen`, 'POST');
+      renderBets();
+    }));
+    host.querySelectorAll('[data-del]').forEach((btn) => btn.addEventListener('click', async () => {
+      if (!confirm('Delete this bet?')) return;
+      await apiSend(`/api/bets/${btn.dataset.del}`, 'DELETE');
+      renderBets();
+    }));
+  } catch (err) {
+    host.innerHTML = emptyHtml('Bets unavailable', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // SIGNALS VIEW
+function pickPrefill(p) {
+  const gameDate = state.signalsDate || state.today;
+  const kind = { moneyline: 'moneyline_home', hit_streak: 'batter_hit', wind_hr: 'batter_hr' }[p.type] || 'manual';
+  return {
+    description: p.headline,
+    odds: p.odds ?? null,
+    betKind: kind,
+    mlbGameId: p.mlbGameId || null,
+    batterId: p.batterId || null,
+    gameDate,
+  };
+}
+
 function topPickCard(p, i) {
   const typeLabel = { moneyline: 'Moneyline', hit_streak: 'Hot hitter', wind_hr: 'Home run weather' }[p.type] || p.type;
   const foot = [];
+  foot.push(trackBtn(pickPrefill(p)));
   if (p.lineupConfirmed === true) foot.push(lineupPill(true, null));
   if (p.lineupConfirmed === false) foot.push(lineupPill(false, null));
   if (p.last5Results) foot.push(`<span class="pill dim">Last 5 ${form5Html(p.last5Results)}</span>`);
@@ -405,6 +624,7 @@ function moneylineCards(ml) {
       </div>
       <div class="sig-sub">To beat ${esc(p.awayTeam)}. ${esc(p.awayStarterName ?? 'Their starter')} carries a <strong>${fmtNum(p.awayStarterTrailingEra)} ERA over his last 3 starts</strong> (season ${fmtNum(p.awayStarterSeasonEra)}).</div>
       <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '—'} of the time at ${fmtOdds(p.homeMl)} just to break even — not a prediction it will.</div>
+      <div style="margin-top:10px">${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${fmtOdds(p.homeMl)}) vs ${p.awayTeam}`, odds: p.homeMl, mlbGameId: p.mlbGameId }))}</div>
     </div>`).join('')}</div>`;
 }
 
@@ -438,8 +658,9 @@ function hitStreakSection(hs) {
       <td>${form5Html(b.last5Results)}</td>
       <td>${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `<div class="mono ${b.opposingStarterTrailingEra >= 6 ? 'neg' : 'pos'}" style="font-size:11px;margin-top:2px">${fmtNum(b.opposingStarterTrailingEra)} ERA last 3</div>` : ''}</td>
       <td>${lineupPill(b.lineupConfirmed, null)}${b.highConfidence ? '<div style="margin-top:4px"><span class="pill info"><span class="pill-dot"></span>Prime matchup</span></div>' : ''}</td>
+      <td style="text-align:right">${trackBtn(pickPrefill({ type: 'hit_streak', headline: `${b.batterName} to record a hit`, mlbGameId: b.mlbGameId, batterId: b.batterId }))}</td>
     </tr>`);
-  return batterTable(rows, ['Hitter', 'Form', 'Last 5', 'Opposing starter', 'Status']);
+  return batterTable(rows, ['Hitter', 'Form', 'Last 5', 'Opposing starter', 'Status', '']);
 }
 
 function windHrSection(wh) {
@@ -452,8 +673,9 @@ function windHrSection(wh) {
       <td>${form5Html(b.last5Results)}</td>
       <td>${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `<div class="mono ${b.opposingStarterTrailingEra >= 6 ? 'neg' : 'pos'}" style="font-size:11px;margin-top:2px">${fmtNum(b.opposingStarterTrailingEra)} ERA last 3</div>` : ''}</td>
       <td>${lineupPill(b.lineupConfirmed, null)}</td>
+      <td style="text-align:right">${trackBtn(pickPrefill({ type: 'wind_hr', headline: `${b.batterName} to hit a home run`, mlbGameId: b.mlbGameId, batterId: b.batterId }))}</td>
     </tr>`);
-  return batterTable(rows, ['Power hitter', 'HR rate', 'Park + wind', 'Last 5', 'Opposing starter', 'Status']);
+  return batterTable(rows, ['Power hitter', 'HR rate', 'Park + wind', 'Last 5', 'Opposing starter', 'Status', '']);
 }
 
 async function renderSignals() {
@@ -597,6 +819,7 @@ function showView(name, force = false) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'slate') { renderSlateShell(); loadSlateGames(); }
   if (name === 'signals') renderSignals();
+  if (name === 'bets') renderBets();
   if (name === 'performance') renderPerformance();
 }
 
@@ -606,7 +829,42 @@ async function init() {
     if (tab) showView(tab.dataset.view);
   });
   $('#panelOverlay').addEventListener('click', closeGamePanel);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeGamePanel(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeGamePanel();
+      closeBetModal();
+    }
+  });
+
+  // Bet modal wiring + delegated "Track bet" buttons.
+  $('#betForm').addEventListener('submit', submitBet);
+  $('#betCancel').addEventListener('click', closeBetModal);
+  $('#betModal').addEventListener('click', (e) => { if (e.target === $('#betModal')) closeBetModal(); });
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-track]');
+    if (!btn) return;
+    const prefill = trackData.get(Number(btn.dataset.track));
+    if (prefill) openBetModal(prefill);
+  });
+
+  // Newsletter signup.
+  $('#subscribeForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    try {
+      await apiSend('/api/subscribe', 'POST', { email: $('#subscribeEmail').value });
+      form.innerHTML = '<span class="subscribe-done">You are on the list — first email goes out with the next morning digest.</span>';
+    } catch (ex) {
+      let err = form.querySelector('.subscribe-err');
+      if (!err) {
+        err = document.createElement('span');
+        err.className = 'subscribe-err';
+        err.style.cssText = 'color:var(--red);font-size:12px;width:100%;text-align:center';
+        form.appendChild(err);
+      }
+      err.textContent = ex.message;
+    }
+  });
   $('#refreshBtn').addEventListener('click', async () => {
     try {
       await fetch('/api/refresh', { method: 'POST' });

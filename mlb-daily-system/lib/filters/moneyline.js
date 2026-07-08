@@ -39,16 +39,20 @@ export async function runMoneylineFilter(pool, gameDate) {
     const eraGap = trailingEra === null ? null : Math.max(0, ERA_GATE - trailingEra);
     const qualifies = inBand && eraQualifies;
 
+    const pitcherLabel = r.away_starter_name ?? 'the away starter';
     const reasons = [];
     if (!inBand) {
-      const side = homeMl > BAND_HIGH ? 'too short a favorite' : 'too heavy a favorite';
-      reasons.push(`home line ${fmtOdds(homeMl)} is ${side} for the -130/-180 band (off by ${bandDistance})`);
+      reasons.push(
+        homeMl > BAND_HIGH
+          ? `${r.home_team} is only a slight favorite (${fmtOdds(homeMl)}) — we want them favored more solidly than that (odds of -130 or shorter)`
+          : `${r.home_team} is too big a favorite (${fmtOdds(homeMl)}) — betting on huge favorites doesn't pay well even when they win, so we cap it at -180`
+      );
     }
     if (!eraQualifies) {
       reasons.push(
         trailingEra === null
-          ? `no trailing ERA on file yet for ${r.away_starter_name ?? 'the away starter'}`
-          : `${r.away_starter_name ?? 'away starter'}'s trailing ERA is ${trailingEra.toFixed(2)}, needs ≥ ${ERA_GATE.toFixed(2)}`
+          ? `no recent pitching data yet for ${pitcherLabel} — check back once he's made a start or two`
+          : `${pitcherLabel} has actually pitched well lately (${trailingEra.toFixed(2)} ERA over his last 3 starts) — we're looking for a struggling pitcher (6.00 ERA or worse), and he isn't one`
       );
     }
 
@@ -79,7 +83,7 @@ export async function runMoneylineFilter(pool, gameDate) {
     .filter((g) => !pickIds.has(g.gameId))
     .map((g) =>
       g.qualifies
-        ? { ...g, closeness: -1, reason: `Qualified, but capped at ${MAX_PICKS} picks/day and ranked further from the -155 midpoint.` }
+        ? { ...g, closeness: -1, reason: `This one actually qualified too — we just only show the top ${MAX_PICKS} picks a day, and this game wasn't as close to the sweet spot as the others.` }
         : g
     )
     .sort((a, b) => a.closeness - b.closeness)

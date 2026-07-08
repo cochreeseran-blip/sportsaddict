@@ -9,12 +9,14 @@ const PORT = process.env.PORT || 3000;
 const REFRESH_HOUR_UTC = Number(process.env.DIGEST_REFRESH_HOUR_UTC ?? 13); // ~9am ET
 
 let isRefreshing = false;
+let refreshStartedAt = null;
 let lastRunAt = null;
 let lastRunError = null;
 
 async function triggerPipelineRun(gameDate = todayIsoDate()) {
   if (isRefreshing) return { skipped: true };
   isRefreshing = true;
+  refreshStartedAt = new Date();
   try {
     await runPipeline(gameDate);
     lastRunAt = new Date();
@@ -24,6 +26,7 @@ async function triggerPipelineRun(gameDate = todayIsoDate()) {
     lastRunError = err.message;
   } finally {
     isRefreshing = false;
+    refreshStartedAt = null;
   }
   return { skipped: false };
 }
@@ -80,6 +83,13 @@ async function loadDigest(gameDate) {
   };
 }
 
+function pitcherBadge(era) {
+  if (era === null || era === undefined) return '';
+  return era >= 6.0
+    ? `<span class="badge bad">STRUGGLING (${fmtNum(era)} ERA)</span>`
+    : `<span class="badge good">PITCHING WELL (${fmtNum(era)} ERA)</span>`;
+}
+
 function renderOtherGames(otherGames) {
   if (!otherGames?.length) return '';
   const rows = otherGames
@@ -91,22 +101,23 @@ function renderOtherGames(otherGames) {
       </div>`
     )
     .join('');
-  return `<p class="muted" style="margin-top:16px;">Came close but didn't qualify:</p><div class="cards">${rows}</div>`;
+  return `<p class="muted" style="margin-top:16px;">Games that came close but didn't make the cut:</p><div class="cards">${rows}</div>`;
 }
 
 function renderMoneylineSection(moneyline) {
   const picksHtml =
     moneyline.signal === 'SIT' || !moneyline.picks?.length
-      ? `<p class="empty">SIT — no qualifying games today.</p>`
+      ? `<p class="empty">SIT — nobody qualifies today. No games where the home team is a modest favorite AND the visiting pitcher is struggling. See below for the closest ones.</p>`
       : `<div class="cards">${moneyline.picks
           .map(
             (p) => `
             <div class="card play">
-              <div class="card-title">${escapeHtml(p.homeTeam)} <span class="odds">${fmtOdds(p.homeMl)}</span></div>
-              <div class="card-sub">over ${escapeHtml(p.awayTeam)}</div>
-              <div class="card-row">${escapeHtml(p.awayStarterName ?? 'TBD')} — trailing ERA
-                <strong>${fmtNum(p.awayStarterTrailingEra)}</strong>
-                <span class="muted">(season ${fmtNum(p.awayStarterSeasonEra)})</span>
+              <div class="card-title">Bet on ${escapeHtml(p.homeTeam)} <span class="odds">${fmtOdds(p.homeMl)}</span></div>
+              <div class="card-sub">to beat ${escapeHtml(p.awayTeam)}</div>
+              <div class="card-row">
+                Why: ${escapeHtml(p.awayStarterName ?? 'their pitcher')}, ${escapeHtml(p.awayTeam)}'s starting pitcher, has been getting hit hard lately.
+                ${pitcherBadge(p.awayStarterTrailingEra)}
+                <span class="muted">(his ERA for the whole season is ${fmtNum(p.awayStarterSeasonEra)} — this pick only cares about his last 3 starts, not the full season)</span>
               </div>
             </div>`
           )
@@ -114,47 +125,65 @@ function renderMoneylineSection(moneyline) {
   return picksHtml + renderOtherGames(moneyline.otherGames);
 }
 
-function renderBatterRow(b, extra) {
+function renderBatterRow(b, headline, subline) {
   return `
     <tr class="${b.highConfidence ? 'hc' : ''}">
-      <td>${b.highConfidence ? '<span class="badge">HIGH CONF</span> ' : ''}${escapeHtml(b.batterName)}</td>
-      <td>${escapeHtml(b.team)}</td>
-      <td>${extra}</td>
-      <td>${escapeHtml(b.opposingStarterName ?? 'TBD')}</td>
-      <td>${fmtNum(b.opposingStarterTrailingEra)}</td>
+      <td>${escapeHtml(b.batterName)}<div class="muted">${escapeHtml(b.team)}</div></td>
+      <td>${headline}<div class="muted">${subline}</div></td>
+      <td>${escapeHtml(b.opposingStarterName ?? 'TBD')}<div>${pitcherBadge(b.opposingStarterTrailingEra)}</div></td>
+      <td>${b.highConfidence ? '<span class="badge hot">🎯 GREAT MATCHUP</span>' : ''}</td>
     </tr>`;
 }
 
 function renderHitStreakSection(hitStreak) {
   if (!hitStreak.watchList?.length) {
-    return `<p class="empty">No qualifying batters today.</p>`;
+    return `<p class="empty">No batters are hot enough to qualify today.</p>`;
   }
   const rows = hitStreak.watchList
-    .map((b) => renderBatterRow(b, `streak ${b.hitStreak}, avg ${fmtNum(b.trailing15Avg, 3)}`))
+    .map((b) =>
+      renderBatterRow(
+        b,
+        b.hitStreak >= 5 ? `🔥 Hit in ${b.hitStreak} straight games` : `Batting ${fmtNum(b.trailing15Avg, 3)} lately`,
+        `${fmtNum(b.trailing15Avg, 3)} average over his last 15 games`
+      )
+    )
     .join('');
-  return `<table><thead><tr><th>Batter</th><th>Team</th><th>Form</th><th>Opposing SP</th><th>SP ERA (L3)</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<p class="muted">Batters who are hitting well right now (5+ game hit streak, or batting .320+ over their last 15 games).</p>
+    <table><thead><tr><th>Hot hitter</th><th>Recent form</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderWindHrSection(windHr) {
   if (!windHr.watchList?.length) {
-    return `<p class="empty">No qualifying batters today.</p>`;
+    return `<p class="empty">No games today have wind strong enough (10+ mph) blowing toward the outfield, or no power hitters cleared today's bar.</p>`;
   }
-  const threshold = windHr.hrRateThreshold !== null ? `<p class="muted">Top-third HR/game threshold today: ${fmtNum(windHr.hrRateThreshold, 3)}</p>` : '';
   const rows = windHr.watchList
-    .map((b) => renderBatterRow(b, `HR/g ${fmtNum(b.trailing15HrRate, 3)} @ ${escapeHtml(b.venue ?? '')} (${fmtNum(b.windSpeedMph, 1)} mph out)`))
+    .map((b) =>
+      renderBatterRow(
+        b,
+        `💨 Playing at ${escapeHtml(b.venue ?? '')}`,
+        `wind blowing out at ${fmtNum(b.windSpeedMph, 1)} mph — ${fmtNum(b.trailing15HrRate, 2)} HR per game lately`
+      )
+    )
     .join('');
-  return `${threshold}<table><thead><tr><th>Batter</th><th>Team</th><th>Form</th><th>Opposing SP</th><th>SP ERA (L3)</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<p class="muted">Wind is blowing out today (helps fly balls carry over the fence) at these parks — showing power hitters (top third of everyone playing today by recent home-run rate) on both teams.</p>
+    <table><thead><tr><th>Power hitter</th><th>Conditions</th><th>Today's opposing pitcher</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderPage({ gameDate, availableDates, digest }) {
   const dateOptions = availableDates
     .map((d) => `<option value="${d}" ${d === gameDate ? 'selected' : ''}>${d}</option>`)
     .join('');
-  const statusLine = lastRunError
-    ? `last run failed: ${escapeHtml(lastRunError)}`
-    : lastRunAt
-      ? `last updated ${lastRunAt.toISOString().replace('T', ' ').slice(0, 16)} UTC`
-      : 'no pipeline run yet since this deploy started';
+  let statusLine;
+  if (isRefreshing) {
+    const elapsedSec = Math.round((Date.now() - refreshStartedAt.getTime()) / 1000);
+    statusLine = `refreshing… (${elapsedSec}s so far — this fetches live data and usually takes under a minute, page will reload automatically)`;
+  } else if (lastRunError) {
+    statusLine = `last run failed: ${escapeHtml(lastRunError)}`;
+  } else if (lastRunAt) {
+    statusLine = `last updated ${lastRunAt.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+  } else {
+    statusLine = 'no pipeline run yet since this deploy started';
+  }
 
   return `<!doctype html>
 <html lang="en">
@@ -173,7 +202,10 @@ function renderPage({ gameDate, availableDates, digest }) {
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(128,128,128,0.2); }
   th { color: #888; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
   tr.hc { background: rgba(255, 200, 0, 0.08); }
-  .badge { background: #d97706; color: white; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+  .badge { display: inline-block; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; font-weight: 600; margin-top: 2px; }
+  .badge.hot { background: #d97706; color: white; }
+  .badge.bad { background: rgba(220, 38, 38, 0.15); color: #dc2626; }
+  .badge.good { background: rgba(22, 163, 74, 0.15); color: #16a34a; }
   .empty { color: #888; font-style: italic; }
   .muted { color: #888; font-size: 0.85rem; }
   .cards { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
@@ -188,6 +220,11 @@ function renderPage({ gameDate, availableDates, digest }) {
   .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,0.4); background: transparent; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: default; }
+  .intro { background: rgba(128,128,128,0.08); border-radius: 8px; padding: 14px 16px; margin: 16px 0; font-size: 0.92rem; }
+  .glossary { font-size: 0.85rem; color: #888; }
+  .glossary summary { cursor: pointer; color: inherit; font-size: 0.9rem; margin-bottom: 8px; }
+  .glossary ul { margin: 8px 0 0; padding-left: 20px; }
+  .glossary li { margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -203,16 +240,37 @@ function renderPage({ gameDate, availableDates, digest }) {
     <span class="muted">${statusLine}</span>
   </p>
 
-  <h2>Moneyline</h2>
+  <p class="intro">This page looks for three simple situations in today's MLB games: a home team favored against a struggling opposing pitcher, hitters who are on a hot streak, and parks where the wind is helping the ball fly out for home runs. Nothing here is a guarantee — it's just numbers worth a second look.</p>
+
+  <details class="glossary">
+    <summary>What do these terms mean?</summary>
+    <ul>
+      <li><strong>ERA (Earned Run Average)</strong> — average runs a pitcher gives up per 9 innings. Lower is better. Under ~4.00 is good, 6.00+ means he's been getting hit hard ("struggling").</li>
+      <li><strong>Trailing ERA</strong> — a pitcher's ERA over just his last 3 starts, not the whole season. This page cares about recent form, not the season total.</li>
+      <li><strong>Hit streak</strong> — number of games in a row where a batter has gotten at least 1 hit.</li>
+      <li><strong>HR rate</strong> — home runs per game over a batter's last 15 games played.</li>
+      <li><strong>Wind blowing out</strong> — the wind is blowing from the infield toward the outfield fence, which helps fly balls carry for home runs.</li>
+      <li><strong>🎯 Great matchup</strong> — a hot hitter facing a pitcher who is also struggling. Both signs point the same way.</li>
+    </ul>
+  </details>
+
+  <h2>Moneyline: who to bet on</h2>
   ${renderMoneylineSection(digest.moneyline)}
 
-  <h2>Hit Streak / Contact Watch</h2>
+  <h2>Hot Hitters to Watch</h2>
   ${renderHitStreakSection(digest.hitStreak)}
 
-  <h2>Wind / HR Watch</h2>
+  <h2>Home Run Weather</h2>
   ${renderWindHrSection(digest.windHr)}
 
   <p class="muted" style="margin-top:3rem;">Research signals only — not betting advice. Verify starters/lineups before game time.</p>
+  ${isRefreshing ? `<script>
+    (function poll() {
+      fetch('/status.json').then((r) => r.json()).then((s) => {
+        if (!s.isRefreshing) { location.reload(); } else { setTimeout(poll, 3000); }
+      }).catch(() => setTimeout(poll, 5000));
+    })();
+  </script>` : ''}
 </body>
 </html>`;
 }
@@ -231,6 +289,17 @@ const server = http.createServer(async (req, res) => {
       triggerPipelineRun(); // fire-and-forget; page shows "Refreshing…" until it's done
       res.writeHead(302, { Location: '/' });
       res.end();
+      return;
+    }
+
+    if (url.pathname === '/status.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        isRefreshing,
+        refreshStartedAt,
+        lastRunAt,
+        lastRunError,
+      }));
       return;
     }
 

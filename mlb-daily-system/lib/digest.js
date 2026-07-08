@@ -1,4 +1,7 @@
 import { fmtOdds } from './util/format.js';
+import { BAND_LOW, BAND_HIGH } from './filters/moneyline.js';
+
+const BAND_MID = (BAND_LOW + BAND_HIGH) / 2;
 
 function fmtLast5(results) {
   if (!results || !results.length) return 'no data';
@@ -42,7 +45,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, 
     });
   }
 
-  console.log('\n--- MONEYLINE (capped at 2, sorted by closeness to -155) ---');
+  console.log(`\n--- MONEYLINE (capped at 2, sorted by closeness to ${BAND_MID}) ---`);
   if (moneyline.signal === 'SIT') {
     console.log('  SIT — no qualifying games today.');
   } else {

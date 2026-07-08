@@ -1,7 +1,9 @@
 import { fmtOdds, fmtNum } from './util/format.js';
+import { BAND_LOW, BAND_HIGH } from './filters/moneyline.js';
 
 const ERA_STRUGGLE_GATE = 6.0;
 const UNCONFIRMED_LINEUP_PENALTY = 2.5;
+const BAND_MID = (BAND_LOW + BAND_HIGH) / 2;
 
 function lineupWarning(lineupConfirmed) {
   return lineupConfirmed === false
@@ -21,7 +23,7 @@ function lineupWarning(lineupConfirmed) {
 function moneylineCandidates(moneyline) {
   return (moneyline?.picks || []).map((p) => {
     const era = p.awayStarterTrailingEra ?? ERA_STRUGGLE_GATE;
-    const centeredBonus = Math.max(0, 2.5 - Math.abs(p.homeMl - -155) / 10);
+    const centeredBonus = Math.max(0, 2.5 - Math.abs(p.homeMl - BAND_MID) / 10);
     return {
       type: 'moneyline',
       key: `ml:${p.homeTeam}:${p.awayTeam}`,

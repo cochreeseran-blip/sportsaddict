@@ -1,9 +1,48 @@
 import 'dotenv/config';
 import http from 'node:http';
 import { pool } from './lib/db.js';
+import { runMigrations } from './lib/migrate.js';
+import { runPipeline, todayIsoDate } from './lib/pipeline.js';
 
 // Railway injects PORT dynamically — binding to a fixed port would fail.
 const PORT = process.env.PORT || 3000;
+const REFRESH_HOUR_UTC = Number(process.env.DIGEST_REFRESH_HOUR_UTC ?? 13); // ~9am ET
+
+let isRefreshing = false;
+let lastRunAt = null;
+let lastRunError = null;
+
+async function triggerPipelineRun(gameDate = todayIsoDate()) {
+  if (isRefreshing) return { skipped: true };
+  isRefreshing = true;
+  try {
+    await runPipeline(gameDate);
+    lastRunAt = new Date();
+    lastRunError = null;
+  } catch (err) {
+    console.error('Pipeline run failed:', err);
+    lastRunError = err.message;
+  } finally {
+    isRefreshing = false;
+  }
+  return { skipped: false };
+}
+
+function msUntilNextRun(hourUtc) {
+  const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hourUtc, 0, 0));
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  return next - now;
+}
+
+function scheduleDailyRun() {
+  const delay = msUntilNextRun(REFRESH_HOUR_UTC);
+  console.log(`Next scheduled pipeline run in ${(delay / 3600000).toFixed(1)}h (target ${REFRESH_HOUR_UTC}:00 UTC).`);
+  setTimeout(async () => {
+    await triggerPipelineRun();
+    scheduleDailyRun();
+  }, delay);
+}
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
@@ -96,6 +135,11 @@ function renderPage({ gameDate, availableDates, digest }) {
   const dateOptions = availableDates
     .map((d) => `<option value="${d}" ${d === gameDate ? 'selected' : ''}>${d}</option>`)
     .join('');
+  const statusLine = lastRunError
+    ? `last run failed: ${escapeHtml(lastRunError)}`
+    : lastRunAt
+      ? `last updated ${lastRunAt.toISOString().replace('T', ' ').slice(0, 16)} UTC`
+      : 'no pipeline run yet since this deploy started';
 
   return `<!doctype html>
 <html lang="en">
@@ -124,15 +168,22 @@ function renderPage({ gameDate, availableDates, digest }) {
   .card-sub { color: #888; margin-bottom: 6px; }
   .odds { color: #16a34a; font-weight: 600; }
   form { display: inline; }
+  .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,0.4); background: transparent; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
   <h1>MLB Daily Digest</h1>
-  <p class="sub">
+  <p class="sub toolbar">
     ${escapeHtml(gameDate)}
     <form method="get">
       <select name="date" onchange="this.form.submit()">${dateOptions}</select>
     </form>
+    <form method="post" action="/refresh">
+      <button type="submit" ${isRefreshing ? 'disabled' : ''}>${isRefreshing ? 'Refreshing…' : 'Refresh now'}</button>
+    </form>
+    <span class="muted">${statusLine}</span>
   </p>
 
   <h2>Moneyline</h2>
@@ -159,6 +210,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/refresh' && req.method === 'POST') {
+      triggerPipelineRun(); // fire-and-forget; page shows "Refreshing…" until it's done
+      res.writeHead(302, { Location: '/' });
+      res.end();
+      return;
+    }
+
     const availableDates = await listDigestDates();
     const requestedDate = url.searchParams.get('date');
     const gameDate = requestedDate || availableDates[0] || new Date().toISOString().slice(0, 10);
@@ -179,6 +237,21 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`MLB digest dashboard listening on :${PORT}`);
+async function start() {
+  await runMigrations(pool);
+
+  // Bind the port immediately so Railway's healthcheck passes right away —
+  // don't make first boot wait on a full pipeline run (batter form alone
+  // can take ~a minute against ~400 hitters).
+  server.listen(PORT, () => {
+    console.log(`MLB digest dashboard listening on :${PORT}`);
+  });
+
+  triggerPipelineRun(); // fire-and-forget initial populate
+  scheduleDailyRun();
+}
+
+start().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });

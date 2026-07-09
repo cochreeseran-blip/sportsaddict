@@ -13,8 +13,13 @@ const ERA_EDGE_MIN = 2.0;
 //      skip home dogs bigger than +100 and huge -250+ chalk
 //   3. both starters known, confirmed from the posted lineup when it's
 //      out, otherwise the projected/probable starter MLB has published
-//   4. the HOME starter's ERA is at least 2 runs better (lower) than the
-//      visitor's, compared on last 5 starts (season ERA as fallback)
+//   4. the HOME starter's SEASON ERA (the official, on-the-books number
+//      you'd see on his roster page) is at least 2 runs better (lower)
+//      than the visitor's SEASON ERA. Trailing form (last 3-5 starts) is
+//      too small a sample and too noisy to gate a real pick on, one bad
+//      start can swing it a full run, so it's shown on the card for
+//      context but never decides qualification. If the season-ERA edge
+//      isn't there, it's a pass, full stop.
 // Every qualifying home team is returned (ranked by ERA edge), not just a
 // top few, so the full list feeds the Research tab and the daily email.
 // The Daily Slate then shows only whichever land in the day's top 6.
@@ -30,9 +35,6 @@ const ERA_EDGE_MIN = 2.0;
 // leaving the section empty.
 
 function eraComparison(home, away) {
-  if (home.trailingEra !== null && away.trailingEra !== null) {
-    return { basis: 'last 5 starts', homeEra: home.trailingEra, awayEra: away.trailingEra };
-  }
   if (home.seasonEra !== null && away.seasonEra !== null) {
     return { basis: 'season', homeEra: home.seasonEra, awayEra: away.seasonEra };
   }
@@ -100,12 +102,12 @@ export async function runMoneylineFilter(pool, gameDate) {
     if (!startersKnown) {
       reasons.push('a starter has not been announced yet for this game, check back once MLB posts it');
     } else if (cmp === null) {
-      reasons.push(`no ERA data yet for ${home.trailingEra === null && home.seasonEra === null ? r.home_starter_name : r.away_starter_name}, check back after he has made a start`);
+      reasons.push(`no season ERA on file yet for ${home.seasonEra === null ? r.home_starter_name : r.away_starter_name}, check back after he has made a start`);
     } else if (!homeEdgeEnough) {
       reasons.push(
         eraEdge > 0
-          ? `${r.home_starter_name}'s ERA edge over ${r.away_starter_name} is only ${fmtNum(eraEdge)} runs (${cmp.basis}), the screener wants a ${ERA_EDGE_MIN}+ run gap`
-          : `${r.away_starter_name} (${fmtNum(cmp.awayEra)} ERA, ${cmp.basis}) has the better arm than ${r.home_starter_name} (${fmtNum(cmp.homeEra)}), the home pitcher has to hold the edge`
+          ? `${r.home_starter_name}'s season ERA edge over ${r.away_starter_name} is only ${fmtNum(eraEdge)} runs, the screener wants a ${ERA_EDGE_MIN}+ run gap`
+          : `${r.away_starter_name} (${fmtNum(cmp.awayEra)} season ERA) has the better arm than ${r.home_starter_name} (${fmtNum(cmp.homeEra)}), the home pitcher has to hold the edge`
       );
     }
 

@@ -16,7 +16,8 @@
     "report": "node scripts/report.js",
     "closing": "node scripts/closing.js",
     "parks": "node scripts/parks.js",
-    "newsletter": "node scripts/newsletter.js"
+    "newsletter": "node scripts/newsletter.js",
+    "reconcile-ml": "node scripts/reconcile-moneyline-picks.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

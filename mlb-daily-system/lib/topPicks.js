@@ -46,7 +46,7 @@ export function moneylineCandidates(moneyline) {
       homeMl: p.homeMl ?? null,
       breakevenPct: p.breakevenPct ?? null,
       headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}`,
-      detail: `${p.homeStarterName ?? 'The home starter'} (${fmtNum(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)} ERA) holds the pitching edge over ${p.awayStarterName ?? 'the visitor'} (${fmtNum(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)}), ${p.eraBasis ?? 'recent form'}.`,
+      detail: `${p.homeStarterName ?? 'The home starter'} (${fmtNum(p.homeStarterSeasonEra)} season ERA) holds the pitching edge over ${p.awayStarterName ?? 'the visitor'} (${fmtNum(p.awayStarterSeasonEra)}).`,
     };
   });
 }

@@ -559,7 +559,7 @@ function moneylinePickCard(p) {
   const oddsLabel = noLine ? 'No line' : fmtOdds(p.homeMl);
   const note = noLine
     ? 'No betting line posted yet. This is the pitching matchup only. The odds band gets checked once a price is available.'
-    : `Needs to win ${breakeven} of the time at ${fmtOdds(p.homeMl)} just to break even. Not a prediction it will.`;
+    : `Break-even ${breakeven}`;
 
   return `
     <div class="sig-card">
@@ -567,7 +567,7 @@ function moneylinePickCard(p) {
         <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)}</span>
         <span class="sig-odds${noLine ? ' faint' : ''}">${oddsLabel}</span>
       </div>
-      <div class="sig-sub">To beat ${esc(p.awayTeam)} at home${edge ? `. Home starter's ERA is <strong>${edge} runs better</strong> (${esc(p.eraBasis ?? '')})` : ''}.</div>
+      <div class="sig-sub">Home vs ${esc(p.awayTeam)}${edge ? `. Starter ERA <strong>${edge} better</strong> over 5 starts` : ''}.</div>
       <div class="ml-matchup">
         ${starterEra(p.homeStarterName, p.homeStarterTrailingEra, p.homeStarterSeasonEra, true)}
         <span class="ml-vs">vs</span>
@@ -597,7 +597,7 @@ function manualPickCards(picks) {
         <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
       </div>
       <div class="sig-sub">To beat ${esc(p.awayTeam)}.${p.reason ? ` ${esc(p.reason)}` : ''}</div>
-      <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '-'} of the time at ${fmtOdds(p.homeMl)} just to break even.</div>
+      <div class="sig-note">Break-even ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '-'}</div>
       <div style="margin-top:10px">
         <button class="btn ghost small" data-delete-manual-pick="${p.id}">Remove</button>
       </div>
@@ -624,7 +624,7 @@ function digestWarningBanner(warnings) {
     <div class="digest-warning">
       <span class="dot"></span>
       <div>
-        <strong>${warnings.length} issue${warnings.length === 1 ? '' : 's'} while building this slate</strong>
+        <strong>Heads up · ${warnings.length} data gap${warnings.length === 1 ? '' : 's'} today</strong>
         <ul>${items}</ul>
       </div>
     </div>`;
@@ -659,22 +659,30 @@ function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark,
   // glance. It's a <button>, so the card's own tap-to-expand handler
   // (which ignores clicks on button/a) leaves it alone.
   const teamLink = mlbGameId
-    ? `<button type="button" class="pc-team-link" data-open-game="${esc(mlbGameId)}" data-open-date="${esc(gameDate || '')}" title="Open this game">${logoHtml(null, teamName, 20)}</button>`
-    : logoHtml(null, teamName, 20);
+    ? `<button type="button" class="pc-team-link" data-open-game="${esc(mlbGameId)}" data-open-date="${esc(gameDate || '')}" title="Open this game">${logoHtml(null, teamName, 16)}</button>`
+    : logoHtml(null, teamName, 16);
+  const pct = prob === null || prob === undefined ? null : Math.round(prob * 100);
+  const tier = pct === null ? 'cool' : pct >= 70 ? 'hot' : pct >= 50 ? 'warm' : 'cool';
+  const probBlock = pct === null ? '' : `
+      <div class="pc-prob">
+        <span class="pc-pct">${pct}<i>%</i></span>
+        <span class="pc-plabel">${esc(probLabel || 'est')}</span>
+        ${spark ? `<span class="pc-spark">${spark}</span>` : ''}
+      </div>
+      <div class="pc-meter"><i style="width:${pct}%"></i></div>`;
   return `
-    <article class="pick-card" data-expand>
-      <div class="pc-rank">${rank}</div>
-      <div class="pc-top">
+    <article class="pick-card ${tier}" data-expand>
+      <div class="pc-head">
         ${headshotHtml(personId, name)}
         <div class="pc-id">
           <div class="pc-name">${esc(name)}</div>
           <div class="pc-sub">${sub}</div>
         </div>
-        ${probChip(prob, probLabel)}
+        <span class="pc-rank">${rank}</span>
       </div>
+      ${probBlock}
       <div class="pc-mid">
         ${teamLink}
-        ${spark || ''}
         ${flags || ''}
       </div>
       <div class="pc-why">
@@ -891,7 +899,7 @@ async function renderSignals(silent = false) {
       <div class="signals-toolbar">
         <select class="date-select" id="signalsDate">${dateOptions}</select>
         <span class="toolbar-note">${esc(longDate(d.date))}${d.updatedAt ? ` · screener ran ${esc(fmtRunTime(d.updatedAt))}` : ''}</span>
-        <span class="toolbar-note" style="margin-left:auto">The 6 best plays today. Percentages are estimates, not guarantees.</span>
+        <span class="toolbar-note" style="margin-left:auto">Today's 6 best plays</span>
       </div>
 
       <div class="board-head">
@@ -906,7 +914,7 @@ async function renderSignals(silent = false) {
       ${koBody ? `<h2 class="board-title">Strikeouts</h2>${koBody}` : ''}
 
       <h2 class="board-title">Close Calls</h2>
-      ${nearMissCards(d.moneyline.otherGames) || emptyHtml('Nothing else evaluated', 'Every home team today either qualified or there were none.')}
+      ${nearMissCards(d.moneyline.otherGames) || emptyHtml('No close calls', 'Nothing else came near the cut today.')}
 
       ${digestWarningBanner(d.warnings)}`;
 

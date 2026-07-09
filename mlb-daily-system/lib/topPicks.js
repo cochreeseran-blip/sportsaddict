@@ -1,7 +1,7 @@
-import { fmtOdds, fmtNum } from './util/format.js';
+import { fmtNum } from './util/format.js';
 
-const ERA_STRUGGLE_GATE = 6.0;
-const UNCONFIRMED_LINEUP_PENALTY = 2.5;
+const LEAGUE_AVG_ERA = 4.2;
+const UNCONFIRMED_LINEUP_PENALTY = 2;
 
 function lineupWarning(lineupConfirmed) {
   return lineupConfirmed === false
@@ -9,44 +9,39 @@ function lineupWarning(lineupConfirmed) {
     : '';
 }
 
-// Every signal type here already gates on "the opposing/away pitcher is
-// struggling" (trailing ERA >= 6.00), that's the one thing moneyline,
-// hit-streak, and wind/HR picks all have in common, so it anchors the
-// score across categories. Each type adds its own bonus on top for how
-// strong that category's specific signal is (how bad the ERA really is,
-// how hot the hitter is, how much wind/power is in play). This is a
-// simple, explainable heuristic, not a statistical model, good enough to
-// rank "which of these is the strongest single pick today," not to size a
-// real edge.
-function moneylineCandidates(moneyline) {
-  return (moneyline?.picks || []).map((p) => {
-    // Score = how big the home starter's ERA advantage is, scaled to sit
-    // on the same rough range as the batter signals' scores.
-    const edge = p.eraEdge ?? 0;
-    return {
-      type: 'moneyline',
-      key: `ml:${p.homeTeam}:${p.awayTeam}`,
-      score: 6 + edge * 1.5,
-      mlbGameId: p.mlbGameId ?? null,
-      homeTeam: p.homeTeam,
-      awayTeam: p.awayTeam,
-      homeMl: p.homeMl ?? null,
-      breakevenPct: p.breakevenPct ?? null,
-      headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}`,
-      detail: `${p.homeStarterName ?? 'The home starter'} (${fmtNum(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)} ERA) holds the pitching edge over ${p.awayStarterName ?? 'the visitor'} (${fmtNum(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)}), ${p.eraBasis ?? 'recent form'}.`,
-    };
-  });
+// How bad the opposing starter's recent form is. A league-average-or-better
+// arm contributes ~nothing; every run of ERA worse than that adds to the
+// score, same idea as the "weak arm" signal elsewhere in the app.
+function eraScore(era) {
+  if (era === null || era === undefined) return 0;
+  return Math.max(0, era - LEAGUE_AVG_ERA);
 }
 
-function hitStreakCandidates(hitStreak) {
-  return (hitStreak?.highConfidence || []).map((b) => {
-    const era = b.opposingStarterTrailingEra ?? ERA_STRUGGLE_GATE;
-    const hotBonus = (b.hitStreak ?? 0) * 0.3 + Math.max(0, (b.trailing15Avg ?? 0) - 0.3) * 20;
+// Games actually hit safely, of his last 5, oldest-to-newest boolean array.
+function last5HitCount(last5Results) {
+  return (last5Results || []).filter(Boolean).length;
+}
+
+// Player-prop ranking for the Tracking tab: pools every qualifying hit
+// prop and HR prop into one score so the strongest 8 across both
+// categories, not just the strongest of each, make the ledger. Same
+// explainable-heuristic spirit as the rest of the screener, not a model.
+// Every term maps to something a bettor actually checks before taking a
+// prop: how the opposing arm is throwing lately, the batter's own
+// average, whether he's actually been hitting it the last 5 games, and
+// for home run props, the park/wind today.
+function hitPropCandidates(hitStreak) {
+  return (hitStreak?.watchList || []).map((b) => {
     const penalty = b.lineupConfirmed === false ? UNCONFIRMED_LINEUP_PENALTY : 0;
+    const score =
+      eraScore(b.opposingStarterTrailingEra) * 1.4 +
+      Math.max(0, (b.trailing15Avg ?? 0) - 0.25) * 22 +
+      last5HitCount(b.last5Results) * 1.1 -
+      penalty;
     return {
       type: 'hit_streak',
-      key: `batter:${b.batterName}:${b.team}`,
-      score: era + hotBonus - penalty,
+      key: `hit:${b.batterName}:${b.team}`,
+      score,
       mlbGameId: b.mlbGameId ?? null,
       batterId: b.batterId ?? null,
       batterName: b.batterName,
@@ -61,15 +56,21 @@ function hitStreakCandidates(hitStreak) {
   });
 }
 
-function windHrCandidates(windHr) {
-  return (windHr?.highConfidence || []).map((b) => {
-    const era = b.opposingStarterTrailingEra ?? ERA_STRUGGLE_GATE;
-    const powerBonus = (b.trailing15HrRate ?? 0) * 5 + Math.max(0, (b.windSpeedMph ?? 10) - 10) * 0.1;
+function hrPropCandidates(windHr) {
+  return (windHr?.watchList || []).map((b) => {
     const penalty = b.lineupConfirmed === false ? UNCONFIRMED_LINEUP_PENALTY : 0;
+    // Stadium/wind: only a real factor once it's actually blowing out.
+    const windBonus = b.windBlowingOut ? Math.max(0, (b.windSpeedMph ?? 0) - 8) * 0.5 : 0;
+    const score =
+      eraScore(b.opposingStarterTrailingEra) * 1.2 +
+      (b.trailing15HrRate ?? 0) * 9 +
+      last5HitCount(b.last5Results) * 0.6 +
+      windBonus -
+      penalty;
     return {
       type: 'wind_hr',
-      key: `batter:${b.batterName}:${b.team}`,
-      score: era + powerBonus - penalty,
+      key: `hr:${b.batterName}:${b.team}`,
+      score,
       mlbGameId: b.mlbGameId ?? null,
       batterId: b.batterId ?? null,
       batterName: b.batterName,
@@ -84,15 +85,11 @@ function windHrCandidates(windHr) {
   });
 }
 
-// Pools moneyline picks + high-confidence hit-streak batters + high-
-// confidence wind/HR batters into one ranked list. Dedupes by
-// batter/game so the same player doesn't take two of the three slots.
-export function buildTopPicks({ moneyline, hitStreak, windHr }, limit = 3) {
-  const all = [
-    ...moneylineCandidates(moneyline),
-    ...hitStreakCandidates(hitStreak),
-    ...windHrCandidates(windHr),
-  ].sort((a, b) => b.score - a.score);
+// Top 8 player props across both hit and HR watchlists, ranked by the
+// composite score above. A batter who qualifies for both a hit prop and
+// an HR prop can take two slots, they're different bets.
+export function buildTopPicks({ hitStreak, windHr }, limit = 8) {
+  const all = [...hitPropCandidates(hitStreak), ...hrPropCandidates(windHr)].sort((a, b) => b.score - a.score);
 
   const seen = new Set();
   const top = [];

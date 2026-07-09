@@ -602,7 +602,7 @@ async function renderTracking() {
 
     host.innerHTML = `
       <div class="section-head"><h2 class="section-title">Tracking</h2></div>
-      <p class="section-sub">Slatefinder's own top picks, graded against what actually happened.</p>
+      <p class="section-sub">Slatefinder's top 8 player props, graded against what actually happened.</p>
 
       ${summary.length ? `<div class="stat-tiles">${summary.map((s) => `
         <div class="stat-tile">

@@ -393,10 +393,12 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   const strikeouts = await runStrikeoutFilter(pool, gameDate);
   warnings.push(...(windHr.warnings || []));
 
-  // Pooled cross-category ranking for the dashboard's hero section and
-  // the Tracking tab's track record. Heuristic and explainable, not a
-  // model, see lib/topPicks.js.
-  const topPicks = buildTopPicks({ moneyline, hitStreak, windHr }, 5);
+  // Top 8 player props (hit + HR) for the Tracking tab's track record,
+  // factoring opposing pitcher ERA, batting average, last-5-game form,
+  // and stadium/wind for HR props. Heuristic and explainable, not a
+  // model, see lib/topPicks.js. Moneyline isn't a player prop, so it's
+  // not part of this ranking.
+  const topPicks = buildTopPicks({ hitStreak, windHr }, 8);
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);

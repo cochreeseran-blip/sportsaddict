@@ -147,6 +147,14 @@ export async function fetchLinescore(gamePk) {
     outs: data.outs ?? null,
     balls: data.balls ?? null,
     strikes: data.strikes ?? null,
+    // Live score, so an open game panel updates on its own refresh
+    // instead of waiting on the slate's schedule cache.
+    homeRuns: data.teams?.home?.runs ?? null,
+    awayRuns: data.teams?.away?.runs ?? null,
+    // Runners for the scorebug's bases diamond.
+    onFirst: Boolean(data.offense?.first),
+    onSecond: Boolean(data.offense?.second),
+    onThird: Boolean(data.offense?.third),
     batterId: data.offense?.batter?.id ?? null,
     batterName: data.offense?.batter?.fullName ?? null,
     onDeckId: data.offense?.onDeck?.id ?? null,

@@ -354,6 +354,32 @@ body {
   display: flex; align-items: center; justify-content: center; gap: 6px;
 }
 
+/* broadcast scorebug: bases diamond, half-inning arrow, count, out dots */
+.scorebug {
+  display: flex; align-items: center; gap: 13px;
+  width: max-content; margin: 12px auto 0;
+  background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border-strong);
+  border-radius: 10px; padding: 8px 16px;
+}
+.sb-bases { position: relative; width: 34px; height: 26px; flex: 0 0 auto; }
+.sb-b {
+  position: absolute; width: 10px; height: 10px; border-radius: 2.5px;
+  border: 1.5px solid var(--border-strong); background: transparent;
+  transform: rotate(45deg);
+}
+.sb-b.on { background: var(--amber); border-color: var(--amber); box-shadow: 0 0 6px rgba(240, 178, 62, 0.55); }
+.sb-2 { top: 0; left: 50%; margin-left: -5px; }
+.sb-3 { bottom: 0; left: 2px; }
+.sb-1 { bottom: 0; right: 2px; }
+.sb-inning { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-2); }
+.sb-inning b { font-family: var(--font-mono, monospace); font-size: 15px; font-weight: 700; color: var(--text); }
+.sb-count { font-family: var(--font-mono, monospace); font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.sb-sep { width: 1px; height: 18px; background: var(--border-strong); flex: 0 0 auto; }
+.sb-outs { display: inline-flex; align-items: center; gap: 5px; }
+.sb-outs i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--border-strong); }
+.sb-outs i.on { background: var(--amber); border-color: var(--amber); }
+.sb-outs b { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--text-3); margin-left: 3px; }
+
 /* graded moneyline cards: a colored left edge once the result is in
    (keeps the facelift's soft card shadow in the same list) */
 .sig-card.graded-win { box-shadow: inset 3px 0 0 var(--green), var(--shadow); }

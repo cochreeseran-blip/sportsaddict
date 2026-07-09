@@ -443,8 +443,32 @@ function lineupRows(side, live = null) {
   }).join('')}</div>`;
 }
 
+// Broadcast-style scorebug for a live game: bases diamond, inning with
+// the half arrow, the count, and out dots, the strip you'd see in the
+// corner of the TV feed.
+function scorebugHtml(live) {
+  if (!live) return '';
+  const half = (live.inningState || '').toLowerCase();
+  const arrow = half.startsWith('bot') ? '▼' : half.startsWith('top') ? '▲' : '◆';
+  const outs = live.outs ?? 0;
+  return `
+    <div class="scorebug">
+      <span class="sb-bases" role="img" aria-label="${['second','third','first'].filter((_, i) => [live.onSecond, live.onThird, live.onFirst][i]).length ? 'runners on' : 'bases empty'}">
+        <i class="sb-b sb-2${live.onSecond ? ' on' : ''}"></i>
+        <i class="sb-b sb-3${live.onThird ? ' on' : ''}"></i>
+        <i class="sb-b sb-1${live.onFirst ? ' on' : ''}"></i>
+      </span>
+      <span class="sb-inning">${arrow}<b>${live.currentInning ?? ''}</b></span>
+      <span class="sb-sep"></span>
+      <span class="sb-count">${live.balls ?? 0}–${live.strikes ?? 0}</span>
+      <span class="sb-sep"></span>
+      <span class="sb-outs">${[0, 1, 2].map((i) => `<i${i < outs ? ' class="on"' : ''}></i>`).join('')}<b>OUT</b></span>
+    </div>
+    ${live.batterName ? `<div class="gp-live-now"><span class="lu-ball">⚾</span> ${esc(live.batterName)} at the plate${live.onDeckName ? ` · ${esc(live.onDeckName)} on deck` : ''}</div>` : ''}`;
+}
+
 // While the panel is open on a live game it re-fetches itself every 60s
-// so the score, batting lines, and the at-bat baseball keep moving.
+// so the score, scorebug, and the at-bat baseball keep moving.
 let panelTimer = null;
 let panelOpenKey = null;
 
@@ -474,6 +498,13 @@ async function openGamePanel(gamePk, date, silent = false) {
     const started = slateGame && slateGame.abstractState !== 'Preview';
     const isLive = slateGame?.abstractState === 'Live';
     const live = isLive ? d.live : null;
+    // Prefer the linescore's score while live: it refreshes with the
+    // panel's own 60s cycle instead of waiting on the slate cache.
+    const awayScore = live && live.awayRuns !== null ? live.awayRuns : slateGame?.away?.score;
+    const homeScore = live && live.homeRuns !== null ? live.homeRuns : slateGame?.home?.score;
+    const liveStatus = live && live.currentInning
+      ? `${live.inningState || 'Live'} ${live.currentInning}`
+      : slateGame ? statusLabel(slateGame).text : '';
 
     const starterBox = (label, s) => `
       <div class="gp-starter">
@@ -503,23 +534,18 @@ async function openGamePanel(gamePk, date, silent = false) {
           ${logoHtml(away.id, away.name, 62)}
           <div class="nm">${esc(away.name || 'Away')}</div>
           <div class="rec">${esc(slateGame?.away?.record || '')}</div>
-          ${started ? `<div class="gp-score">${slateGame?.away?.score ?? ''}</div>` : ''}
+          ${started ? `<div class="gp-score">${awayScore ?? ''}</div>` : ''}
         </div>
-        <div class="gp-at">${started ? esc(statusLabel(slateGame).text) : 'at'}</div>
+        <div class="gp-at">${started ? esc(liveStatus) : 'at'}</div>
         <div class="gp-side">
           ${logoHtml(home.id, home.name, 62)}
           <div class="nm">${esc(home.name || 'Home')}</div>
           <div class="rec">${esc(slateGame?.home?.record || '')}</div>
-          ${started ? `<div class="gp-score">${slateGame?.home?.score ?? ''}</div>` : ''}
+          ${started ? `<div class="gp-score">${homeScore ?? ''}</div>` : ''}
         </div>
       </div>
       <div class="gp-when">${esc(longDate(date))}${slateGame && !started ? ` · ${esc(etTime(slateGame.gameDate))}` : ''}${d.venue ? ` · ${esc(d.venue)}` : ''}</div>
-      ${live && live.batterName ? `
-        <div class="gp-live-now">
-          <span class="lu-ball">⚾</span> ${esc(live.batterName)} at the plate
-          ${live.outs !== null ? ` · ${live.outs} out${live.outs === 1 ? '' : 's'}` : ''}
-          ${live.onDeckName ? ` · ${esc(live.onDeckName)} on deck` : ''}
-        </div>` : ''}
+      ${scorebugHtml(live)}
       ${metaPills.length ? `<div class="gp-meta">${metaPills.join('')}</div>` : ''}
 
       <div class="gp-block">

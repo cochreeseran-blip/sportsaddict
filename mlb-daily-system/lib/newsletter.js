@@ -190,14 +190,23 @@ export async function sendDailyNewsletter(pool, gameDate) {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.NEWSLETTER_FROM;
   const baseUrl = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
+  const ownerEmail = (process.env.OWNER_EMAIL || '').trim().toLowerCase();
 
   const subs = await activeSubscribers(pool);
-  if (!subs.length) {
-    console.log('Newsletter: no active subscribers, skipping.');
-    return { sent: 0, skipped: 'no subscribers' };
+  // The owner (OWNER_EMAIL) always gets the daily board, whether or not
+  // they're on the public subscriber list. This is the "email this to me"
+  // recipient, deduped against subscribers so it's never sent twice.
+  const recipients = [...subs];
+  if (ownerEmail && !subs.some((s) => s.email.toLowerCase() === ownerEmail)) {
+    recipients.push({ email: ownerEmail, unsubscribe_token: null, owner: true });
+  }
+
+  if (!recipients.length) {
+    console.log('Newsletter: no subscribers and no OWNER_EMAIL, skipping.');
+    return { sent: 0, skipped: 'no recipients' };
   }
   if (!apiKey || !from) {
-    console.log(`Newsletter: ${subs.length} subscriber(s) waiting, but RESEND_API_KEY/NEWSLETTER_FROM not set, skipping send.`);
+    console.log(`Newsletter: ${recipients.length} recipient(s) waiting, but RESEND_API_KEY/NEWSLETTER_FROM not set, skipping send.`);
     return { sent: 0, skipped: 'not configured' };
   }
 
@@ -213,13 +222,14 @@ export async function sendDailyNewsletter(pool, gameDate) {
   const subject = topline ? `${dateLabel}: ${topline}` : `${dateLabel}: today's slate`;
 
   let sent = 0;
-  for (const sub of subs) {
+  for (const sub of recipients) {
     try {
       const html = renderDigestEmail({
         gameDate,
         digest,
         recap,
-        unsubscribeUrl: `${baseUrl}/unsubscribe?token=${sub.unsubscribe_token}`,
+        // Owner rows have no unsubscribe token, point their link at home.
+        unsubscribeUrl: sub.unsubscribe_token ? `${baseUrl}/unsubscribe?token=${sub.unsubscribe_token}` : (baseUrl || '#'),
       });
       await resendSend({ apiKey, from, to: sub.email, subject, html });
       sent++;
@@ -227,6 +237,6 @@ export async function sendDailyNewsletter(pool, gameDate) {
       console.warn(`Newsletter: send failed for ${sub.email}: ${err.message}`);
     }
   }
-  console.log(`Newsletter: sent ${sent}/${subs.length}.`);
-  return { sent, total: subs.length };
+  console.log(`Newsletter: sent ${sent}/${recipients.length}.`);
+  return { sent, total: recipients.length };
 }

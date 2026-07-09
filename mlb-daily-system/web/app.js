@@ -48,6 +48,7 @@ const state = {
   view: 'signals',
   signalsDate: null,
   slateDate: null,
+  trackingSubView: 'games',
   slateCache: new Map(),
   user: null,
 };
@@ -567,6 +568,13 @@ function trackGroupHtml(group) {
     </div>`;
 }
 
+// Picks tab: the same picks as Games, just as one flat, ungrouped list
+// so you can scan the calls themselves without game-by-game headers.
+function picksFlatHtml(recent) {
+  if (!recent.length) return emptyHtml('Nothing tracked yet', 'Top picks land here automatically once the daily slate runs.');
+  return `<div class="track-group">${recent.map(trackRow).join('')}</div>`;
+}
+
 async function renderTracking() {
   const host = $('#view-tracking');
   host.innerHTML = loadingHtml;
@@ -599,10 +607,14 @@ async function renderTracking() {
     }
     const groupList = [...groups.values()].sort((a, b) => (a.gameDate < b.gameDate ? 1 : a.gameDate > b.gameDate ? -1 : 0));
     const anyPending = summary.some((s) => s.pending > 0);
+    const subView = state.trackingSubView === 'picks' ? 'picks' : 'games';
+    const body = subView === 'picks'
+      ? picksFlatHtml(recent)
+      : (groupList.length ? groupList.map(trackGroupHtml).join('') : emptyHtml('Nothing tracked yet', "Top picks land here automatically once the daily slate runs."));
 
     host.innerHTML = `
       <div class="section-head"><h2 class="section-title">Tracking</h2></div>
-      <p class="section-sub">Slatefinder's top 8 player props, graded against what actually happened.</p>
+      <p class="section-sub">Slatefinder's top 6 picks, graded against what actually happened.</p>
 
       ${summary.length ? `<div class="stat-tiles">${summary.map((s) => `
         <div class="stat-tile">
@@ -611,11 +623,23 @@ async function renderTracking() {
           <div class="st-sub">${s.wins}W ${s.losses}L${s.pushes ? ` ${s.pushes}P` : ''}${s.pending ? ` · ${s.pending} pending` : ''}</div>
         </div>`).join('')}</div>` : ''}
 
+      <div class="sub-tabs" id="trackingSubTabs">
+        <button type="button" class="sub-tab ${subView === 'games' ? 'active' : ''}" data-sub-tab="games">Games</button>
+        <button type="button" class="sub-tab ${subView === 'picks' ? 'active' : ''}" data-sub-tab="picks">Picks</button>
+      </div>
+
       <div class="bets-toolbar">
         <button class="btn" id="gradeBetsBtn" ${anyPending ? '' : 'disabled'}>Check results</button>
       </div>
 
-      ${groupList.length ? groupList.map(trackGroupHtml).join('') : emptyHtml('Nothing tracked yet', "Top picks land here automatically once the daily slate runs.")}`;
+      ${body}`;
+
+    $('#trackingSubTabs').querySelectorAll('[data-sub-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.trackingSubView = btn.dataset.subTab;
+        renderTracking();
+      });
+    });
 
     $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget;

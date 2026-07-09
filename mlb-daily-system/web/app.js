@@ -233,9 +233,34 @@ function probChip(p, label = 'est') {
   return `<span class="prob-chip ${tier}"><b>${pct}%</b><i>${label}</i></span>`;
 }
 
-const loadingHtml = '<div class="loading"><span class="spinner"></span>Loading</div>';
 function emptyHtml(title, msg) {
   return `<div class="empty-state"><div class="es-title">${esc(title)}</div>${esc(msg)}</div>`;
+}
+
+// Ghost/skeleton placeholders for the initial load of a page, standing in
+// the shape of what's about to render instead of a bare spinner.
+function skeletonCards(count = 6) {
+  const card = `
+    <div class="skel-card">
+      <div class="skel-row">
+        <div class="skel-block skel-avatar"></div>
+        <div style="flex:1">
+          <div class="skel-block skel-line w60"></div>
+          <div class="skel-block skel-line w40" style="margin-top:6px"></div>
+        </div>
+      </div>
+      <div class="skel-block skel-line w90"></div>
+      <div class="skel-block skel-line w70"></div>
+    </div>`;
+  return `<div class="skel-grid">${Array(count).fill(card).join('')}</div>`;
+}
+function skeletonPanel() {
+  return `
+    <div class="skel-panel">
+      <div class="skel-block skel-line w60" style="height:22px;width:70%"></div>
+      <div class="skel-block skel-line w40"></div>
+      ${Array(5).fill('<div class="skel-block skel-line w90"></div>').join('')}
+    </div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +286,7 @@ function renderSlateShell() {
     <div class="section-head"><h2 class="section-title">Slate</h2></div>
     ${dateStripHtml()}
     <p class="section-sub">${esc(longDate(date))}</p>
-    <div id="slateGames">${loadingHtml}</div>`;
+    <div id="slateGames">${skeletonCards(3)}</div>`;
   $('#slateDateStrip').querySelectorAll('.date-strip-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.slateDate = btn.dataset.date;
@@ -329,7 +354,7 @@ function gameCardHtml(g) {
 async function loadSlateGames() {
   const host = $('#slateGames');
   const date = state.slateDate || state.today;
-  host.innerHTML = loadingHtml;
+  host.innerHTML = skeletonCards(3);
   try {
     let slate = state.slateCache.get(date);
     if (!slate) {
@@ -389,7 +414,7 @@ async function openGamePanel(gamePk, date) {
   panel.classList.add('open');
   overlay.classList.add('open');
   panel.setAttribute('aria-hidden', 'false');
-  inner.innerHTML = `<button class="gp-close" id="gpClose" aria-label="Close">×</button>${loadingHtml}`;
+  inner.innerHTML = `<button class="gp-close" id="gpClose" aria-label="Close">×</button>${skeletonPanel()}`;
   $('#gpClose').addEventListener('click', closeGamePanel);
 
   const slateGame = (state.slateCache.get(date)?.games || []).find((g) => String(g.gamePk) === String(gamePk));
@@ -528,10 +553,11 @@ async function deleteManualPick(id) {
 }
 
 // ---------------------------------------------------------------------------
-// TRACKING VIEW: Slatefinder's own daily top picks (see lib/topPicks.js,
-// the 3-5 "we believe this is gonna hit" calls that headline Daily
-// Slate), grouped by game with a tick mark (win/loss/push/pending) so the
-// track record reads at a glance. This is our own call, not a personal
+// TRACKING VIEW, two tabs. Picks: Slatefinder's own top 6 (see
+// lib/topPicks.js, the same 6 that headline Daily Slate and the
+// jumbotron), graded against what actually happened. Games: today's full
+// slate with live scores, star whichever ones you want to keep an eye
+// on and they float to the top. This is our own call, not a personal
 // wager ledger, for that you've already got a sportsbook app.
 const SIGNAL_NAMES = { moneyline: 'Moneyline', hit_streak: 'Hot hitter', wind_hr: 'HR weather' };
 
@@ -553,83 +579,74 @@ function trackRow(p) {
     </div>`;
 }
 
-function trackGroupHtml(group) {
-  const g = group.game;
-  const title = g
-    ? `<span class="track-group-teams">${logoHtml(g.away.id, g.away.name, 18)}${esc(g.away.name)} <span class="faint">at</span> ${esc(g.home.name)}${logoHtml(g.home.id, g.home.name, 18)}</span>`
-    : `<span class="track-group-teams">${esc(longDate(group.gameDate))}</span>`;
+async function renderTrackingPicksBody() {
+  const perf = await api('/api/performance');
+  const recent = perf.recent || [];
+  const anyPending = recent.some((p) => p.result === 'pending');
+  const list = recent.length
+    ? `<div class="track-group">${recent.map(trackRow).join('')}</div>`
+    : emptyHtml('Nothing tracked yet', 'Top picks land here automatically once the daily slate runs.');
   return `
-    <div class="track-group">
-      <div class="track-group-head">
-        ${title}
-        ${group.mlbGameId ? `<button type="button" class="btn ghost small" data-open-game="${esc(group.mlbGameId)}" data-open-date="${esc(group.gameDate)}">Open game</button>` : ''}
-      </div>
-      ${group.picks.map(trackRow).join('')}
+    <div class="bets-toolbar">
+      <button class="btn" id="gradeBetsBtn" ${anyPending ? '' : 'disabled'}>Check results</button>
+    </div>
+    ${list}`;
+}
+
+// Which games you've starred to watch closely, kept on this device (no
+// account-wide "tracked games" concept, just a personal shortlist).
+const TRACKED_GAMES_KEY = 'sf_tracked_games';
+function getTrackedGameIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(TRACKED_GAMES_KEY) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+function setTrackedGameIds(ids) {
+  localStorage.setItem(TRACKED_GAMES_KEY, JSON.stringify([...ids]));
+}
+
+function trackedGameCardHtml(g, isTracked) {
+  return `
+    <div class="tg-wrap">
+      <button type="button" class="tg-star ${isTracked ? 'active' : ''}" data-toggle-track-game="${g.gamePk}" title="${isTracked ? 'Stop tracking this game' : 'Track this game'}">${isTracked ? '★' : '☆'}</button>
+      ${gameCardHtml(g)}
     </div>`;
 }
 
-// Picks tab: the same picks as Games, just as one flat, ungrouped list
-// so you can scan the calls themselves without game-by-game headers.
-function picksFlatHtml(recent) {
-  if (!recent.length) return emptyHtml('Nothing tracked yet', 'Top picks land here automatically once the daily slate runs.');
-  return `<div class="track-group">${recent.map(trackRow).join('')}</div>`;
+async function renderTrackingGamesBody() {
+  const date = state.today;
+  let slate = state.slateCache.get(date);
+  if (!slate) {
+    slate = await api(`/api/slate?date=${encodeURIComponent(date)}`);
+    state.slateCache.set(date, slate);
+    setTimeout(() => state.slateCache.delete(date), 120000);
+  }
+  if (!slate.games.length) return emptyHtml('No games', `There are no MLB games scheduled today.`);
+  const tracked = getTrackedGameIds();
+  const games = [...slate.games].sort((a, b) => {
+    const at = tracked.has(String(a.gamePk)) ? 0 : 1;
+    const bt = tracked.has(String(b.gamePk)) ? 0 : 1;
+    return at - bt;
+  });
+  return `<div class="game-grid">${games.map((g) => trackedGameCardHtml(g, tracked.has(String(g.gamePk)))).join('')}</div>`;
 }
 
 async function renderTracking() {
   const host = $('#view-tracking');
-  host.innerHTML = loadingHtml;
+  host.innerHTML = skeletonCards(3);
+  const subView = state.trackingSubView === 'picks' ? 'picks' : 'games';
   try {
-    const perf = await api('/api/performance');
-    const { summary, recent } = perf;
-
-    // Pull matchup info (team names/logos) for whichever dates the tracked
-    // picks touch, so groups read as real games, not raw descriptions.
-    const dates = [...new Set(recent.map((p) => p.gameDate).filter(Boolean))];
-    const slates = await Promise.all(dates.map((dt) => {
-      const cached = state.slateCache.get(dt);
-      return cached ? Promise.resolve(cached) : api(`/api/slate?date=${dt}`).catch(() => null);
-    }));
-    const gameByPk = new Map();
-    slates.forEach((slate) => (slate?.games || []).forEach((g) => gameByPk.set(String(g.gamePk), g)));
-
-    const groups = new Map();
-    for (const p of recent) {
-      const key = p.mlbGameId ? `g:${p.mlbGameId}` : `d:${p.gameDate}`;
-      if (!groups.has(key)) {
-        groups.set(key, {
-          game: p.mlbGameId ? gameByPk.get(String(p.mlbGameId)) : null,
-          gameDate: p.gameDate,
-          mlbGameId: p.mlbGameId,
-          picks: [],
-        });
-      }
-      groups.get(key).picks.push(p);
-    }
-    const groupList = [...groups.values()].sort((a, b) => (a.gameDate < b.gameDate ? 1 : a.gameDate > b.gameDate ? -1 : 0));
-    const anyPending = summary.some((s) => s.pending > 0);
-    const subView = state.trackingSubView === 'picks' ? 'picks' : 'games';
-    const body = subView === 'picks'
-      ? picksFlatHtml(recent)
-      : (groupList.length ? groupList.map(trackGroupHtml).join('') : emptyHtml('Nothing tracked yet', "Top picks land here automatically once the daily slate runs."));
+    const body = subView === 'games' ? await renderTrackingGamesBody() : await renderTrackingPicksBody();
 
     host.innerHTML = `
       <div class="section-head"><h2 class="section-title">Tracking</h2></div>
-      <p class="section-sub">Slatefinder's top 6 picks, graded against what actually happened.</p>
-
-      ${summary.length ? `<div class="stat-tiles">${summary.map((s) => `
-        <div class="stat-tile">
-          <div class="st-label">${esc(SIGNAL_NAMES[s.signalType] || s.signalType)}</div>
-          <div class="st-value">${s.winRate !== null ? `${(s.winRate * 100).toFixed(0)}<span class="unit">%</span>` : '-'}</div>
-          <div class="st-sub">${s.wins}W ${s.losses}L${s.pushes ? ` ${s.pushes}P` : ''}${s.pending ? ` · ${s.pending} pending` : ''}</div>
-        </div>`).join('')}</div>` : ''}
+      <p class="section-sub">${subView === 'games' ? "Today's games, live scores. Star the ones you want to keep an eye on." : "Slatefinder's top 6, graded against what actually happened."}</p>
 
       <div class="sub-tabs" id="trackingSubTabs">
         <button type="button" class="sub-tab ${subView === 'games' ? 'active' : ''}" data-sub-tab="games">Games</button>
         <button type="button" class="sub-tab ${subView === 'picks' ? 'active' : ''}" data-sub-tab="picks">Picks</button>
-      </div>
-
-      <div class="bets-toolbar">
-        <button class="btn" id="gradeBetsBtn" ${anyPending ? '' : 'disabled'}>Check results</button>
       </div>
 
       ${body}`;
@@ -641,18 +658,34 @@ async function renderTracking() {
       });
     });
 
-    $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
-      const btn = e.currentTarget;
-      btn.disabled = true;
-      btn.textContent = 'Checking…';
-      try {
-        await apiSend('/api/tracked-picks/grade', 'POST');
-        await renderTracking();
-      } catch (ex) {
-        btn.disabled = false;
-        btn.textContent = 'Check results';
-      }
-    });
+    if (subView === 'games') {
+      host.querySelectorAll('.game-card').forEach((card) => {
+        card.addEventListener('click', () => openGamePanel(card.dataset.gamepk, card.dataset.date));
+      });
+      host.querySelectorAll('[data-toggle-track-game]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const id = btn.dataset.toggleTrackGame;
+          const tracked = getTrackedGameIds();
+          if (tracked.has(id)) tracked.delete(id); else tracked.add(id);
+          setTrackedGameIds(tracked);
+          renderTracking();
+        });
+      });
+    } else {
+      $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = 'Checking…';
+        try {
+          await apiSend('/api/tracked-picks/grade', 'POST');
+          await renderTracking();
+        } catch (ex) {
+          btn.disabled = false;
+          btn.textContent = 'Check results';
+        }
+      });
+    }
   } catch (err) {
     host.innerHTML = emptyHtml('Tracking unavailable', err.message);
   }
@@ -728,11 +761,14 @@ function moneylinePickCard(p) {
     </div>`;
 }
 
-function moneylineCards(ml) {
-  if (ml.signal === 'SIT' || !ml.picks?.length) {
+// Only the moneyline picks that made today's top 6 (see lib/topPicks.js)
+// show here, same list as the jumbotron and the Tracking tab.
+function moneylineCards(ml, topPickKeys) {
+  const picks = (ml.picks || []).filter((p) => topPickKeys.has(`ml:${p.homeTeam}:${p.awayTeam}`));
+  if (!picks.length) {
     return emptyHtml('No qualifying games', 'No home favorite today whose starting pitcher has the better ERA than the visitor. The nearest misses are listed below.');
   }
-  return `<div class="sig-cards">${ml.picks.map(moneylinePickCard).join('')}</div>`;
+  return `<div class="sig-cards">${picks.map(moneylinePickCard).join('')}</div>`;
 }
 
 function manualPickCards(picks) {
@@ -830,10 +866,14 @@ function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark,
     </article>`;
 }
 
-function hitStreakSection(hs) {
-  if (!hs.watchList?.length) return emptyHtml('No qualifying batters', 'Nobody clears the bar today.');
-  const cards = hs.watchList.map((b, i) => pickCard({
-    rank: i + 1,
+// Only the hit props that made today's top 6 show here, same list as the
+// jumbotron and the Tracking tab. Ranked by their position in that
+// shared list, not re-sorted locally, so the numbering lines up too.
+function hitStreakSection(hs, topPickKeys) {
+  const list = (hs.watchList || []).filter((b) => topPickKeys.has(`hit:${b.batterName}:${b.team}`));
+  if (!list.length) return '';
+  const cards = list.map((b, i) => pickCard({
+    rank: topPickKeys.get(`hit:${b.batterName}:${b.team}`),
     personId: b.batterId,
     name: b.batterName,
     sub: `${b.jerseyNumber ? `#${esc(b.jerseyNumber)} ` : ''}${b.position ? esc(b.position) + ' · ' : ''}1+ hit`,
@@ -856,10 +896,11 @@ function hitStreakSection(hs) {
   return `<div class="pick-grid">${cards.join('')}</div>`;
 }
 
-function windHrSection(wh) {
-  if (!wh.watchList?.length) return emptyHtml('No qualifying batters', 'No power bats cleared the top-third HR-rate bar today.');
-  const cards = wh.watchList.map((b, i) => pickCard({
-    rank: i + 1,
+function windHrSection(wh, topPickKeys) {
+  const list = (wh.watchList || []).filter((b) => topPickKeys.has(`hr:${b.batterName}:${b.team}`));
+  if (!list.length) return '';
+  const cards = list.map((b, i) => pickCard({
+    rank: topPickKeys.get(`hr:${b.batterName}:${b.team}`),
     personId: b.batterId,
     name: b.batterName,
     sub: `${b.jerseyNumber ? `#${esc(b.jerseyNumber)} ` : ''}${b.position ? esc(b.position) + ' · ' : ''}home run`,
@@ -913,29 +954,20 @@ function strikeoutSection(so) {
 }
 
 // --- jumbotron ---------------------------------------------------------------
-// The rotating stadium board at the top of Daily Picks: the day's
-// highest-probability picks, scrolling continuously with faces and
-// percentages. Content is duplicated so the loop wraps seamlessly.
+// The rotating stadium board at the top of Daily Picks: the exact same
+// top 6 that head the Daily Slate sections and the Tracking tab's Picks
+// list (lib/topPicks.js), not an independently-derived list, so "the
+// board" and "what Slatefinder is tracking" are always the same 6 calls.
 function buildBoardItems(d) {
-  const items = [];
-  for (const b of d.hitStreak?.watchList || []) {
-    items.push({ personId: b.batterId, name: b.batterName, team: b.team, label: '1+ HIT', prob: estHitProb(b.trailing15Avg), probLabel: 'est' });
-  }
-  for (const b of d.windHr?.watchList || []) {
-    items.push({ personId: b.batterId, name: b.batterName, team: b.team, label: 'HOME RUN', prob: estHrProb(b.trailing15HrRate), probLabel: 'est' });
-  }
-  for (const p of d.strikeouts?.watchList || []) {
-    items.push({ personId: p.pitcherId, name: p.pitcherName, team: p.team, label: `OVER ${p.suggestedLine.toFixed(1)} K`, prob: estKOverProb(p.last5StartKs, p.strictFloorKs), probLabel: 'est' });
-  }
-  for (const p of d.moneyline?.picks || []) {
-    items.push({ personId: null, name: p.homeTeam, team: p.homeTeam, label: `ML ${p.homeMl !== null ? fmtOdds(p.homeMl) : ''}`.trim(), prob: p.breakevenPct ?? null, probLabel: 'mkt' });
-  }
-  const seen = new Set();
-  return items
-    .filter((x) => x.prob !== null)
-    .filter((x) => (seen.has(x.name + x.label) ? false : seen.add(x.name + x.label)))
-    .sort((a, b) => b.prob - a.prob)
-    .slice(0, 6); // only the absolute best picks make the board
+  return (d.topPicks || []).map((p) => {
+    if (p.type === 'moneyline') {
+      return { personId: null, name: p.homeTeam, team: p.homeTeam, label: `ML ${p.homeMl !== null ? fmtOdds(p.homeMl) : ''}`.trim(), prob: p.breakevenPct ?? null, probLabel: 'mkt' };
+    }
+    if (p.type === 'hit_streak') {
+      return { personId: p.batterId, name: p.batterName, team: p.team, label: '1+ HIT', prob: estHitProb(p.trailing15Avg), probLabel: 'est' };
+    }
+    return { personId: p.batterId, name: p.batterName, team: p.team, label: 'HOME RUN', prob: estHrProb(p.trailing15HrRate), probLabel: 'est' };
+  });
 }
 
 function jumbotronHtml(d) {
@@ -995,7 +1027,7 @@ function yesterdayStrip(perf, today) {
 // doesn't visibly jump or flash while someone's mid-read.
 async function renderSignals(silent = false) {
   const host = $('#view-signals');
-  if (!silent) host.innerHTML = loadingHtml;
+  if (!silent) host.innerHTML = skeletonCards(6);
   const scrollY = silent ? window.scrollY : null;
   try {
     const date = state.signalsDate || state.today;
@@ -1006,6 +1038,13 @@ async function renderSignals(silent = false) {
     state.signalsDate = d.date;
     const dateOptions = (d.availableDates.length ? d.availableDates : [d.date])
       .map((dd) => `<option value="${dd}" ${dd === d.date ? 'selected' : ''}>${dd}</option>`).join('');
+
+    // The exact top 6 picks (see lib/topPicks.js), keyed the same way the
+    // server ranked them, so the sections below only show these 6, in
+    // the same rank order as the jumbotron and the Tracking tab.
+    const topPickKeys = new Map((d.topPicks || []).map((p, i) => [p.key, i + 1]));
+    const hitBody = hitStreakSection(d.hitStreak, topPickKeys);
+    const hrBody = windHrSection(d.windHr, topPickKeys);
 
     host.innerHTML = `
       ${jumbotronHtml(d)}
@@ -1022,13 +1061,11 @@ async function renderSignals(silent = false) {
         <button class="btn small" data-add-manual-pick>Add a pick</button>
       </div>
       ${manualPickCards(d.manualPicks)}
-      ${moneylineCards(d.moneyline)}
+      ${moneylineCards(d.moneyline, topPickKeys)}
 
-      <h2 class="board-title">+1 Hits</h2>
-      ${hitStreakSection(d.hitStreak)}
+      ${hitBody ? `<h2 class="board-title">+1 Hits</h2>${hitBody}` : ''}
 
-      <h2 class="board-title">Home Runs</h2>
-      ${windHrSection(d.windHr)}
+      ${hrBody ? `<h2 class="board-title">Home Runs</h2>${hrBody}` : ''}
 
       <h2 class="board-title center">Strikeout Watch</h2>
       ${strikeoutSection(d.strikeouts)}

@@ -1,6 +1,7 @@
 const ERA_GATE = 6.0;
 const WEAK_ARM_FLOOR = 4.5;
-const MAX_WATCH = 10;
+// Not a business cap, just a safety valve, see hitStreak.js for why.
+const MAX_WATCH = 200;
 
 // Top hitters projected to go deep today: the top third of the slate by
 // HR rate over the last 15 games, ranked by that rate plus how weak the

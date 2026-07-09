@@ -68,6 +68,7 @@ function hitPropCandidates(hitStreak) {
       jerseyNumber: b.jerseyNumber ?? null,
       lineupConfirmed: b.lineupConfirmed,
       last5Results: b.last5Results,
+      trailing15Avg: b.trailing15Avg ?? null,
       headline: `${b.batterName} (${b.team}) to get a hit`,
       detail: `${b.hitStreak >= 5 ? `On a ${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 games`}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
     };
@@ -97,6 +98,7 @@ function hrPropCandidates(windHr) {
       jerseyNumber: b.jerseyNumber ?? null,
       lineupConfirmed: b.lineupConfirmed,
       last5Results: b.last5Results,
+      trailing15HrRate: b.trailing15HrRate ?? null,
       headline: `${b.batterName} (${b.team}) to go deep`,
       detail: `Wind blowing out ${fmtNum(b.windSpeedMph, 1)} mph at ${b.venue}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
     };

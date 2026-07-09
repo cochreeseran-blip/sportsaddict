@@ -4,13 +4,17 @@ const ERA_GATE = 6.0;
 // "Even a little bit weaker" arm: anything worse than a league-average-ish
 // trailing ERA counts toward the matchup score, not just full meltdowns.
 const WEAK_ARM_FLOOR = 4.5;
-const MAX_WATCH = 10;
+// Not a business cap, just a safety valve. The Daily Slate/Tracking top 6
+// is picked from this whole pool (lib/topPicks.js), so it needs every
+// qualifying hitter on a busy slate (can legitimately be 50-100+), not
+// just the first handful.
+const MAX_WATCH = 200;
 
-// Top 10 hitters projected to get a hit today: hot recent form (a 5+ game
-// streak or .320+ over the last 15) ranked by how hot they are and how
-// weak the arm they're facing is. The ERA_GATE still marks the prime
-// matchups, but a merely below-average starter now boosts a hitter's rank
-// instead of being ignored.
+// Every hitter with hot recent form (a 5+ game streak or .320+ over the
+// last 15), ranked by how hot they are and how weak the arm they're
+// facing is. The ERA_GATE still marks the prime matchups, but a merely
+// below-average starter now boosts a hitter's rank instead of being
+// ignored.
 export async function runHitStreakFilter(pool, gameDate) {
   const { rows: games } = await pool.query('SELECT * FROM games WHERE game_date = $1', [gameDate]);
 

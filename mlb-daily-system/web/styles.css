@@ -379,10 +379,15 @@ body {
 }
 .jumbotron:hover .jumbo-track { animation-play-state: paused; }
 /* Track is rendered as 4 copies of the row (see jumbotronHtml), so -25%
-   is exactly one row-width, same as -50% was for a 2-copy track. */
+   is exactly one row-width, same as -50% was for a 2-copy track. Each
+   copy is display:contents so it's invisible to the flex layout here,
+   it exists purely so the reduced-motion override below can hide 3 of
+   the 4 copies instead of dumping all of them out statically. */
 @keyframes jumbo-scroll { to { transform: translateX(-25%); } }
+.jumbo-copy { display: contents; }
 @media (prefers-reduced-motion: reduce) {
   .jumbo-track { animation: none; flex-wrap: wrap; width: auto; padding: 9px 12px; gap: 8px; }
+  .jumbo-copy:not(:first-child) { display: none; }
 }
 .jumbo-item { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .jumbo-item .headshot, .jumbo-item .headshot-fallback, .jumbo-item .gc-logo, .jumbo-item .gc-logo-fallback { width: 26px; height: 26px; }

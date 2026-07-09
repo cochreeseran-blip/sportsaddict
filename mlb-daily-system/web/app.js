@@ -981,19 +981,23 @@ function jumbotronHtml(d) {
       <span class="jumbo-label">${esc(x.label)}</span>
       ${probChip(x.prob, x.probLabel)}
     </span>`;
-  const row = items.map(chip).join('<span class="jumbo-sep"></span>');
+  const row = items.map(chip).join('<span class="jumbo-sep"></span>') + '<span class="jumbo-sep"></span>';
   // Repeated 4x (not 2x): with only 6 short items the row can be narrower
   // than a wide desktop viewport, which makes a 2-copy loop look static
   // since there's nothing to scroll past. Four copies guarantees the
   // track overflows any real screen so the marquee is always visibly
   // moving, on phone and on desktop. The keyframe below moves exactly
   // one row-width (-25% of the 4x track), so playback speed is unchanged.
-  const track = Array(4).fill(row).join('<span class="jumbo-sep"></span>');
+  // Each copy is wrapped in its own element (display:contents normally,
+  // so it's a no-op in the flex layout) purely so prefers-reduced-motion
+  // can hide copies 2-4 and show one clean row instead of the animation
+  // stopping mid-track with all 4 copies dumped out statically.
+  const track = Array(4).fill(0).map(() => `<div class="jumbo-copy">${row}</div>`).join('');
   return `
     <div class="jumbotron" aria-label="Today's top picks board">
       <div class="jumbo-title"><span class="jumbo-live"></span>TODAY'S BOARD</div>
       <div class="jumbo-viewport">
-        <div class="jumbo-track">${track}<span class="jumbo-sep"></span></div>
+        <div class="jumbo-track">${track}</div>
       </div>
     </div>`;
 }

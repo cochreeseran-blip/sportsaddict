@@ -103,21 +103,32 @@ function koCandidates(strikeouts) {
 
 // Top 6 across moneyline + hit props + K/O picks, ranked by the composite
 // scores above. Same player can appear in more than one bucket, they're
-// different bets.
+// different bets. At least one moneyline pick is always in the slate: if
+// none makes the natural cut, the best available ML takes the last slot.
 export function buildTopPicks({ moneyline, hitStreak, strikeouts }, limit = 6) {
-  const all = [
+  const ranked = [];
+  const seen = new Set();
+  for (const c of [
     ...moneylineCandidates(moneyline),
     ...hitPropCandidates(hitStreak),
     ...koCandidates(strikeouts),
-  ].sort((a, b) => b.score - a.score);
-
-  const seen = new Set();
-  const top = [];
-  for (const c of all) {
+  ].sort((a, b) => b.score - a.score)) {
     if (seen.has(c.key)) continue;
     seen.add(c.key);
-    top.push(c);
-    if (top.length >= limit) break;
+    ranked.push(c);
+  }
+
+  const top = ranked.slice(0, limit);
+
+  // Guarantee a moneyline pick in the daily slate. If none cracked the top
+  // on score but a qualifying ML exists, swap the best one in for the
+  // lowest-scoring pick, then re-sort so it lands where its score belongs.
+  if (limit > 0 && !top.some((p) => p.type === 'moneyline')) {
+    const bestMl = ranked.find((p) => p.type === 'moneyline');
+    if (bestMl) {
+      top[top.length - 1] = bestMl;
+      top.sort((a, b) => b.score - a.score);
+    }
   }
   return top;
 }

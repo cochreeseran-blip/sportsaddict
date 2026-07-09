@@ -94,6 +94,21 @@
   </div>
 </div>
 
+<input type="file" id="betScanInput" accept="image/*" multiple hidden>
+
+<div id="scanReviewModal" class="modal-backdrop" hidden>
+  <div class="modal wide" role="dialog" aria-label="Review scanned picks">
+    <div class="modal-title">Review scanned picks</div>
+    <p class="scan-note" id="scanReviewNote"></p>
+    <div id="scanReviewList"></div>
+    <div class="modal-error" id="scanReviewError" hidden></div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" id="scanReviewCancel">Cancel</button>
+      <button type="button" class="btn primary" id="scanReviewSave">Save picks</button>
+    </div>
+  </div>
+</div>
+
 <div id="manualPickModal" class="modal-backdrop" hidden>
   <div class="modal" role="dialog" aria-label="Add a moneyline pick">
     <div class="modal-title">Add a moneyline pick</div>

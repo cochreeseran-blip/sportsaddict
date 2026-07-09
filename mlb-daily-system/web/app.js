@@ -714,12 +714,14 @@ async function renderTracking() {
 
       <div class="bets-toolbar">
         <button class="btn primary" id="addBetBtn">Track a pick</button>
+        <button class="btn" id="uploadScanBtn">Upload screenshot</button>
         <button class="btn" id="gradeBetsBtn" ${s.pending ? '' : 'disabled'}>Check results</button>
       </div>
 
       ${groupList.length ? groupList.map(trackGroupHtml).join('') : emptyHtml('Nothing tracked yet', 'Hit + Track on any pick, or track one manually with the button above.')}`;
 
     $('#addBetBtn').addEventListener('click', () => openBetModal());
+    $('#uploadScanBtn').addEventListener('click', () => $('#betScanInput').click());
     $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
@@ -748,6 +750,158 @@ async function renderTracking() {
     }));
   } catch (err) {
     host.innerHTML = emptyHtml('Tracking unavailable', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SCREENSHOT IMPORT: read bet slips with a vision model instead of typing
+// them in. Downscaled client-side before upload, both to stay under the
+// server's body-size limit and to keep the per-scan API call cheap.
+function downscaleImage(file, maxDim = 1600, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = () => {
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => reject(new Error('Could not read that image.'));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+let scanCandidates = [];
+
+async function handleScreenshotFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  const btn = $('#uploadScanBtn');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  const found = [];
+  const errors = [];
+  for (let i = 0; i < files.length; i++) {
+    btn.textContent = files.length > 1 ? `Reading ${i + 1} of ${files.length}…` : 'Reading…';
+    try {
+      const dataUrl = await downscaleImage(files[i]);
+      const { bets } = await apiSend('/api/bets/scan', 'POST', { image: dataUrl });
+      found.push(...bets);
+    } catch (ex) {
+      errors.push(`${files[i].name}: ${ex.message}`);
+    }
+  }
+  btn.disabled = false;
+  btn.textContent = originalLabel;
+  $('#betScanInput').value = '';
+  if (!found.length) {
+    alert(errors.length ? `Could not read any bets from those screenshots.\n\n${errors.join('\n')}` : 'No bets found in those screenshots. Try a clearer photo.');
+    return;
+  }
+  scanCandidates = found.map((b) => ({ ...b, gameDate: b.gameDate || state.today }));
+  openScanReview(errors);
+}
+
+function renderScanReviewList() {
+  const host = $('#scanReviewList');
+  if (!scanCandidates.length) {
+    host.innerHTML = emptyHtml('Nothing left to save', 'Every pick was removed.');
+    return;
+  }
+  host.innerHTML = scanCandidates.map((b, i) => `
+    <div class="scan-row" data-scan-row="${i}">
+      <input type="text" class="scan-desc" data-field="description" value="${esc(b.description)}" placeholder="Pick">
+      <input type="text" class="scan-odds" data-field="odds" value="${b.odds ?? ''}" placeholder="Odds" inputmode="numeric">
+      <input type="number" class="scan-stake" data-field="stake" value="${b.stake ?? ''}" min="0.01" step="0.01" placeholder="Stake ($)">
+      <input type="text" class="scan-book" data-field="book" value="${esc(b.book || '')}" placeholder="Book">
+      <input type="date" class="scan-date" data-field="gameDate" value="${b.gameDate || state.today}">
+      <button type="button" class="btn-mini x" data-scan-remove="${i}" title="Remove">×</button>
+    </div>`).join('');
+  host.querySelectorAll('[data-field]').forEach((input) => {
+    input.addEventListener('input', (e) => {
+      const idx = Number(e.target.closest('[data-scan-row]').dataset.scanRow);
+      scanCandidates[idx][e.target.dataset.field] = e.target.value;
+    });
+  });
+  host.querySelectorAll('[data-scan-remove]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      scanCandidates.splice(Number(btn.dataset.scanRemove), 1);
+      renderScanReviewList();
+    });
+  });
+}
+
+function openScanReview(errors = []) {
+  $('#scanReviewError').hidden = true;
+  $('#scanReviewNote').textContent = errors.length
+    ? `Found ${scanCandidates.length} pick${scanCandidates.length === 1 ? '' : 's'}. Check the details below before saving (${errors.length} screenshot${errors.length === 1 ? '' : 's'} couldn't be read).`
+    : `Found ${scanCandidates.length} pick${scanCandidates.length === 1 ? '' : 's'}. Check the details below before saving.`;
+  renderScanReviewList();
+  $('#scanReviewModal').hidden = false;
+}
+
+function closeScanReview() {
+  $('#scanReviewModal').hidden = true;
+  scanCandidates = [];
+}
+
+// No website can reach into a phone's camera roll and delete a photo for
+// someone, that permission doesn't exist in a browser. The honest version
+// of "delete the screenshots for me" is a clear reminder once the picks
+// are safely saved.
+function showCameraRollReminder(count) {
+  alert(`Saved ${count} pick${count === 1 ? '' : 's'} to Tracking.\n\nA website can't delete photos from your camera roll for you, that's not something browsers are allowed to do. It's safe to delete those bet-slip screenshots yourself now.`);
+}
+
+async function saveScanReview() {
+  const err = $('#scanReviewError');
+  err.hidden = true;
+  const saveBtn = $('#scanReviewSave');
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+  let saved = 0;
+  const failures = [];
+  for (const b of scanCandidates) {
+    const description = (b.description || '').trim();
+    const stake = Number(b.stake);
+    if (!description || !Number.isFinite(stake) || stake <= 0) {
+      failures.push(`"${description || 'Untitled pick'}" needs a description and a stake before it can be saved.`);
+      continue;
+    }
+    const oddsRaw = String(b.odds ?? '').trim().replace(/^\+/, '');
+    try {
+      await apiSend('/api/bets', 'POST', {
+        description,
+        odds: oddsRaw === '' ? null : Number(oddsRaw),
+        stake,
+        book: b.book || null,
+        gameDate: b.gameDate || state.today,
+        betKind: 'manual',
+      });
+      saved++;
+    } catch (ex) {
+      failures.push(`"${description}": ${ex.message}`);
+    }
+  }
+  saveBtn.disabled = false;
+  saveBtn.textContent = 'Save picks';
+  if (failures.length) {
+    err.textContent = failures.join(' ');
+    err.hidden = false;
+  }
+  if (saved > 0) {
+    closeScanReview();
+    showCameraRollReminder(saved);
+    if (state.view === 'tracking') renderTracking();
   }
 }
 
@@ -1348,6 +1502,7 @@ async function init() {
       closeGamePanel();
       closeManualPickModal();
       closeBetModal();
+      closeScanReview();
     }
   });
 
@@ -1369,6 +1524,12 @@ async function init() {
     const trackButton = e.target.closest('[data-track]');
     if (trackButton) openBetModal(JSON.parse(trackButton.dataset.track));
   });
+
+  // Bet-slip screenshot import + review modal.
+  $('#betScanInput').addEventListener('change', (e) => handleScreenshotFiles(e.target.files));
+  $('#scanReviewCancel').addEventListener('click', closeScanReview);
+  $('#scanReviewSave').addEventListener('click', saveScanReview);
+  $('#scanReviewModal').addEventListener('click', (e) => { if (e.target === $('#scanReviewModal')) closeScanReview(); });
 
   // Team-mark links on pick cards: jump straight to that matchup.
   document.addEventListener('click', (e) => {

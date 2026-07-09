@@ -13,6 +13,7 @@ import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newslette
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
 import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
+import { scanBetSlip } from './lib/sources/vision.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -600,6 +601,30 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/bets/grade' && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
       sendJson(res, 200, await gradePendingBets(pool));
+      return;
+    }
+
+    // Screenshot import: read a sportsbook bet slip with a vision model so
+    // the Tracking tab can be filled in from a photo. Costs a real API
+    // call per screenshot, so this is rate-limited tighter than the other
+    // write endpoints on top of requiring a session.
+    if (url.pathname === '/api/bets/scan' && req.method === 'POST') {
+      if (!(await requireUser(req, res))) return;
+      if (rateLimited(req, 'bet-scan', 20, 10 * 60 * 1000)) {
+        return sendJson(res, 429, { error: 'Too many screenshots at once, wait a bit and try again.' });
+      }
+      let body;
+      try {
+        body = await readJsonBody(req, 8 * 1024 * 1024);
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message === 'body too large' ? 'That image is too large.' : 'Bad request.' });
+      }
+      try {
+        const bets = await scanBetSlip(body.image);
+        sendJson(res, 200, { bets });
+      } catch (err) {
+        sendJson(res, 502, { error: err.message });
+      }
       return;
     }
 

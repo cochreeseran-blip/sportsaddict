@@ -134,6 +134,28 @@ export async function fetchBoxscoreLineups(gamePk) {
   return { home: side('home'), away: side('away') };
 }
 
+// Live game state for the at-bat marker: who's at the plate, who's on
+// deck, and the count/outs. Only meaningful while a game is Live; for
+// Preview/Final games the offense block is absent or stale, callers gate
+// on the schedule's abstractGameState before showing any of this.
+export async function fetchLinescore(gamePk) {
+  const url = `${BASE}/game/${gamePk}/linescore`;
+  const data = await fetchJson(url);
+  return {
+    currentInning: data.currentInning ?? null,
+    inningState: data.inningState ?? null,
+    outs: data.outs ?? null,
+    balls: data.balls ?? null,
+    strikes: data.strikes ?? null,
+    batterId: data.offense?.batter?.id ?? null,
+    batterName: data.offense?.batter?.fullName ?? null,
+    onDeckId: data.offense?.onDeck?.id ?? null,
+    onDeckName: data.offense?.onDeck?.fullName ?? null,
+    pitcherId: data.defense?.pitcher?.id ?? null,
+    pitcherName: data.defense?.pitcher?.fullName ?? null,
+  };
+}
+
 // Game-by-game pitching log for the season, most recent start first.
 export async function fetchPitcherGameLog(pitcherId, season) {
   const url = `${BASE}/people/${pitcherId}/stats?stats=gameLog&group=pitching&season=${season}`;

@@ -225,7 +225,13 @@ async function buildSlate(dateStr) {
 // merged with our stored batter form (streak, trailing avg/HR rate) and
 // pitcher form for the probable starters.
 async function buildGameDetail(gamePk, dateStr) {
-  const lineups = await cached(`box:${gamePk}`, 2 * 60 * 1000, () => mlb.fetchBoxscoreLineups(gamePk));
+  const [lineups, live] = await Promise.all([
+    cached(`box:${gamePk}`, 2 * 60 * 1000, () => mlb.fetchBoxscoreLineups(gamePk)),
+    // At-bat marker data. Short cache so the baseball moves batter to
+    // batter; best-effort because a Preview game has no linescore worth
+    // showing and the panel must never fail over a marker.
+    cached(`line:${gamePk}`, 25 * 1000, () => mlb.fetchLinescore(gamePk)).catch(() => null),
+  ]);
 
   const [batterRows, pitcherRows, gameRow] = await Promise.all([
     pool.query(
@@ -286,6 +292,7 @@ async function buildGameDetail(gamePk, dateStr) {
     awayStarter: starter(g?.away_starter_id, g?.away_starter_name),
     home: decorate(lineups.home),
     away: decorate(lineups.away),
+    live,
   };
 }
 
@@ -529,12 +536,24 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/digest') {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
-      const [digest, availableDates, manualPicks] = await Promise.all([
+      const [digest, availableDates, manualPicks, mlResults] = await Promise.all([
         loadDigest(date),
         listDigestDates(),
         listManualPicks(pool, date),
+        // Graded outcomes for the date's tracked moneyline calls, so the
+        // board shows W/L next to each pick once the game is final.
+        pool.query(
+          `SELECT mlb_game_id, description, locked_price, result
+           FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline'`,
+          [date]
+        ).then((r) => r.rows.map((p) => ({
+          mlbGameId: p.mlb_game_id,
+          description: p.description,
+          lockedPrice: p.locked_price,
+          result: p.result,
+        }))),
       ]);
-      sendJson(res, 200, { date, availableDates, ...digest, manualPicks });
+      sendJson(res, 200, { date, availableDates, ...digest, manualPicks, mlResults });
       return;
     }
 

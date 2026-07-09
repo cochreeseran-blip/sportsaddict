@@ -337,6 +337,28 @@ body {
 .lu-stat .v { font-weight: 600; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .lu-stat .k { font-size: 9.5px; color: var(--text-3); margin-top: 1px; }
 
+/* live at-bat: the baseball sits on whoever's at the plate and the row
+   glows faintly; a quiet hint marks the on-deck man */
+.lu-row.at-bat { background: rgba(91, 140, 255, 0.07); box-shadow: inset 2px 0 0 var(--accent); }
+.lu-ball { font-size: 13px; line-height: 1; display: inline-block; animation: ball-bob 1.4s ease-in-out infinite; }
+@keyframes ball-bob { 50% { transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .lu-ball { animation: none; } }
+.lu-now {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--accent); background: rgba(91, 140, 255, 0.14);
+  border-radius: 4px; padding: 1px 5px; margin-left: 5px; vertical-align: 1px;
+}
+.lu-now.deck { color: var(--text-3); background: rgba(255, 255, 255, 0.06); }
+.gp-live-now {
+  text-align: center; font-size: 12.5px; color: var(--text-2); margin-top: 8px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+
+/* graded moneyline cards: a colored left edge once the result is in
+   (keeps the facelift's soft card shadow in the same list) */
+.sig-card.graded-win { box-shadow: inset 3px 0 0 var(--green), var(--shadow); }
+.sig-card.graded-loss { box-shadow: inset 3px 0 0 var(--red), var(--shadow); }
+
 /* --- jumbotron -------------------------------------------------------------------- */
 .jumbotron {
   border: 1px solid #2a2417;

@@ -29,13 +29,11 @@ async function insertTrackedPick(pool, record) {
   );
 }
 
-// Writes each of the day's featured top picks (see lib/topPicks.js, the
-// same 3-5 "we believe this is gonna hit" picks that headline Daily
-// Slate) into the permanent ledger, so they get graded against real
-// results over time instead of just being today's live board. This is
-// deliberately the *ranked, deduped* top picks, not the full watchlists,
-// the ledger is a track record of our best calls, not everything that
-// qualified. Idempotent per (game_date, signal_type, mlb_game_id, batter)
+// Writes the day's published moneyline board (every qualifying ML call,
+// see lib/topPicks.js moneylineCandidates) into the permanent ledger, so
+// each call gets graded against the real final score and the Daily Slate
+// can show a W/L next to every pick it made plus an honest all-time
+// record. Idempotent per (game_date, signal_type, mlb_game_id, batter)
 // so running the pipeline 3x/day (or on manual refresh) doesn't spam
 // duplicate rows for the same underlying pick, the price/metrics from
 // the FIRST time a pick qualified that day are what get "locked in".

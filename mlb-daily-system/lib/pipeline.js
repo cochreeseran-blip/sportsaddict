@@ -10,7 +10,7 @@ import { runHitStreakFilter } from './filters/hitStreak.js';
 import { runWindHrFilter } from './filters/windHr.js';
 import { runStrikeoutFilter } from './filters/strikeouts.js';
 import { saveDigest } from './digest.js';
-import { buildTopPicks } from './topPicks.js';
+import { buildTopPicks, moneylineCandidates } from './topPicks.js';
 import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
@@ -418,10 +418,11 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // run's in-memory warnings.
   await saveDigest(pool, gameDate, 'warnings', { warnings });
 
-  // The permanent ledger (the "All-time" record on Daily Slate) only
-  // tracks moneyline calls, not player props, that's the one graded by a
-  // clean final score rather than a batter's individual box score line.
-  const trackedCount = await recordTrackedPicks(pool, gameDate, topPicks.filter((p) => p.type === 'moneyline'));
+  // The permanent ledger (the "All-time" record on Daily Slate) tracks
+  // every qualifying moneyline call, that's the board the Daily Slate
+  // publishes and stands behind, graded by a clean final score. Player
+  // props stay out of the ledger.
+  const trackedCount = await recordTrackedPicks(pool, gameDate, moneylineCandidates(moneyline));
   log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
 
   // No UI button for this anymore, the pipeline running 3x/day is what

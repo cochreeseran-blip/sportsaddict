@@ -29,7 +29,10 @@ function last5HitCount(last5Results) {
 // lately, the batter's own average, whether he's actually been hitting
 // it the last 5 games, stadium/wind for HR props, and for moneyline, how
 // big the home starter's ERA edge really is.
-function moneylineCandidates(moneyline) {
+// Exported: the pipeline records every one of these in the tracked-picks
+// ledger (the moneyline board is the product now, all of it gets graded),
+// not just the ones that crack the cross-bucket top 6.
+export function moneylineCandidates(moneyline) {
   return (moneyline?.picks || []).map((p) => {
     const edge = p.eraEdge ?? 0;
     const score = Math.max(0, edge) * 1.6 + 5;

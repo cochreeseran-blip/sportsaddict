@@ -1129,24 +1129,6 @@ async function init() {
   // Account gate + topbar chip.
   wireAuth();
 
-  // Newsletter signup.
-  $('#subscribeForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = e.currentTarget;
-    try {
-      await apiSend('/api/subscribe', 'POST', { email: $('#subscribeEmail').value });
-      form.innerHTML = '<span class="subscribe-done">You are on the list. First email goes out with the next morning digest.</span>';
-    } catch (ex) {
-      let err = form.querySelector('.subscribe-err');
-      if (!err) {
-        err = document.createElement('span');
-        err.className = 'subscribe-err';
-        err.style.cssText = 'color:var(--red);font-size:12px;width:100%;text-align:center';
-        form.appendChild(err);
-      }
-      err.textContent = ex.message;
-    }
-  });
   $('#refreshBtn').addEventListener('click', async () => {
     try {
       await fetch('/api/refresh', { method: 'POST' });

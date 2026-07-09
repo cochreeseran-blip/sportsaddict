@@ -9,7 +9,7 @@ import { runPipeline, todayIsoDate } from './lib/pipeline.js';
 import * as mlb from './lib/sources/mlbStats.js';
 import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
 import { listManualPicks, addManualPick, deleteManualPick } from './lib/manualPicks.js';
-import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newsletter.js';
+import { unsubscribeAccount, sendDailyNewsletter } from './lib/newsletter.js';
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
 import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
@@ -668,26 +668,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // --- newsletter ------------------------------------------------------
-    if (url.pathname === '/api/subscribe' && req.method === 'POST') {
-      if (rateLimited(req, 'subscribe', 8, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many attempts, try again later.' });
-      const { email } = await readJsonBody(req);
-      try {
-        await addSubscriber(pool, email);
-        sendJson(res, 200, { subscribed: true });
-      } catch (err) {
-        sendJson(res, 400, { error: err.message });
-      }
-      return;
-    }
-
+    // --- newsletter unsubscribe (from the daily email's one-click link) --
     if (url.pathname === '/unsubscribe') {
-      const ok = await unsubscribe(pool, url.searchParams.get('token') || '');
+      const ok = await unsubscribeAccount(pool, url.searchParams.get('token') || '');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
         <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#101216;color:#e7e9ee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
         <div style="text-align:center;padding:24px"><p style="font-size:16px;font-weight:600">${ok ? "You're unsubscribed." : 'That link has already been used or is invalid.'}</p>
-        <p style="color:#9ba3b0;font-size:13px">${ok ? 'No more daily emails. You can re-subscribe on the site any time.' : ''}</p>
+        <p style="color:#9ba3b0;font-size:13px">${ok ? "No more daily emails. Your account still works, this only turns off the morning digest." : ''}</p>
         <p><a href="/" style="color:#5b9cff;font-size:13px">Back to Slatefinder</a></p></div></body>`);
       return;
     }

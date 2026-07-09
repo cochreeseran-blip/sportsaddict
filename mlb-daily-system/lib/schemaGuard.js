@@ -13,7 +13,7 @@
 // NOT NULL column in the list is ours and keeps its constraint (our
 // inserts always supply it); anything outside the list is legacy.
 const OWNED_COLUMNS = {
-  users: ['id', 'email', 'username', 'avatar_seed', 'password_hash', 'created_at'],
+  users: ['id', 'email', 'username', 'avatar_seed', 'password_hash', 'created_at', 'newsletter_unsubscribed_at', 'newsletter_token'],
   sessions: ['token', 'user_id', 'created_at', 'expires_at'],
   games: [
     'id', 'game_date', 'mlb_game_id', 'home_team', 'away_team', 'game_time_utc', 'venue',

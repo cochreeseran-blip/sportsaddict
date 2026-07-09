@@ -83,6 +83,14 @@ export async function ensureAuthSchema(pool) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_seed INTEGER;
     UPDATE users SET avatar_seed = ((id::bigint * 2654435761) % 2147483647)::integer
       WHERE avatar_seed IS NULL;
+    -- The daily email goes to account holders (their email is on file).
+    -- These two columns carry the opt-out and the per-account unsubscribe
+    -- token the email's one-click unsubscribe link uses.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS newsletter_unsubscribed_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS newsletter_token TEXT;
+    UPDATE users SET newsletter_token = md5(random()::text || clock_timestamp()::text || id::text)
+      WHERE newsletter_token IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS users_newsletter_token_uidx ON users (newsletter_token);
   `);
 
   // The production database turned out to host a users table from an older
@@ -160,11 +168,12 @@ export async function createUser(pool, email, password) {
     const username = generateUsername();
     const avatarSeed = generateAvatarSeed();
     try {
+      const newsletterToken = crypto.randomBytes(24).toString('hex');
       const { rows } = await pool.query(
-        `INSERT INTO users (email, username, avatar_seed, password_hash)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO users (email, username, avatar_seed, password_hash, newsletter_token)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id, email, username, avatar_seed`,
-        [email, username, avatarSeed, passwordHash]
+        [email, username, avatarSeed, passwordHash, newsletterToken]
       );
       const u = rows[0];
       return { id: u.id, email: u.email, username: u.username, avatarSeed: u.avatar_seed };

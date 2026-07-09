@@ -1,42 +1,32 @@
-import crypto from 'node:crypto';
-
 // Daily email digest via Resend (https://resend.com). Fully dormant until
-// RESEND_API_KEY is set, subscribing still works, sends are just skipped
-// and logged, so the list can grow before email is wired up.
+// RESEND_API_KEY is set. Recipients are the app's own account holders,
+// their email is on file from signup, so there's no separate subscribe
+// step. Each account carries a newsletter_token for the one-click
+// unsubscribe link; unsubscribing sets newsletter_unsubscribed_at.
 //
 // Env:
 //   RESEND_API_KEY     - Resend secret key (starts with "re_")
 //   NEWSLETTER_FROM    - verified sender, e.g. "Slatefinder <picks@yourdomain.com>"
 //   APP_BASE_URL       - public URL of this app, used for unsubscribe links,
 //                        e.g. "https://slatefinder.up.railway.app"
+//   OWNER_EMAIL        - always emailed, whether or not it has an account
 
-export async function addSubscriber(pool, email) {
-  const normalized = String(email || '').trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-    throw new Error('That does not look like a valid email address.');
-  }
-  const token = crypto.randomBytes(24).toString('hex');
-  // Re-subscribing after an unsubscribe just reactivates the row.
-  const { rows } = await pool.query(
-    `INSERT INTO subscribers (email, unsubscribe_token) VALUES ($1, $2)
-     ON CONFLICT (email) DO UPDATE SET unsubscribed_at = NULL
-     RETURNING id`,
-    [normalized, token]
-  );
-  return rows[0];
-}
-
-export async function unsubscribe(pool, token) {
+// A recipient's unsubscribe click, keyed by the per-account token.
+export async function unsubscribeAccount(pool, token) {
+  if (!token) return false;
   const { rowCount } = await pool.query(
-    `UPDATE subscribers SET unsubscribed_at = now() WHERE unsubscribe_token = $1 AND unsubscribed_at IS NULL`,
+    `UPDATE users SET newsletter_unsubscribed_at = now()
+     WHERE newsletter_token = $1 AND newsletter_unsubscribed_at IS NULL`,
     [token]
   );
   return rowCount > 0;
 }
 
-async function activeSubscribers(pool) {
+// Everyone with an account who hasn't opted out. { email, newsletter_token }.
+async function accountRecipients(pool) {
   const { rows } = await pool.query(
-    'SELECT email, unsubscribe_token FROM subscribers WHERE unsubscribed_at IS NULL'
+    `SELECT email, newsletter_token FROM users
+     WHERE email IS NOT NULL AND newsletter_unsubscribed_at IS NULL`
   );
   return rows;
 }
@@ -144,7 +134,7 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
 
     <p style="${S.muted}" >Lineups usually post 1&ndash;3 hours before first pitch &mdash; check the site for confirmed lineups before betting a hitter. Research signals only, not betting advice.</p>
   </div>
-  <p style="${S.footer}">You subscribed to the Slatefinder daily digest.<br><a href="${unsubscribeUrl}" style="color:#9aa1ad;">Unsubscribe</a></p>
+  <p style="${S.footer}">You get this because you have a Slatefinder account.<br><a href="${unsubscribeUrl}" style="color:#9aa1ad;">Unsubscribe from the daily email</a></p>
 </body></html>`;
 }
 
@@ -192,17 +182,16 @@ export async function sendDailyNewsletter(pool, gameDate) {
   const baseUrl = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
   const ownerEmail = (process.env.OWNER_EMAIL || '').trim().toLowerCase();
 
-  const subs = await activeSubscribers(pool);
-  // The owner (OWNER_EMAIL) always gets the daily board, whether or not
-  // they're on the public subscriber list. This is the "email this to me"
-  // recipient, deduped against subscribers so it's never sent twice.
-  const recipients = [...subs];
-  if (ownerEmail && !subs.some((s) => s.email.toLowerCase() === ownerEmail)) {
-    recipients.push({ email: ownerEmail, unsubscribe_token: null, owner: true });
+  const accounts = await accountRecipients(pool);
+  // Every account holder who hasn't opted out, plus OWNER_EMAIL (always,
+  // whether or not it has an account), deduped so no address is sent twice.
+  const recipients = [...accounts];
+  if (ownerEmail && !accounts.some((a) => (a.email || '').toLowerCase() === ownerEmail)) {
+    recipients.push({ email: ownerEmail, newsletter_token: null, owner: true });
   }
 
   if (!recipients.length) {
-    console.log('Newsletter: no subscribers and no OWNER_EMAIL, skipping.');
+    console.log('Newsletter: no account holders and no OWNER_EMAIL, skipping.');
     return { sent: 0, skipped: 'no recipients' };
   }
   if (!apiKey || !from) {
@@ -228,8 +217,8 @@ export async function sendDailyNewsletter(pool, gameDate) {
         gameDate,
         digest,
         recap,
-        // Owner rows have no unsubscribe token, point their link at home.
-        unsubscribeUrl: sub.unsubscribe_token ? `${baseUrl}/unsubscribe?token=${sub.unsubscribe_token}` : (baseUrl || '#'),
+        // Owner-only rows have no account token, point their link at home.
+        unsubscribeUrl: sub.newsletter_token ? `${baseUrl}/unsubscribe?token=${sub.newsletter_token}` : (baseUrl || '#'),
       });
       await resendSend({ apiKey, from, to: sub.email, subject, html });
       sent++;

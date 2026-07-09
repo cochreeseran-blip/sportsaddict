@@ -436,10 +436,28 @@ tr.exp-detail:hover td { background: rgba(0, 0, 0, 0.22); }
 .ml-day-record.up { color: var(--green); background: var(--green-bg); border-color: rgba(52, 209, 127, 0.35); }
 .ml-day-record.down { color: var(--red); background: var(--red-bg); border-color: rgba(255, 93, 108, 0.35); }
 
-/* graded moneyline cards: a colored left edge once the result is in
-   (keeps the facelift's soft card shadow in the same list) */
-.sig-card.graded-win { box-shadow: inset 3px 0 0 var(--green), var(--shadow); }
-.sig-card.graded-loss { box-shadow: inset 3px 0 0 var(--red), var(--shadow); }
+/* the Moneyline Board's locked cards: a real win gets a celebratory
+   treatment, not a quiet pill, this IS the product's track record. */
+.sig-card.locked-win {
+  cursor: pointer;
+  border-color: rgba(52, 209, 127, 0.5);
+  background: linear-gradient(180deg, rgba(52, 209, 127, 0.1), transparent 60%), var(--panel);
+  box-shadow: 0 0 0 1px rgba(52, 209, 127, 0.18), 0 10px 30px rgba(52, 209, 127, 0.1), var(--shadow);
+}
+.sig-card.locked-loss { cursor: pointer; box-shadow: inset 3px 0 0 var(--red), var(--shadow); }
+.sig-card.locked-pending { cursor: pointer; }
+
+.mlv-big {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono, monospace); font-size: 12.5px; font-weight: 800; letter-spacing: 0.04em;
+  border-radius: 999px; padding: 4px 11px 4px 9px; flex: 0 0 auto;
+}
+.mlv-big i { font-style: normal; font-size: 12px; }
+.mlv-big.win { color: #04140b; background: var(--green); box-shadow: 0 0 14px rgba(52, 209, 127, 0.55); }
+.mlv-big.loss { color: #fff; background: var(--red); }
+.mlv-big.push { color: var(--amber); background: var(--amber-bg); }
+.mlv-big.pending { color: var(--text-2); background: rgba(255, 255, 255, 0.06); }
+.mlv-big.pending i.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: blink 1.2s ease-in-out infinite; }
 
 /* --- jumbotron -------------------------------------------------------------------- */
 .jumbotron {

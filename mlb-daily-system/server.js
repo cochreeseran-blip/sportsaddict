@@ -529,23 +529,36 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/digest') {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
-      const [digest, availableDates, mlResults] = await Promise.all([
+      const [digest, availableDates, lockedMoneyline] = await Promise.all([
         loadDigest(date),
         listDigestDates(),
-        // Graded outcomes for the date's tracked moneyline calls, so the
-        // board shows W/L next to each pick once the game is final.
+        // The Moneyline Board renders from THIS, not digest.moneyline.picks.
+        // digest.moneyline is re-derived from live data on every pipeline
+        // run, so a game that qualified in the morning can fall back out
+        // once its own final score updates the starter's ERA (a bad final
+        // start can drop his trailing ERA edge below the 2-run bar). This
+        // is the permanent per-day ledger (see trackedPicks.js): once a
+        // game qualifies today it stays on today's board, W/L included,
+        // no matter what a later re-screen decides.
         pool.query(
-          `SELECT mlb_game_id, description, locked_price, result
-           FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline'`,
+          `SELECT mlb_game_id, locked_price, breakeven_pct, qualifying_metrics, result
+           FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline' ORDER BY id`,
           [date]
-        ).then((r) => r.rows.map((p) => ({
-          mlbGameId: p.mlb_game_id,
-          description: p.description,
-          lockedPrice: p.locked_price,
-          result: p.result,
-        }))),
+        ).then((r) => r.rows.map((p) => {
+          const m = p.qualifying_metrics || {};
+          return {
+            mlbGameId: p.mlb_game_id,
+            homeTeam: m.homeTeam ?? null,
+            awayTeam: m.awayTeam ?? null,
+            homeMl: m.homeMl ?? p.locked_price,
+            breakevenPct: m.breakevenPct ?? (p.breakeven_pct !== null ? Number(p.breakeven_pct) : null),
+            headline: m.headline ?? null,
+            detail: m.detail ?? null,
+            result: p.result,
+          };
+        })),
       ]);
-      sendJson(res, 200, { date, availableDates, ...digest, mlResults });
+      sendJson(res, 200, { date, availableDates, ...digest, lockedMoneyline });
       return;
     }
 

@@ -506,16 +506,17 @@ async function moneylineVerdictBlock(gamePk, date) {
     } catch { return ''; }
   }
   const idStr = String(gamePk);
-  const pick = (d.moneyline?.picks || []).find((p) => String(p.mlbGameId) === idStr);
+  // The locked ledger, not the live re-screen: once a game's on today's
+  // board it stays there (and keeps its result) even if a later run's
+  // numbers would no longer qualify it.
+  const pick = (d.lockedMoneyline || []).find((p) => String(p.mlbGameId) === idStr);
   if (pick) {
-    const result = (d.mlResults || []).find((r) => String(r.mlbGameId) === idStr)?.result ?? null;
-    const edge = pick.eraEdge !== null && pick.eraEdge !== undefined ? fmtNum(pick.eraEdge) : null;
     return `
       <div class="gp-block">
         <div class="gp-block-title">Moneyline screen</div>
         <div class="ml-verdict on">
-          <div class="mlv-head"><span class="mlv-badge">${esc(pick.homeTeam)} ML${pick.homeMl !== null && pick.homeMl !== undefined ? ` ${fmtOdds(pick.homeMl)}` : ''}</span>${resultChip(result)}</div>
-          <div class="mlv-text">${edge ? `${esc(pick.homeStarterName ?? 'The home starter')}'s ERA is ${edge} runs better than ${esc(pick.awayStarterName ?? 'the visitor')}'s (${esc(pick.eraBasis || '')}).` : 'On today’s board.'}</div>
+          <div class="mlv-head"><span class="mlv-badge">${esc(pick.homeTeam || '')} ML${pick.homeMl !== null && pick.homeMl !== undefined ? ` ${fmtOdds(pick.homeMl)}` : ''}</span>${resultChip(pick.result)}</div>
+          <div class="mlv-text">${esc(pick.detail || 'On today’s board.')}</div>
         </div>
       </div>`;
   }
@@ -684,21 +685,6 @@ function playerCell(b, extraPills = '') {
     </div>`;
 }
 
-// Two-line ERA readout for a starter: last-5-starts figure with the
-// season figure alongside, whichever exists.
-function starterEra(name, trailing, season, highlight) {
-  const primary = trailing ?? season;
-  const cls = highlight ? 'era-good' : primary !== null && primary >= 6 ? 'era-bad' : '';
-  return `
-    <div class="ml-starter">
-      <div class="ml-starter-name">${esc(name ?? 'TBD')}</div>
-      <div class="ml-starter-era">
-        <span class="${cls}">${fmtNum(trailing)}</span> <span class="faint">last 5</span>
-        &nbsp;·&nbsp; ${fmtNum(season)} <span class="faint">season</span>
-      </div>
-    </div>`;
-}
-
 // W/L chip once a tracked pick has been graded against the final score.
 function resultChip(result) {
   if (result === 'win') return '<span class="pill ok"><span class="pill-dot"></span>Won</span>';
@@ -707,53 +693,37 @@ function resultChip(result) {
   return '';
 }
 
-function moneylinePickCard(p, result = null) {
-  const noLine = p.lineStatus === 'no-line' || p.homeMl === null || p.homeMl === undefined;
-  const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '-';
-  const edge = p.eraEdge !== null && p.eraEdge !== undefined ? fmtNum(p.eraEdge) : null;
+// A big, obvious badge for the day's outcome on this pick: a real win
+// gets a celebratory treatment (bright green, a checkmark), not just a
+// quiet pill, that's the whole point of a public track record.
+function bigResultBadge(result) {
+  if (result === 'win') return '<span class="mlv-big win"><i>✓</i>WON</span>';
+  if (result === 'loss') return '<span class="mlv-big loss"><i>✕</i>LOST</span>';
+  if (result === 'push') return '<span class="mlv-big push">PUSH</span>';
+  return '<span class="mlv-big pending"><i class="pulse"></i>PENDING</span>';
+}
 
-  const flags = [];
-  const graded = resultChip(result);
-  if (graded) flags.push(graded);
-  flags.push(p.startersConfirmed
-    ? '<span class="pill ok"><span class="pill-dot"></span>Confirmed starters</span>'
-    : '<span class="pill warn"><span class="pill-dot"></span>Projected starters</span>');
-  if (noLine) flags.push('<span class="pill warn"><span class="pill-dot"></span>No betting line yet</span>');
-
-  const oddsLabel = noLine ? 'No line' : fmtOdds(p.homeMl);
-  const note = noLine
-    ? 'No betting line posted yet. This is the pitching matchup only. The odds band gets checked once a price is available.'
-    : `Break-even ${breakeven}`;
-
+// The Moneyline Board renders the day's LOCKED ledger (see the /api/digest
+// comment on lockedMoneyline server-side): every game that qualified at
+// any point today, in the order it first qualified, each with its result.
+// This deliberately does NOT re-derive from the live screener on every
+// render, once a game's on today's board it stays there all day.
+function lockedMoneylineCard(p) {
+  const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : null;
   return `
-    <div class="sig-card${result === 'win' ? ' graded-win' : result === 'loss' ? ' graded-loss' : ''}">
+    <div class="sig-card locked-${p.result || 'pending'}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
       <div class="sig-head">
-        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)}</span>
-        <span class="sig-odds${noLine ? ' faint' : ''}">${oddsLabel}</span>
+        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}</span>
+        ${bigResultBadge(p.result)}
       </div>
-      <div class="sig-sub">Home vs ${esc(p.awayTeam)}${edge ? `. Starter ERA <strong>${edge} better</strong> over 5 starts` : ''}.</div>
-      <div class="ml-matchup">
-        ${starterEra(p.homeStarterName, p.homeStarterTrailingEra, p.homeStarterSeasonEra, true)}
-        <span class="ml-vs">vs</span>
-        ${starterEra(p.awayStarterName, p.awayStarterTrailingEra, p.awayStarterSeasonEra, false)}
-      </div>
-      <div class="ml-flags">${flags.join('')}</div>
-      <div class="sig-note">${note}</div>
+      <div class="sig-sub">${esc(p.detail || `To beat ${p.awayTeam || 'the visitor'}.`)}</div>
+      ${breakeven ? `<div class="sig-note">Break-even ${breakeven}</div>` : ''}
     </div>`;
 }
 
-// The full moneyline board: every qualifying home ML call for the date,
-// with its graded W/L once the game is final (resultByGame keys tracked
-// outcomes by mlbGameId).
-function moneylineCards(ml, resultByGame = null) {
-  const picks = ml.picks || [];
-  if (!picks.length) return '';
-  return `<div class="sig-cards">${picks.map((p) => {
-    const r = resultByGame && p.mlbGameId !== null && p.mlbGameId !== undefined
-      ? resultByGame.get(String(p.mlbGameId)) ?? null
-      : null;
-    return moneylinePickCard(p, r);
-  }).join('')}</div>`;
+function lockedMoneylineCards(picks) {
+  if (!picks?.length) return '';
+  return `<div class="sig-cards">${picks.map(lockedMoneylineCard).join('')}</div>`;
 }
 
 function opposingStarterCell(b) {
@@ -851,21 +821,21 @@ async function renderSignals(silent = false) {
     // The schedule is public information and always shows; the moneyline
     // board itself is published by the 9 AM ET run and gated before then.
     const gated = isBeforeGoLive(d.date);
-    const resultByGame = new Map((d.mlResults || []).map((r) => [String(r.mlbGameId), r.result]));
-    const mlCount = gated ? null : (d.moneyline?.picks?.length || 0);
-    // Today so far, straight off the tracked ledger for this date.
+    const lockedPicks = d.lockedMoneyline || [];
+    const mlCount = gated ? null : lockedPicks.length;
+    // Today so far, straight off the locked ledger for this date.
     let dayW = 0, dayL = 0, dayPend = 0;
-    for (const r of d.mlResults || []) {
-      if (r.result === 'win') dayW++;
-      else if (r.result === 'loss') dayL++;
-      else if (r.result === 'pending') dayPend++;
+    for (const p of lockedPicks) {
+      if (p.result === 'win') dayW++;
+      else if (p.result === 'loss') dayL++;
+      else if (p.result === 'pending') dayPend++;
     }
     const dayRecord = !gated && (dayW + dayL + dayPend) > 0
       ? `<span class="ml-day-record${dayW > dayL ? ' up' : dayL > dayW ? ' down' : ''}">${dayW}–${dayL}${dayPend ? ` · ${dayPend} pending` : ''}</span>`
       : '';
     const mlBody = gated
       ? goLiveGate('gateSeeYesterday', 'The moneyline board is published with the 9 AM ET run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
-      : (moneylineCards(d.moneyline, resultByGame) || emptyHtml('No qualifying moneyline today', 'No home team is priced +100 to -250 with a 2+ run starting-pitcher ERA edge. Sitting out is a position too.'));
+      : (lockedMoneylineCards(lockedPicks) || emptyHtml('No qualifying moneyline today', 'No home team is priced +100 to -250 with a 2+ run starting-pitcher ERA edge. Sitting out is a position too.'));
 
     host.innerHTML = `
       ${yesterdayStrip(perf, d.date)}

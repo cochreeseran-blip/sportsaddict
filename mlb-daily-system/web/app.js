@@ -48,7 +48,6 @@ const state = {
   view: 'signals',
   signalsDate: null,
   slateDate: null,
-  trackingSubView: 'games',
   slateCache: new Map(),
   user: null,
 };
@@ -552,144 +551,6 @@ async function deleteManualPick(id) {
   renderSignals();
 }
 
-// ---------------------------------------------------------------------------
-// TRACKING VIEW, two tabs. Picks: Slatefinder's own top 6 (see
-// lib/topPicks.js, the same 6 that headline Daily Slate and the
-// jumbotron), graded against what actually happened. Games: today's full
-// slate with live scores, star whichever ones you want to keep an eye
-// on and they float to the top. This is our own call, not a personal
-// wager ledger, for that you've already got a sportsbook app.
-const SIGNAL_NAMES = { moneyline: 'Moneyline', hit_streak: 'Hot hitter', wind_hr: 'HR weather' };
-
-function tickIcon(result) {
-  if (result === 'win') return '<span class="tick tick-win" title="Win">✓</span>';
-  if (result === 'loss') return '<span class="tick tick-loss" title="Loss">✕</span>';
-  if (result === 'push') return '<span class="tick tick-push" title="Push">–</span>';
-  return '<span class="tick tick-pending" title="Pending">•</span>';
-}
-
-function trackRow(p) {
-  return `
-    <div class="track-row">
-      ${tickIcon(p.result)}
-      <div class="track-desc">
-        <div class="track-desc-main"><span class="pill dim">${esc(SIGNAL_NAMES[p.signalType] || p.signalType)}</span>${esc(p.description)}</div>
-        ${p.lockedPrice !== null && p.lockedPrice !== undefined ? `<div class="track-desc-sub">${fmtOdds(p.lockedPrice)}</div>` : ''}
-      </div>
-    </div>`;
-}
-
-async function renderTrackingPicksBody() {
-  const perf = await api('/api/performance');
-  const recent = perf.recent || [];
-  const anyPending = recent.some((p) => p.result === 'pending');
-  const list = recent.length
-    ? `<div class="track-group">${recent.map(trackRow).join('')}</div>`
-    : emptyHtml('Nothing tracked yet', 'Top picks land here automatically once the daily slate runs.');
-  return `
-    <div class="bets-toolbar">
-      <button class="btn" id="gradeBetsBtn" ${anyPending ? '' : 'disabled'}>Check results</button>
-    </div>
-    ${list}`;
-}
-
-// Which games you've starred to watch closely, kept on this device (no
-// account-wide "tracked games" concept, just a personal shortlist).
-const TRACKED_GAMES_KEY = 'sf_tracked_games';
-function getTrackedGameIds() {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(TRACKED_GAMES_KEY) || '[]'));
-  } catch {
-    return new Set();
-  }
-}
-function setTrackedGameIds(ids) {
-  localStorage.setItem(TRACKED_GAMES_KEY, JSON.stringify([...ids]));
-}
-
-function trackedGameCardHtml(g, isTracked) {
-  return `
-    <div class="tg-wrap">
-      <button type="button" class="tg-star ${isTracked ? 'active' : ''}" data-toggle-track-game="${g.gamePk}" title="${isTracked ? 'Stop tracking this game' : 'Track this game'}">${isTracked ? '★' : '☆'}</button>
-      ${gameCardHtml(g)}
-    </div>`;
-}
-
-async function renderTrackingGamesBody() {
-  const date = state.today;
-  let slate = state.slateCache.get(date);
-  if (!slate) {
-    slate = await api(`/api/slate?date=${encodeURIComponent(date)}`);
-    state.slateCache.set(date, slate);
-    setTimeout(() => state.slateCache.delete(date), 120000);
-  }
-  if (!slate.games.length) return emptyHtml('No games', `There are no MLB games scheduled today.`);
-  const tracked = getTrackedGameIds();
-  const games = [...slate.games].sort((a, b) => {
-    const at = tracked.has(String(a.gamePk)) ? 0 : 1;
-    const bt = tracked.has(String(b.gamePk)) ? 0 : 1;
-    return at - bt;
-  });
-  return `<div class="game-grid">${games.map((g) => trackedGameCardHtml(g, tracked.has(String(g.gamePk)))).join('')}</div>`;
-}
-
-async function renderTracking() {
-  const host = $('#view-tracking');
-  host.innerHTML = skeletonCards(3);
-  const subView = state.trackingSubView === 'picks' ? 'picks' : 'games';
-  try {
-    const body = subView === 'games' ? await renderTrackingGamesBody() : await renderTrackingPicksBody();
-
-    host.innerHTML = `
-      <div class="section-head"><h2 class="section-title">Tracking</h2></div>
-      <p class="section-sub">${subView === 'games' ? "Today's games, live scores. Star the ones you want to keep an eye on." : "Slatefinder's top 6, graded against what actually happened."}</p>
-
-      <div class="sub-tabs" id="trackingSubTabs">
-        <button type="button" class="sub-tab ${subView === 'games' ? 'active' : ''}" data-sub-tab="games">Games</button>
-        <button type="button" class="sub-tab ${subView === 'picks' ? 'active' : ''}" data-sub-tab="picks">Picks</button>
-      </div>
-
-      ${body}`;
-
-    $('#trackingSubTabs').querySelectorAll('[data-sub-tab]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        state.trackingSubView = btn.dataset.subTab;
-        renderTracking();
-      });
-    });
-
-    if (subView === 'games') {
-      host.querySelectorAll('.game-card').forEach((card) => {
-        card.addEventListener('click', () => openGamePanel(card.dataset.gamepk, card.dataset.date));
-      });
-      host.querySelectorAll('[data-toggle-track-game]').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const id = btn.dataset.toggleTrackGame;
-          const tracked = getTrackedGameIds();
-          if (tracked.has(id)) tracked.delete(id); else tracked.add(id);
-          setTrackedGameIds(tracked);
-          renderTracking();
-        });
-      });
-    } else {
-      $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        btn.disabled = true;
-        btn.textContent = 'Checking…';
-        try {
-          await apiSend('/api/tracked-picks/grade', 'POST');
-          await renderTracking();
-        } catch (ex) {
-          btn.disabled = false;
-          btn.textContent = 'Check results';
-        }
-      });
-    }
-  } catch (err) {
-    host.innerHTML = emptyHtml('Tracking unavailable', err.message);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // SIGNALS VIEW
@@ -762,7 +623,7 @@ function moneylinePickCard(p) {
 }
 
 // Only the moneyline picks that made today's top 6 (see lib/topPicks.js)
-// show here, same list as the jumbotron and the Tracking tab.
+// show here, same list as the jumbotron.
 function moneylineCards(ml, topPickKeys) {
   const picks = (ml.picks || []).filter((p) => topPickKeys.has(`ml:${p.homeTeam}:${p.awayTeam}`));
   if (!picks.length) {
@@ -867,8 +728,8 @@ function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark,
 }
 
 // Only the hit props that made today's top 6 show here, same list as the
-// jumbotron and the Tracking tab. Ranked by their position in that
-// shared list, not re-sorted locally, so the numbering lines up too.
+// jumbotron. Ranked by their position in that shared list, not re-sorted
+// locally, so the numbering lines up too.
 function hitStreakSection(hs, topPickKeys) {
   const list = (hs.watchList || []).filter((b) => topPickKeys.has(`hit:${b.batterName}:${b.team}`));
   if (!list.length) return '';
@@ -955,9 +816,9 @@ function strikeoutSection(so) {
 
 // --- jumbotron ---------------------------------------------------------------
 // The rotating stadium board at the top of Daily Picks: the exact same
-// top 6 that head the Daily Slate sections and the Tracking tab's Picks
-// list (lib/topPicks.js), not an independently-derived list, so "the
-// board" and "what Slatefinder is tracking" are always the same 6 calls.
+// top 6 that head the Daily Slate sections (lib/topPicks.js), not an
+// independently-derived list, so the board and the sections below it
+// always agree on what the day's best 6 calls are.
 function buildBoardItems(d) {
   return (d.topPicks || []).map((p) => {
     if (p.type === 'moneyline') {
@@ -1045,7 +906,7 @@ async function renderSignals(silent = false) {
 
     // The exact top 6 picks (see lib/topPicks.js), keyed the same way the
     // server ranked them, so the sections below only show these 6, in
-    // the same rank order as the jumbotron and the Tracking tab.
+    // the same rank order as the jumbotron.
     const topPickKeys = new Map((d.topPicks || []).map((p, i) => [p.key, i + 1]));
     const hitBody = hitStreakSection(d.hitStreak, topPickKeys);
     const hrBody = windHrSection(d.windHr, topPickKeys);
@@ -1091,9 +952,9 @@ async function renderSignals(silent = false) {
   }
 }
 
-// Auto-refresh: the pipeline updates lineups/odds through the day, and
-// the chat/tracking data changes too, so Daily Picks quietly re-fetches
-// itself every 120s while it's the active tab.
+// Auto-refresh: the pipeline updates lineups/odds through the day, so
+// Daily Picks quietly re-fetches itself every 120s while it's the active
+// tab.
 let signalsAutoTimer = null;
 function startSignalsAutoRefresh() {
   clearTimeout(signalsAutoTimer);
@@ -1260,7 +1121,6 @@ function showView(name, force = false) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'slate') { renderSlateShell(); loadSlateGames(); }
   if (name === 'signals') renderSignals();
-  if (name === 'tracking') renderTracking();
   if (name === 'chat') renderChat();
   if (name !== 'chat') stopChatPolling();
   if (name === 'signals') startSignalsAutoRefresh(); else stopSignalsAutoRefresh();

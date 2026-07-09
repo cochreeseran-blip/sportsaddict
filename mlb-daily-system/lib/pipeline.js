@@ -11,7 +11,7 @@ import { runWindHrFilter } from './filters/windHr.js';
 import { runStrikeoutFilter } from './filters/strikeouts.js';
 import { saveDigest } from './digest.js';
 import { buildTopPicks } from './topPicks.js';
-import { recordTrackedPicks } from './trackedPicks.js';
+import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
 
@@ -393,7 +393,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   const strikeouts = await runStrikeoutFilter(pool, gameDate);
   warnings.push(...(windHr.warnings || []));
 
-  // Top 6 for the Tracking tab's track record: moneyline calls + player
+  // Top 6 for the Daily Slate board/jumbotron: moneyline calls + player
   // props (hit/HR), factoring opposing pitcher ERA, batting average,
   // last-5-game form, stadium/wind for HR props, and ERA edge for
   // moneyline. Heuristic and explainable, not a model, see lib/topPicks.js.
@@ -409,8 +409,16 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // run's in-memory warnings.
   await saveDigest(pool, gameDate, 'warnings', { warnings });
 
-  const trackedCount = await recordTrackedPicks(pool, gameDate, topPicks);
+  // The permanent ledger (the "All-time" record on Daily Slate) only
+  // tracks moneyline calls, not player props, that's the one graded by a
+  // clean final score rather than a batter's individual box score line.
+  const trackedCount = await recordTrackedPicks(pool, gameDate, topPicks.filter((p) => p.type === 'moneyline'));
   log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
+
+  // No UI button for this anymore, the pipeline running 3x/day is what
+  // keeps the All-time record moving as games finish.
+  const graded = await gradePendingPicks(pool);
+  log(`Tracked picks grading: ${graded.graded} newly graded, ${graded.stillPending} still pending, ${graded.errors} error(s).`);
 
   return { gameDate, warnings, moneyline, hitStreak, windHr, strikeouts, topPicks };
 }

@@ -232,13 +232,6 @@ function probChip(p, label = 'est') {
   return `<span class="prob-chip ${tier}"><b>${pct}%</b><i>${label}</i></span>`;
 }
 
-function fmtMoney(n, withSign = false) {
-  if (n === null || n === undefined) return '-';
-  const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (n < 0) return `-$${abs}`;
-  return withSign ? `+$${abs}` : `$${abs}`;
-}
-
 const loadingHtml = '<div class="loading"><span class="spinner"></span>Loading</div>';
 function emptyHtml(title, msg) {
   return `<div class="empty-state"><div class="es-title">${esc(title)}</div>${esc(msg)}</div>`;
@@ -480,69 +473,6 @@ function closeGamePanel() {
 }
 
 // ---------------------------------------------------------------------------
-// "Track" button on a pick card: stashes the prefill as JSON on the button
-// itself. A single delegated click listener (see init()) reads it back and
-// opens the bet modal, no per-card listeners to wire up.
-function trackBtn(prefill) {
-  return `<button type="button" class="btn-track" data-track="${esc(JSON.stringify(prefill))}">+ Track</button>`;
-}
-
-function openBetModal(prefill = {}) {
-  const modal = $('#betModal');
-  const form = $('#betForm');
-  form.dataset.betKind = prefill.betKind || 'manual';
-  form.dataset.mlbGameId = prefill.mlbGameId || '';
-  form.dataset.batterId = prefill.batterId || '';
-  $('#betModalTitle').textContent = prefill.description ? 'Track this bet' : 'Add a bet';
-  $('#betDesc').value = prefill.description || '';
-  $('#betOdds').value = prefill.odds !== null && prefill.odds !== undefined ? String(prefill.odds) : '';
-  $('#betStake').value = state.lastStake || '';
-  $('#betBook').value = state.lastBook || '';
-  $('#betDate').value = prefill.gameDate || state.today;
-  $('#betError').hidden = true;
-  $('#betHint').hidden = true;
-  $('#betSave').disabled = false;
-  modal.hidden = false;
-  (prefill.description ? $('#betStake') : $('#betDesc')).focus();
-}
-
-function closeBetModal() { $('#betModal').hidden = true; }
-
-async function submitBet(e) {
-  e.preventDefault();
-  const form = $('#betForm');
-  const oddsRaw = $('#betOdds').value.trim().replace(/^\+/, '');
-  const payload = {
-    description: $('#betDesc').value.trim(),
-    odds: oddsRaw === '' ? null : Number(oddsRaw),
-    stake: Number($('#betStake').value),
-    book: $('#betBook').value.trim() || null,
-    gameDate: $('#betDate').value,
-    betKind: form.dataset.betKind,
-    mlbGameId: form.dataset.mlbGameId || null,
-    batterId: form.dataset.batterId ? Number(form.dataset.batterId) : null,
-  };
-  const err = $('#betError');
-  try {
-    $('#betSave').disabled = true;
-    await apiSend('/api/bets', 'POST', payload);
-    state.lastStake = $('#betStake').value;
-    state.lastBook = $('#betBook').value.trim();
-    const hint = $('#betHint');
-    hint.textContent = 'Saved to Tracking.';
-    hint.hidden = false;
-    setTimeout(() => {
-      closeBetModal();
-      if (state.view === 'tracking') renderTracking();
-    }, 550);
-  } catch (ex) {
-    $('#betSave').disabled = false;
-    err.textContent = ex.message;
-    err.hidden = false;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // MANUAL MONEYLINE PICKS
 // A direct publish path: add a pick you researched yourself without
 // waiting on or depending on the automated odds/schedule pipeline.
@@ -597,10 +527,13 @@ async function deleteManualPick(id) {
 }
 
 // ---------------------------------------------------------------------------
-// TRACKING VIEW: every tracked pick, grouped by game with a tick mark
-// (win/loss/push/pending) so the whole slate reads at a glance. Built on
-// the same /api/bets ledger as before, just grouped by matchup instead of
-// laid out as a spreadsheet.
+// TRACKING VIEW: Slatefinder's own daily top picks (see lib/topPicks.js,
+// the 3-5 "we believe this is gonna hit" calls that headline Daily
+// Slate), grouped by game with a tick mark (win/loss/push/pending) so the
+// track record reads at a glance. This is our own call, not a personal
+// wager ledger, for that you've already got a sportsbook app.
+const SIGNAL_NAMES = { moneyline: 'Moneyline', hit_streak: 'Hot hitter', wind_hr: 'HR weather' };
+
 function tickIcon(result) {
   if (result === 'win') return '<span class="tick tick-win" title="Win">✓</span>';
   if (result === 'loss') return '<span class="tick tick-loss" title="Loss">✕</span>';
@@ -608,33 +541,14 @@ function tickIcon(result) {
   return '<span class="tick tick-pending" title="Pending">•</span>';
 }
 
-function trackRow(b) {
-  const actions = [];
-  if (b.result === 'pending') {
-    actions.push(`
-      <span class="settle-group">
-        <button class="btn-mini w" data-settle="win" data-bet="${b.id}" title="Mark won">W</button>
-        <button class="btn-mini l" data-settle="loss" data-bet="${b.id}" title="Mark lost">L</button>
-        <button class="btn-mini" data-settle="push" data-bet="${b.id}" title="Mark push">P</button>
-      </span>`);
-  } else {
-    actions.push(`<button class="btn-mini" data-reopen="${b.id}" title="Undo and mark pending again">Undo</button>`);
-  }
-  actions.push(`<button class="btn-mini x" data-del="${b.id}" title="Delete">×</button>`);
-
-  const profitCell = b.result === 'pending'
-    ? ''
-    : `<span class="track-profit ${(b.profit ?? 0) > 0 ? 'profit-pos' : (b.profit ?? 0) < 0 ? 'profit-neg' : 'dim'}">${fmtMoney(b.profit, true)}</span>`;
-
+function trackRow(p) {
   return `
     <div class="track-row">
-      ${tickIcon(b.result)}
+      ${tickIcon(p.result)}
       <div class="track-desc">
-        <div class="track-desc-main">${esc(b.description)}</div>
-        <div class="track-desc-sub">${b.odds !== null ? fmtOdds(b.odds) : ''}${b.stake ? ` · $${fmtMoney(b.stake).replace('$', '')}` : ''}${b.book ? ` · ${esc(b.book)}` : ''}</div>
+        <div class="track-desc-main"><span class="pill dim">${esc(SIGNAL_NAMES[p.signalType] || p.signalType)}</span>${esc(p.description)}</div>
+        ${p.lockedPrice !== null && p.lockedPrice !== undefined ? `<div class="track-desc-sub">${fmtOdds(p.lockedPrice)}</div>` : ''}
       </div>
-      ${profitCell}
-      <span class="track-actions">${actions.join(' ')}</span>
     </div>`;
 }
 
@@ -649,7 +563,7 @@ function trackGroupHtml(group) {
         ${title}
         ${group.mlbGameId ? `<button type="button" class="btn ghost small" data-open-game="${esc(group.mlbGameId)}" data-open-date="${esc(group.gameDate)}">Open game</button>` : ''}
       </div>
-      ${group.bets.map(trackRow).join('')}
+      ${group.picks.map(trackRow).join('')}
     </div>`;
 }
 
@@ -657,13 +571,12 @@ async function renderTracking() {
   const host = $('#view-tracking');
   host.innerHTML = loadingHtml;
   try {
-    const d = await api('/api/bets');
-    const s = d.summary;
-    const profitCls = s.profit > 0 ? 'profit-pos' : s.profit < 0 ? 'profit-neg' : '';
+    const perf = await api('/api/performance');
+    const { summary, recent } = perf;
 
     // Pull matchup info (team names/logos) for whichever dates the tracked
-    // picks touch, so groups read as real games, not raw bet descriptions.
-    const dates = [...new Set(d.bets.map((b) => b.gameDate).filter(Boolean))];
+    // picks touch, so groups read as real games, not raw descriptions.
+    const dates = [...new Set(recent.map((p) => p.gameDate).filter(Boolean))];
     const slates = await Promise.all(dates.map((dt) => {
       const cached = state.slateCache.get(dt);
       return cached ? Promise.resolve(cached) : api(`/api/slate?date=${dt}`).catch(() => null);
@@ -672,254 +585,57 @@ async function renderTracking() {
     slates.forEach((slate) => (slate?.games || []).forEach((g) => gameByPk.set(String(g.gamePk), g)));
 
     const groups = new Map();
-    for (const b of d.bets) {
-      const key = b.mlbGameId ? `g:${b.mlbGameId}` : `d:${b.gameDate}`;
+    for (const p of recent) {
+      const key = p.mlbGameId ? `g:${p.mlbGameId}` : `d:${p.gameDate}`;
       if (!groups.has(key)) {
         groups.set(key, {
-          game: b.mlbGameId ? gameByPk.get(String(b.mlbGameId)) : null,
-          gameDate: b.gameDate,
-          mlbGameId: b.mlbGameId,
-          bets: [],
+          game: p.mlbGameId ? gameByPk.get(String(p.mlbGameId)) : null,
+          gameDate: p.gameDate,
+          mlbGameId: p.mlbGameId,
+          picks: [],
         });
       }
-      groups.get(key).bets.push(b);
+      groups.get(key).picks.push(p);
     }
-    const groupList = [...groups.values()].sort((a, b2) => (a.gameDate < b2.gameDate ? 1 : a.gameDate > b2.gameDate ? -1 : 0));
+    const groupList = [...groups.values()].sort((a, b) => (a.gameDate < b.gameDate ? 1 : a.gameDate > b.gameDate ? -1 : 0));
+    const anyPending = summary.some((s) => s.pending > 0);
 
     host.innerHTML = `
       <div class="section-head"><h2 class="section-title">Tracking</h2></div>
+      <p class="section-sub">Slatefinder's own top picks, graded against what actually happened.</p>
 
-      <div class="stat-tiles">
+      ${summary.length ? `<div class="stat-tiles">${summary.map((s) => `
         <div class="stat-tile">
-          <div class="st-label">Profit</div>
-          <div class="st-value ${profitCls}">${fmtMoney(s.profit, true)}</div>
-          <div class="st-sub">${fmtMoney(s.staked)} staked on settled picks</div>
-        </div>
-        <div class="stat-tile">
-          <div class="st-label">Record</div>
-          <div class="st-value">${s.wins}<span class="unit">W</span> ${s.losses}<span class="unit">L</span>${s.pushes ? ` ${s.pushes}<span class="unit">P</span>` : ''}</div>
-          <div class="st-sub">${s.wins + s.losses + s.pushes} settled</div>
-        </div>
-        <div class="stat-tile">
-          <div class="st-label">Return on stake</div>
-          <div class="st-value ${profitCls}">${s.roi !== null ? (s.roi * 100).toFixed(1) : '-'}<span class="unit">%</span></div>
-          <div class="st-sub">Profit divided by total staked</div>
-        </div>
-        <div class="stat-tile">
-          <div class="st-label">Pending</div>
-          <div class="st-value">${s.pending}</div>
-          <div class="st-sub">Waiting on results</div>
-        </div>
-      </div>
+          <div class="st-label">${esc(SIGNAL_NAMES[s.signalType] || s.signalType)}</div>
+          <div class="st-value">${s.winRate !== null ? `${(s.winRate * 100).toFixed(0)}<span class="unit">%</span>` : '-'}</div>
+          <div class="st-sub">${s.wins}W ${s.losses}L${s.pushes ? ` ${s.pushes}P` : ''}${s.pending ? ` · ${s.pending} pending` : ''}</div>
+        </div>`).join('')}</div>` : ''}
 
       <div class="bets-toolbar">
-        <button class="btn primary" id="addBetBtn">Track a pick</button>
-        <button class="btn" id="uploadScanBtn">Upload screenshot</button>
-        <button class="btn" id="gradeBetsBtn" ${s.pending ? '' : 'disabled'}>Check results</button>
+        <button class="btn" id="gradeBetsBtn" ${anyPending ? '' : 'disabled'}>Check results</button>
       </div>
 
-      ${groupList.length ? groupList.map(trackGroupHtml).join('') : emptyHtml('Nothing tracked yet', 'Hit + Track on any pick, or track one manually with the button above.')}`;
+      ${groupList.length ? groupList.map(trackGroupHtml).join('') : emptyHtml('Nothing tracked yet', "Top picks land here automatically once the daily slate runs.")}`;
 
-    $('#addBetBtn').addEventListener('click', () => openBetModal());
-    $('#uploadScanBtn').addEventListener('click', () => $('#betScanInput').click());
     $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
       btn.textContent = 'Checking…';
       try {
-        await apiSend('/api/bets/grade', 'POST');
+        await apiSend('/api/tracked-picks/grade', 'POST');
         await renderTracking();
       } catch (ex) {
         btn.disabled = false;
         btn.textContent = 'Check results';
       }
     });
-
-    host.querySelectorAll('[data-settle]').forEach((btn) => btn.addEventListener('click', async () => {
-      await apiSend(`/api/bets/${btn.dataset.bet}/settle`, 'POST', { result: btn.dataset.settle });
-      renderTracking();
-    }));
-    host.querySelectorAll('[data-reopen]').forEach((btn) => btn.addEventListener('click', async () => {
-      await apiSend(`/api/bets/${btn.dataset.reopen}/reopen`, 'POST');
-      renderTracking();
-    }));
-    host.querySelectorAll('[data-del]').forEach((btn) => btn.addEventListener('click', async () => {
-      if (!confirm('Stop tracking this pick?')) return;
-      await apiSend(`/api/bets/${btn.dataset.del}`, 'DELETE');
-      renderTracking();
-    }));
   } catch (err) {
     host.innerHTML = emptyHtml('Tracking unavailable', err.message);
   }
 }
 
 // ---------------------------------------------------------------------------
-// SCREENSHOT IMPORT: read bet slips with a vision model instead of typing
-// them in. Downscaled client-side before upload, both to stay under the
-// server's body-size limit and to keep the per-scan API call cheap.
-function downscaleImage(file, maxDim = 1600, quality = 0.85) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const reader = new FileReader();
-    reader.onload = () => {
-      img.onload = () => {
-        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        const w = Math.round(img.width * scale);
-        const h = Math.round(img.height * scale);
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', quality));
-      };
-      img.onerror = () => reject(new Error('Could not read that image.'));
-      img.src = reader.result;
-    };
-    reader.onerror = () => reject(new Error('Could not read that file.'));
-    reader.readAsDataURL(file);
-  });
-}
-
-let scanCandidates = [];
-
-async function handleScreenshotFiles(fileList) {
-  const files = Array.from(fileList || []);
-  if (!files.length) return;
-  const btn = $('#uploadScanBtn');
-  const originalLabel = btn.textContent;
-  btn.disabled = true;
-  const found = [];
-  const errors = [];
-  for (let i = 0; i < files.length; i++) {
-    btn.textContent = files.length > 1 ? `Reading ${i + 1} of ${files.length}…` : 'Reading…';
-    try {
-      const dataUrl = await downscaleImage(files[i]);
-      const { bets } = await apiSend('/api/bets/scan', 'POST', { image: dataUrl });
-      found.push(...bets);
-    } catch (ex) {
-      errors.push(`${files[i].name}: ${ex.message}`);
-    }
-  }
-  btn.disabled = false;
-  btn.textContent = originalLabel;
-  $('#betScanInput').value = '';
-  if (!found.length) {
-    alert(errors.length ? `Could not read any bets from those screenshots.\n\n${errors.join('\n')}` : 'No bets found in those screenshots. Try a clearer photo.');
-    return;
-  }
-  scanCandidates = found.map((b) => ({ ...b, gameDate: b.gameDate || state.today }));
-  openScanReview(errors);
-}
-
-function renderScanReviewList() {
-  const host = $('#scanReviewList');
-  if (!scanCandidates.length) {
-    host.innerHTML = emptyHtml('Nothing left to save', 'Every pick was removed.');
-    return;
-  }
-  host.innerHTML = scanCandidates.map((b, i) => `
-    <div class="scan-row" data-scan-row="${i}">
-      <input type="text" class="scan-desc" data-field="description" value="${esc(b.description)}" placeholder="Pick">
-      <input type="text" class="scan-odds" data-field="odds" value="${b.odds ?? ''}" placeholder="Odds" inputmode="numeric">
-      <input type="number" class="scan-stake" data-field="stake" value="${b.stake ?? ''}" min="0.01" step="0.01" placeholder="Stake ($)">
-      <input type="text" class="scan-book" data-field="book" value="${esc(b.book || '')}" placeholder="Book">
-      <input type="date" class="scan-date" data-field="gameDate" value="${b.gameDate || state.today}">
-      <button type="button" class="btn-mini x" data-scan-remove="${i}" title="Remove">×</button>
-    </div>`).join('');
-  host.querySelectorAll('[data-field]').forEach((input) => {
-    input.addEventListener('input', (e) => {
-      const idx = Number(e.target.closest('[data-scan-row]').dataset.scanRow);
-      scanCandidates[idx][e.target.dataset.field] = e.target.value;
-    });
-  });
-  host.querySelectorAll('[data-scan-remove]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      scanCandidates.splice(Number(btn.dataset.scanRemove), 1);
-      renderScanReviewList();
-    });
-  });
-}
-
-function openScanReview(errors = []) {
-  $('#scanReviewError').hidden = true;
-  $('#scanReviewNote').textContent = errors.length
-    ? `Found ${scanCandidates.length} pick${scanCandidates.length === 1 ? '' : 's'}. Check the details below before saving (${errors.length} screenshot${errors.length === 1 ? '' : 's'} couldn't be read).`
-    : `Found ${scanCandidates.length} pick${scanCandidates.length === 1 ? '' : 's'}. Check the details below before saving.`;
-  renderScanReviewList();
-  $('#scanReviewModal').hidden = false;
-}
-
-function closeScanReview() {
-  $('#scanReviewModal').hidden = true;
-  scanCandidates = [];
-}
-
-// No website can reach into a phone's camera roll and delete a photo for
-// someone, that permission doesn't exist in a browser. The honest version
-// of "delete the screenshots for me" is a clear reminder once the picks
-// are safely saved.
-function showCameraRollReminder(count) {
-  alert(`Saved ${count} pick${count === 1 ? '' : 's'} to Tracking.\n\nA website can't delete photos from your camera roll for you, that's not something browsers are allowed to do. It's safe to delete those bet-slip screenshots yourself now.`);
-}
-
-async function saveScanReview() {
-  const err = $('#scanReviewError');
-  err.hidden = true;
-  const saveBtn = $('#scanReviewSave');
-  saveBtn.disabled = true;
-  saveBtn.textContent = 'Saving…';
-  let saved = 0;
-  const failures = [];
-  for (const b of scanCandidates) {
-    const description = (b.description || '').trim();
-    const stake = Number(b.stake);
-    if (!description || !Number.isFinite(stake) || stake <= 0) {
-      failures.push(`"${description || 'Untitled pick'}" needs a description and a stake before it can be saved.`);
-      continue;
-    }
-    const oddsRaw = String(b.odds ?? '').trim().replace(/^\+/, '');
-    try {
-      await apiSend('/api/bets', 'POST', {
-        description,
-        odds: oddsRaw === '' ? null : Number(oddsRaw),
-        stake,
-        book: b.book || null,
-        gameDate: b.gameDate || state.today,
-        betKind: 'manual',
-      });
-      saved++;
-    } catch (ex) {
-      failures.push(`"${description}": ${ex.message}`);
-    }
-  }
-  saveBtn.disabled = false;
-  saveBtn.textContent = 'Save picks';
-  if (failures.length) {
-    err.textContent = failures.join(' ');
-    err.hidden = false;
-  }
-  if (saved > 0) {
-    closeScanReview();
-    showCameraRollReminder(saved);
-    if (state.view === 'tracking') renderTracking();
-  }
-}
-
-// ---------------------------------------------------------------------------
 // SIGNALS VIEW
-function pickPrefill(p) {
-  const gameDate = state.signalsDate || state.today;
-  const kind = { moneyline: 'moneyline_home', hit_streak: 'batter_hit', wind_hr: 'batter_hr' }[p.type] || 'manual';
-  return {
-    description: p.headline,
-    odds: p.odds ?? null,
-    betKind: kind,
-    mlbGameId: p.mlbGameId || null,
-    batterId: p.batterId || null,
-    gameDate,
-  };
-}
-
 // Player identity cell: headshot, name, then status pills inline between
 // the name and the stat columns so lineup state reads as part of who the
 // player is, not a separate column off to the right.
@@ -985,7 +701,6 @@ function moneylinePickCard(p) {
       </div>
       <div class="ml-flags">${flags.join('')}</div>
       <div class="sig-note">${note}</div>
-      <div style="margin-top:10px">${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${oddsLabel}) vs ${p.awayTeam}`, odds: noLine ? null : p.homeMl, mlbGameId: p.mlbGameId }))}</div>
     </div>`;
 }
 
@@ -1006,8 +721,7 @@ function manualPickCards(picks) {
       </div>
       <div class="sig-sub">To beat ${esc(p.awayTeam)}.${p.reason ? ` ${esc(p.reason)}` : ''}</div>
       <div class="sig-note">Needs to win ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '-'} of the time at ${fmtOdds(p.homeMl)} just to break even.</div>
-      <div style="margin-top:10px;display:flex;gap:10px">
-        ${trackBtn(pickPrefill({ type: 'moneyline', headline: `${p.homeTeam} ML (${fmtOdds(p.homeMl)}) vs ${p.awayTeam}`, odds: p.homeMl, mlbGameId: p.mlbGameId }))}
+      <div style="margin-top:10px">
         <button class="btn ghost small" data-delete-manual-pick="${p.id}">Remove</button>
       </div>
     </div>`).join('')}</div>`;
@@ -1061,12 +775,12 @@ function whyRow(label, value) {
   return value ? `<div class="why-row"><span>${esc(label)}</span><b>${value}</b></div>` : '';
 }
 
-function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark, why, flags, track, mlbGameId, gameDate }) {
+function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark, why, flags, mlbGameId, gameDate }) {
   // The team logo doubles as a link to that matchup: tap the player to
   // open the why panel, then tap the team mark to jump straight to the
   // game (who's pitching, full lineup) to see the whole matchup at a
   // glance. It's a <button>, so the card's own tap-to-expand handler
-  // (which ignores clicks on button/a/[data-track]) leaves it alone.
+  // (which ignores clicks on button/a) leaves it alone.
   const teamLink = mlbGameId
     ? `<button type="button" class="pc-team-link" data-open-game="${esc(mlbGameId)}" data-open-date="${esc(gameDate || '')}" title="Open this game">${logoHtml(null, teamName, 20)}</button>`
     : logoHtml(null, teamName, 20);
@@ -1088,7 +802,6 @@ function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark,
       </div>
       <div class="pc-why">
         ${why}
-        <div class="pc-actions">${track}</div>
       </div>
     </article>`;
 }
@@ -1113,7 +826,6 @@ function hitStreakSection(hs) {
       whyRow('Last 15 avg', fmtNum(b.trailing15Avg, 3)),
       whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `, ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
     ].join(''),
-    track: trackBtn(pickPrefill({ type: 'hit_streak', headline: `${b.batterName} to record a hit`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
     mlbGameId: b.mlbGameId,
     gameDate: state.signalsDate || state.today,
   }));
@@ -1140,7 +852,6 @@ function windHrSection(wh) {
       whyRow('Park', b.venue ? `${esc(b.venue)}${b.windBlowingOut ? `, wind out ${fmtNum(b.windSpeedMph, 0)} mph` : ''}` : null),
       whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `, ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
     ].join(''),
-    track: trackBtn(pickPrefill({ type: 'wind_hr', headline: `${b.batterName} to hit a home run`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
     mlbGameId: b.mlbGameId,
     gameDate: state.signalsDate || state.today,
   }));
@@ -1171,7 +882,6 @@ function strikeoutSection(so) {
       whyRow('Average', `${fmtNum(p.kPerStart, 1)} Ks per start`),
       whyRow('Matchup', `vs ${esc(p.opponent)}`),
     ].join(''),
-    track: trackBtn({ description: `${p.pitcherName} over ${p.suggestedLine.toFixed(1)} strikeouts`, odds: null, betKind: 'manual', mlbGameId: p.mlbGameId, batterId: null, gameDate: state.signalsDate || state.today }),
     mlbGameId: p.mlbGameId,
     gameDate: state.signalsDate || state.today,
   }));
@@ -1501,8 +1211,6 @@ async function init() {
     if (e.key === 'Escape') {
       closeGamePanel();
       closeManualPickModal();
-      closeBetModal();
-      closeScanReview();
     }
   });
 
@@ -1515,21 +1223,6 @@ async function init() {
     const delBtn = e.target.closest('[data-delete-manual-pick]');
     if (delBtn) deleteManualPick(Number(delBtn.dataset.deleteManualPick));
   });
-
-  // Bet/tracking modal wiring + delegated "+ Track" buttons on pick cards.
-  $('#betForm').addEventListener('submit', submitBet);
-  $('#betCancel').addEventListener('click', closeBetModal);
-  $('#betModal').addEventListener('click', (e) => { if (e.target === $('#betModal')) closeBetModal(); });
-  document.addEventListener('click', (e) => {
-    const trackButton = e.target.closest('[data-track]');
-    if (trackButton) openBetModal(JSON.parse(trackButton.dataset.track));
-  });
-
-  // Bet-slip screenshot import + review modal.
-  $('#betScanInput').addEventListener('change', (e) => handleScreenshotFiles(e.target.files));
-  $('#scanReviewCancel').addEventListener('click', closeScanReview);
-  $('#scanReviewSave').addEventListener('click', saveScanReview);
-  $('#scanReviewModal').addEventListener('click', (e) => { if (e.target === $('#scanReviewModal')) closeScanReview(); });
 
   // Team-mark links on pick cards: jump straight to that matchup.
   document.addEventListener('click', (e) => {
@@ -1587,7 +1280,7 @@ async function init() {
   // Trading-card expand/collapse: tap anywhere on a card that isn't a
   // button or link to open its "why" panel.
   document.addEventListener('click', (e) => {
-    if (e.target.closest('button, a, [data-track]')) return;
+    if (e.target.closest('button, a')) return;
     const card = e.target.closest('[data-expand]');
     if (card) card.classList.toggle('open');
   });

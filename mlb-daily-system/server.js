@@ -13,7 +13,7 @@ import { addSubscriber, unsubscribe, sendDailyNewsletter } from './lib/newslette
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
 import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
-import { scanBetSlip } from './lib/sources/vision.js';
+import { gradePendingPicks } from './lib/trackedPicks.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -304,10 +304,10 @@ async function buildPerformance() {
       ORDER BY signal_type
     `),
     pool.query(`
-      SELECT game_date, signal_type, description, locked_price, breakeven_pct, result
+      SELECT game_date, signal_type, mlb_game_id, description, locked_price, breakeven_pct, result
       FROM tracked_picks
       ORDER BY game_date DESC, id DESC
-      LIMIT 40
+      LIMIT 100
     `),
   ]);
   return {
@@ -324,6 +324,7 @@ async function buildPerformance() {
     recent: recent.rows.map((r) => ({
       gameDate: r.game_date.toISOString().slice(0, 10),
       signalType: r.signal_type,
+      mlbGameId: r.mlb_game_id,
       description: r.description,
       lockedPrice: r.locked_price,
       breakevenPct: r.breakeven_pct !== null ? Number(r.breakeven_pct) : null,
@@ -565,6 +566,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Grades Slatefinder's own tracked top picks against final MLB
+    // results, same idea as the periodic pipeline refresh but on demand
+    // from the Tracking tab's "Check results" button.
+    if (url.pathname === '/api/tracked-picks/grade' && req.method === 'POST') {
+      if (!(await requireUser(req, res))) return;
+      if (rateLimited(req, 'tracked-picks-grade', 10, 10 * 60 * 1000)) {
+        return sendJson(res, 429, { error: 'Slow down, try again in a bit.' });
+      }
+      sendJson(res, 200, await gradePendingPicks(pool));
+      return;
+    }
+
     // --- personal bet tracker ------------------------------------------
     if (url.pathname === '/api/bets' && req.method === 'GET') {
       sendJson(res, 200, await listBets(pool));
@@ -601,30 +614,6 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/bets/grade' && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
       sendJson(res, 200, await gradePendingBets(pool));
-      return;
-    }
-
-    // Screenshot import: read a sportsbook bet slip with a vision model so
-    // the Tracking tab can be filled in from a photo. Costs a real API
-    // call per screenshot, so this is rate-limited tighter than the other
-    // write endpoints on top of requiring a session.
-    if (url.pathname === '/api/bets/scan' && req.method === 'POST') {
-      if (!(await requireUser(req, res))) return;
-      if (rateLimited(req, 'bet-scan', 20, 10 * 60 * 1000)) {
-        return sendJson(res, 429, { error: 'Too many screenshots at once, wait a bit and try again.' });
-      }
-      let body;
-      try {
-        body = await readJsonBody(req, 8 * 1024 * 1024);
-      } catch (err) {
-        return sendJson(res, 400, { error: err.message === 'body too large' ? 'That image is too large.' : 'Bad request.' });
-      }
-      try {
-        const bets = await scanBetSlip(body.image);
-        sendJson(res, 200, { bets });
-      } catch (err) {
-        sendJson(res, 502, { error: err.message });
-      }
       return;
     }
 

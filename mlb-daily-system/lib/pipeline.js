@@ -393,9 +393,10 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   const strikeouts = await runStrikeoutFilter(pool, gameDate);
   warnings.push(...(windHr.warnings || []));
 
-  // Pooled cross-category ranking for the dashboard's Top 3 hero section.
-  // Heuristic and explainable, not a model, see lib/topPicks.js.
-  const topPicks = buildTopPicks({ moneyline, hitStreak, windHr });
+  // Pooled cross-category ranking for the dashboard's hero section and
+  // the Tracking tab's track record. Heuristic and explainable, not a
+  // model, see lib/topPicks.js.
+  const topPicks = buildTopPicks({ moneyline, hitStreak, windHr }, 5);
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
@@ -407,7 +408,7 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // run's in-memory warnings.
   await saveDigest(pool, gameDate, 'warnings', { warnings });
 
-  const trackedCount = await recordTrackedPicks(pool, gameDate, { moneyline, hitStreak, windHr });
+  const trackedCount = await recordTrackedPicks(pool, gameDate, topPicks);
   log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
 
   return { gameDate, warnings, moneyline, hitStreak, windHr, strikeouts, topPicks };

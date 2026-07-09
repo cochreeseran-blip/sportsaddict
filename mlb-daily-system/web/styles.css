@@ -266,12 +266,6 @@ body {
 .st-sub { font-size: 12px; color: var(--text-2); margin-top: 5px; line-height: 1.5; }
 .pos { color: var(--green); } .neg { color: var(--red); }
 
-.result-pill { font-size: 11px; font-weight: 600; border-radius: 5px; padding: 2px 8px; font-variant-numeric: tabular-nums; }
-.result-pill.win { color: var(--green); background: var(--green-bg); }
-.result-pill.loss { color: var(--red); background: var(--red-bg); }
-.result-pill.push { color: var(--amber); background: var(--amber-bg); }
-.result-pill.pending { color: var(--text-3); background: var(--panel-2); }
-
 /* --- tracking tab: games with tick-mark picks ---------------------------------- */
 .track-group { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
 .track-group-head {
@@ -290,8 +284,7 @@ body {
 .track-desc { flex: 1; min-width: 0; }
 .track-desc-main { font-size: 13px; font-weight: 500; }
 .track-desc-sub { font-size: 11.5px; color: var(--text-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
-.track-profit { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.track-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.track-desc-main .pill.dim { margin-right: 7px; vertical-align: 1px; }
 
 /* --- game detail panel --------------------------------------------------------- */
 .panel-overlay { position: fixed; inset: 0; background: rgba(8, 9, 12, 0.55); opacity: 0; pointer-events: none; transition: opacity 0.2s ease; z-index: 60; }
@@ -493,14 +486,6 @@ select.date-select:focus { outline: 1px solid var(--accent); }
 .btn.ghost { background: none; }
 .btn.small { padding: 4px 11px; font-size: 12.5px; }
 
-.btn-track {
-  font: 500 11.5px var(--font);
-  color: var(--accent); background: rgba(91, 156, 255, 0.09);
-  border: 1px solid rgba(91, 156, 255, 0.25); border-radius: 5px;
-  padding: 2px 9px; cursor: pointer; white-space: nowrap;
-}
-.btn-track:hover { background: rgba(91, 156, 255, 0.18); }
-
 .btn-mini {
   font: 600 11px var(--font);
   border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text-2);
@@ -541,31 +526,8 @@ select.date-select:focus { outline: 1px solid var(--accent); }
 .modal-error { color: var(--red); font-size: 12.5px; margin-bottom: 8px; }
 .modal-hint { color: var(--green); font-size: 12.5px; margin-top: 10px; text-align: right; }
 
-/* --- bet-slip screenshot review ------------------------------------------------- */
-.modal.wide { width: min(680px, 100%); }
-.scan-note { font-size: 12.5px; color: var(--text-2); margin: -6px 0 12px; }
-#scanReviewList { max-height: 50vh; overflow-y: auto; margin-bottom: 4px; }
-.scan-row {
-  display: grid; grid-template-columns: 2fr 0.8fr 0.9fr 1fr 1.2fr auto;
-  gap: 6px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border);
-}
-.scan-row:last-child { border-bottom: 0; }
-.scan-row input {
-  font: 400 12.5px var(--font); color: var(--text);
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px;
-  padding: 6px 8px; width: 100%; font-variant-numeric: tabular-nums;
-}
-.scan-row input:focus { outline: none; border-color: var(--accent); }
-
-/* --- my bets --------------------------------------------------------------------------- */
+/* --- tracking toolbar -------------------------------------------------------------- */
 .bets-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-.bets-toolbar .spacer { flex: 1; }
-.profit-pos { color: var(--green); }
-.profit-neg { color: var(--red); }
-.bet-desc { line-height: 1.4; }
-.bet-desc .bk { font-size: 11px; color: var(--text-3); margin-top: 1px; }
-.auto-tag { font-size: 10.5px; color: var(--text-3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
-.settle-group { display: inline-flex; gap: 4px; }
 
 /* --- footer ---------------------------------------------------------------------- */
 .subscribe { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
@@ -759,11 +721,4 @@ select.date-select:focus { outline: 1px solid var(--accent); }
   .jumbo-track { animation-duration: 30s; }
   .yd-record { width: 100%; margin-left: 0; }
   .signals-toolbar .toolbar-note:last-child { display: none; }
-  .scan-row { grid-template-columns: 1fr 1fr auto; grid-template-areas: "desc desc x" "odds stake x" "book date x"; row-gap: 6px; }
-  .scan-row input[data-field="description"] { grid-area: desc; }
-  .scan-row input[data-field="odds"] { grid-area: odds; }
-  .scan-row input[data-field="stake"] { grid-area: stake; }
-  .scan-row input[data-field="book"] { grid-area: book; }
-  .scan-row input[data-field="gameDate"] { grid-area: date; }
-  .scan-row .btn-mini.x { grid-area: x; }
 }

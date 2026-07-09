@@ -1,5 +1,4 @@
 import * as mlb from './sources/mlbStats.js';
-import { fmtOdds } from './util/format.js';
 
 async function alreadyTracked(pool, gameDate, signalType, mlbGameId, batterName) {
   const { rows } = await pool.query(
@@ -30,57 +29,32 @@ async function insertTrackedPick(pool, record) {
   );
 }
 
-// Writes every qualifying pick from all three filters into the permanent
-// ledger. Idempotent per (game_date, signal_type, mlb_game_id, batter) so
-// running the pipeline 3x/day (or on manual refresh) doesn't spam
+// Writes each of the day's featured top picks (see lib/topPicks.js, the
+// same 3-5 "we believe this is gonna hit" picks that headline Daily
+// Slate) into the permanent ledger, so they get graded against real
+// results over time instead of just being today's live board. This is
+// deliberately the *ranked, deduped* top picks, not the full watchlists,
+// the ledger is a track record of our best calls, not everything that
+// qualified. Idempotent per (game_date, signal_type, mlb_game_id, batter)
+// so running the pipeline 3x/day (or on manual refresh) doesn't spam
 // duplicate rows for the same underlying pick, the price/metrics from
-// the FIRST time a pick qualified that day are what get "locked in",
-// same as if you'd actually placed the bet then.
-export async function recordTrackedPicks(pool, gameDate, { moneyline, hitStreak, windHr }) {
+// the FIRST time a pick qualified that day are what get "locked in".
+export async function recordTrackedPicks(pool, gameDate, topPicks) {
   let inserted = 0;
-
-  for (const p of moneyline?.picks || []) {
-    if (await alreadyTracked(pool, gameDate, 'moneyline', p.mlbGameId, null)) continue;
+  for (const p of topPicks || []) {
+    const batterName = p.batterName ?? null;
+    if (await alreadyTracked(pool, gameDate, p.type, p.mlbGameId, batterName)) continue;
     await insertTrackedPick(pool, {
       gameDate,
-      signalType: 'moneyline',
+      signalType: p.type,
       mlbGameId: p.mlbGameId,
-      description: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}, ${p.homeStarterName ?? 'home starter'} (ERA ${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? 'n/a'}) over ${p.awayStarterName ?? 'visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? 'n/a'})`,
-      lockedPrice: p.homeMl,
-      breakevenPct: p.breakevenPct,
+      description: `${p.headline}. ${p.detail}`,
+      lockedPrice: p.homeMl ?? null,
+      breakevenPct: p.breakevenPct ?? null,
       qualifyingMetrics: p,
     });
     inserted++;
   }
-
-  for (const b of hitStreak?.watchList || []) {
-    if (await alreadyTracked(pool, gameDate, 'hit_streak', b.mlbGameId, b.batterName)) continue;
-    await insertTrackedPick(pool, {
-      gameDate,
-      signalType: 'hit_streak',
-      mlbGameId: b.mlbGameId,
-      description: `${b.batterName} (${b.team}) to get a hit, streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3) ?? 'n/a'}, vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`,
-      lockedPrice: null,
-      breakevenPct: null, // not applicable, this isn't a fixed-odds pick
-      qualifyingMetrics: b,
-    });
-    inserted++;
-  }
-
-  for (const b of windHr?.watchList || []) {
-    if (await alreadyTracked(pool, gameDate, 'wind_hr', b.mlbGameId, b.batterName)) continue;
-    await insertTrackedPick(pool, {
-      gameDate,
-      signalType: 'wind_hr',
-      mlbGameId: b.mlbGameId,
-      description: `${b.batterName} (${b.team}) to go deep, HR rate ${b.trailing15HrRate?.toFixed(3) ?? 'n/a'}, wind ${b.windSpeedMph?.toFixed(1) ?? 'n/a'} mph out at ${b.venue}, vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`,
-      lockedPrice: null,
-      breakevenPct: null,
-      qualifyingMetrics: b,
-    });
-    inserted++;
-  }
-
   return inserted;
 }
 

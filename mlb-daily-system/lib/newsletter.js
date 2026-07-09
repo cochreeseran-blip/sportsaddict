@@ -74,20 +74,44 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
     weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC',
   });
 
+  const empty = (msg) => `<p style="${S.pick}${S.detail}">${msg}</p>`;
+
   const top = digest.topPicks?.length
     ? digest.topPicks.map((p, i) => pickBlock({ ...p, headline: `${i + 1}. ${p.headline}` })).join('')
-    : `<p style="${S.pick}${S.detail}">Nothing cleared the bar today, a sit day.</p>`;
+    : empty('Nothing cleared the bar today, a sit day.');
 
   const ml = digest.moneyline?.picks?.length
     ? digest.moneyline.picks
         .map((p) =>
           pickBlock({
-            headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam}`,
-            detail: `${p.homeStarterName ?? 'The home starter'} (${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? '-'} ERA) has the edge over ${p.awayStarterName ?? 'the visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? '-'}).`,
+            headline: `${p.homeTeam}${fmtOdds(p.homeMl) ? ` (${fmtOdds(p.homeMl)})` : ''} over ${p.awayTeam}`,
+            detail: `${p.homeStarterName ?? 'The home starter'} (${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? '-'} ERA) is ${p.eraEdge?.toFixed(1) ?? '-'} runs better than ${p.awayStarterName ?? 'the visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? '-'}).`,
           })
         )
         .join('')
-    : `<p style="${S.pick}${S.detail}">No qualifying games.</p>`;
+    : empty('No qualifying games.');
+
+  const hits = digest.hitStreak?.watchList?.length
+    ? digest.hitStreak.watchList
+        .map((b, i) =>
+          pickBlock({
+            headline: `${i + 1}. ${b.batterName} (${b.team}) to get a hit`,
+            detail: `${b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `batting ${b.trailing15Avg?.toFixed(3) ?? '-'} L15`}, vs ${b.opposingStarterName ?? 'TBD'} (${b.opposingStarterTrailingEra?.toFixed(2) ?? '-'} ERA).`,
+          })
+        )
+        .join('')
+    : empty('No qualifying hitters.');
+
+  const kos = digest.strikeouts?.watchList?.length
+    ? digest.strikeouts.watchList
+        .map((p, i) =>
+          pickBlock({
+            headline: `${i + 1}. ${p.pitcherName} over ${p.suggestedLine.toFixed(1)} Ks`,
+            detail: `reached ${p.strictFloorKs}+ in every recent start (${p.kPerStart?.toFixed(1) ?? '-'} per start${p.trailingEra !== null && p.trailingEra !== undefined ? `, ${p.trailingEra.toFixed(2)} ERA` : ''}), vs ${p.opponent}.`,
+          })
+        )
+        .join('')
+    : empty('No qualifying K spots.');
 
   const recapHtml = recap?.length
     ? recap
@@ -96,7 +120,7 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
             `<p style="${S.pick}"><span style="${r.result === 'win' ? S.win : r.result === 'loss' ? S.loss : S.detail}">${r.result.toUpperCase()}</span> &nbsp;<span style="${S.detail}">${r.description}</span></p>`
         )
         .join('')
-    : `<p style="${S.pick}${S.detail}">Nothing graded from yesterday yet.</p>`;
+    : empty('Nothing graded from yesterday yet.');
 
   return `<!doctype html><html><body style="${S.body}">
   <div style="${S.card}">
@@ -106,11 +130,17 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
     <p style="${S.h2}">Yesterday</p>
     ${recapHtml}
 
-    <p style="${S.h2}">Top picks today</p>
+    <p style="${S.h2}">Today's 6 best</p>
     ${top}
 
-    <p style="${S.h2}">Moneyline</p>
+    <p style="${S.h2}">All moneyline picks</p>
     ${ml}
+
+    <p style="${S.h2}">Top 15 hit picks</p>
+    ${hits}
+
+    <p style="${S.h2}">Top 10 K/O picks</p>
+    ${kos}
 
     <p style="${S.muted}" >Lineups usually post 1&ndash;3 hours before first pitch &mdash; check the site for confirmed lineups before betting a hitter. Research signals only, not betting advice.</p>
   </div>
@@ -151,6 +181,8 @@ async function loadDigestForEmail(pool, gameDate) {
   return {
     topPicks: byType.top_picks?.picks || [],
     moneyline: byType.moneyline || { picks: [] },
+    hitStreak: byType.hit_streak || { watchList: [] },
+    strikeouts: byType.strikeouts || { watchList: [] },
   };
 }
 

@@ -47,7 +47,7 @@ const state = {
   today: new Date().toISOString().slice(0, 10), // corrected from /api/status
   view: 'signals',
   signalsDate: null,
-  slateDate: null,
+  researchDate: null,
   slateCache: new Map(),
   user: null,
 };
@@ -263,38 +263,67 @@ function skeletonPanel() {
 }
 
 // ---------------------------------------------------------------------------
-// SLATE VIEW, today's games only. Open a game for lineups, batting order,
-// and pitcher form.
-function dateStripHtml() {
-  const date = state.slateDate || state.today;
-  const days = [
-    { d: addDays(state.today, -1), label: 'Yesterday' },
-    { d: state.today, label: 'Today' },
-    { d: addDays(state.today, 1), label: 'Tomorrow' },
-  ];
-  return `<div class="date-strip" id="slateDateStrip">${days.map((x) => `
-    <button type="button" class="date-strip-btn ${x.d === date ? 'active' : ''}" data-date="${x.d}">
-      <span class="ds-label">${x.label}</span>
-      <span class="ds-date">${new Date(`${x.d}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}</span>
-    </button>`).join('')}</div>`;
-}
+// RESEARCH TAB: the full ranked bulk behind the Daily Slate, every pick
+// the screener surfaced, analyzed: all qualifying home moneyline calls,
+// the top 15 hit picks, the top 10 K/O picks. The Daily Slate shows the 6
+// best of these; this is the whole board. Free for now, this is the part
+// that pay-gates later. (Section renderers reused from the Daily Slate,
+// called without top-6 keys so they show the full list.)
+async function renderResearch() {
+  const host = $('#view-slate');
+  host.innerHTML = skeletonCards(6);
+  try {
+    const date = state.researchDate || state.today;
+    const d = await api(`/api/digest?date=${date}`);
+    state.researchDate = d.date;
 
-function renderSlateShell() {
-  const date = state.slateDate || state.today;
-  $('#view-slate').innerHTML = `
-    <div class="section-head"><h2 class="section-title">Slate</h2></div>
-    ${dateStripHtml()}
-    <p class="section-sub">${esc(longDate(date))}</p>
-    <div id="slateGames">${skeletonCards(3)}</div>`;
-  $('#slateDateStrip').querySelectorAll('.date-strip-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.slateDate = btn.dataset.date;
-      renderSlateShell();
-      loadSlateGames();
+    if (isBeforeGoLive(d.date)) {
+      host.innerHTML = `<div class="section-head"><h2 class="section-title">Research</h2></div>` +
+        goLiveGate('gateSeeYesterdayR', "The full research board is finalized with the 9 AM ET run. Check back at 9, or look at yesterday.");
+      $('#gateSeeYesterdayR')?.addEventListener('click', () => {
+        state.researchDate = addDays(state.today, -1);
+        renderResearch();
+      });
+      return;
+    }
+
+    const dateOptions = (d.availableDates.length ? d.availableDates : [d.date])
+      .map((dd) => `<option value="${dd}" ${dd === d.date ? 'selected' : ''}>${dd}</option>`).join('');
+
+    const mlCount = d.moneyline?.picks?.length || 0;
+    const hitCount = d.hitStreak?.watchList?.length || 0;
+    const koCount = d.strikeouts?.watchList?.length || 0;
+    const count = (n) => `<span class="board-count">${n}</span>`;
+
+    host.innerHTML = `
+      <div class="section-head"><h2 class="section-title">Research</h2></div>
+      <p class="section-sub">Every pick the screener surfaced, ranked and researched. The Daily Slate shows the 6 best of these.</p>
+
+      <div class="signals-toolbar">
+        <select class="date-select" id="researchDate">${dateOptions}</select>
+        <span class="toolbar-note">${esc(longDate(d.date))}${d.updatedAt ? ` · ran ${esc(fmtRunTime(d.updatedAt))}` : ''}</span>
+      </div>
+
+      <h2 class="board-title">Moneyline${count(mlCount)}</h2>
+      ${moneylineCards(d.moneyline) || emptyHtml('No moneyline picks', 'No home team today priced +100 to -250 with a 2+ run starting-pitcher ERA edge.')}
+
+      <h2 class="board-title">Hit picks${count(hitCount)}</h2>
+      ${hitStreakSection(d.hitStreak) || emptyHtml('No hit picks', 'Nobody cleared the hot-bat bar facing a beatable arm today.')}
+
+      <h2 class="board-title">Strikeout picks${count(koCount)}</h2>
+      ${strikeoutSection(d.strikeouts) || emptyHtml('No strikeout spots', 'No probable starter has a high, consistent K floor today.')}`;
+
+    $('#researchDate').addEventListener('change', (e) => {
+      state.researchDate = e.target.value;
+      renderResearch();
     });
-  });
+  } catch (err) {
+    host.innerHTML = emptyHtml('Research unavailable', err.message);
+  }
 }
 
+// ---------------------------------------------------------------------------
+// GAME DETAIL PANEL
 function statusLabel(g) {
   if (g.abstractState === 'Final') return { text: g.status, cls: 'final' };
   if (g.abstractState === 'Live') {
@@ -304,79 +333,6 @@ function statusLabel(g) {
   return { text: etTime(g.gameDate), cls: '' };
 }
 
-function gameCardHtml(g) {
-  const st = statusLabel(g);
-  const isFinal = g.abstractState === 'Final';
-  const started = g.abstractState !== 'Preview';
-  const awayWin = isFinal && g.away.score > g.home.score;
-  const homeWin = isFinal && g.home.score > g.away.score;
-
-  const teamRow = (t, ml, winner) => `
-    <div class="gc-team">
-      ${logoHtml(t.id, t.name)}
-      <span class="gc-name">${esc(t.name || 'TBD')}<span class="gc-record">${esc(t.record || '')}</span></span>
-      ${started
-        ? `<span class="gc-score ${winner ? 'winner' : ''}">${t.score ?? '-'}</span>`
-        : `<span class="gc-odds ${ml !== null && ml > 0 ? 'dog' : ''}">${fmtOdds(ml)}</span>`}
-    </div>`;
-
-  const pills = [];
-  if (!started) {
-    const bothPosted = g.lineups.home.posted && g.lineups.away.posted;
-    const confirmedAt = g.lineups.home.confirmedAt || g.lineups.away.confirmedAt;
-    if (bothPosted) pills.push(lineupPill(true, confirmedAt));
-    else if (g.lineups.home.posted || g.lineups.away.posted) pills.push('<span class="pill info"><span class="pill-dot"></span>One lineup posted</span>');
-    else pills.push('<span class="pill warn"><span class="pill-dot"></span>Lineups pending</span>');
-    if (g.windBlowingOut === true) pills.push(`<span class="pill hot"><span class="pill-dot"></span>Wind out ${fmtNum(g.windSpeedMph, 0)} mph</span>`);
-  }
-
-  const pitchers = (g.away.starterName || g.home.starterName) && !isFinal ? `
-    <div class="gc-pitchers">
-      <div class="gc-pitcher"><span class="lbl">Away starter</span><span class="nm">${esc(g.away.starterName || 'TBD')}</span></div>
-      <div class="gc-pitcher"><span class="lbl">Home starter</span><span class="nm">${esc(g.home.starterName || 'TBD')}</span></div>
-    </div>` : '';
-
-  return `
-    <article class="game-card" data-gamepk="${g.gamePk}" data-date="${esc(g.officialDate)}">
-      <div class="gc-status-row">
-        <span class="gc-status ${st.cls}">${esc(st.text)}</span>
-        <span class="gc-venue">${esc(g.venue || '')}</span>
-      </div>
-      ${teamRow(g.away, g.awayMl, awayWin)}
-      <div class="gc-divider"></div>
-      ${teamRow(g.home, g.homeMl, homeWin)}
-      ${pitchers}
-      ${pills.length ? `<div class="gc-meta">${pills.join('')}</div>` : ''}
-    </article>`;
-}
-
-async function loadSlateGames() {
-  const host = $('#slateGames');
-  const date = state.slateDate || state.today;
-  host.innerHTML = skeletonCards(3);
-  try {
-    let slate = state.slateCache.get(date);
-    if (!slate) {
-      slate = await api(`/api/slate?date=${encodeURIComponent(date)}`);
-      state.slateCache.set(date, slate);
-      // Today's games are live, don't let the cache go stale.
-      setTimeout(() => state.slateCache.delete(date), 120000);
-    }
-    if (!slate.games.length) {
-      host.innerHTML = emptyHtml('No games', `There are no MLB games scheduled on ${longDate(date)}.`);
-      return;
-    }
-    host.innerHTML = `<div class="game-grid">${slate.games.map(gameCardHtml).join('')}</div>`;
-    host.querySelectorAll('.game-card').forEach((card) => {
-      card.addEventListener('click', () => openGamePanel(card.dataset.gamepk, card.dataset.date));
-    });
-  } catch (err) {
-    host.innerHTML = emptyHtml('Feed unavailable', `Could not load the slate for ${date}: ${err.message}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// GAME DETAIL PANEL
 function eraClass(era) {
   if (era === null || era === undefined) return '';
   return era >= 6 ? 'era-bad' : era <= 4 ? 'era-good' : '';
@@ -622,13 +578,13 @@ function moneylinePickCard(p) {
     </div>`;
 }
 
-// Only the moneyline picks that made today's top 6 (see lib/topPicks.js)
-// show here, same list as the jumbotron.
-function moneylineCards(ml, topPickKeys) {
-  const picks = (ml.picks || []).filter((p) => topPickKeys.has(`ml:${p.homeTeam}:${p.awayTeam}`));
-  if (!picks.length) {
-    return emptyHtml('No qualifying games', 'No home favorite today whose starting pitcher has the better ERA than the visitor. The nearest misses are listed below.');
-  }
+// With topPickKeys (Daily Slate): only the ML picks that made the top 6.
+// Without it (Research): every qualifying home ML pick, ranked.
+function moneylineCards(ml, topPickKeys = null) {
+  const picks = topPickKeys
+    ? (ml.picks || []).filter((p) => topPickKeys.has(`ml:${p.homeTeam}:${p.awayTeam}`))
+    : (ml.picks || []);
+  if (!picks.length) return '';
   return `<div class="sig-cards">${picks.map(moneylinePickCard).join('')}</div>`;
 }
 
@@ -727,14 +683,16 @@ function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark,
     </article>`;
 }
 
-// Only the hit props that made today's top 6 show here, same list as the
-// jumbotron. Ranked by their position in that shared list, not re-sorted
-// locally, so the numbering lines up too.
-function hitStreakSection(hs, topPickKeys) {
-  const list = (hs.watchList || []).filter((b) => topPickKeys.has(`hit:${b.batterName}:${b.team}`));
+// With topPickKeys (Daily Slate): only the hit picks in the top 6, ranked
+// by their spot in that shared list. Without it (Research): all 15, ranked
+// in order.
+function hitStreakSection(hs, topPickKeys = null) {
+  const list = topPickKeys
+    ? (hs.watchList || []).filter((b) => topPickKeys.has(`hit:${b.batterName}:${b.team}`))
+    : (hs.watchList || []);
   if (!list.length) return '';
   const cards = list.map((b, i) => pickCard({
-    rank: topPickKeys.get(`hit:${b.batterName}:${b.team}`),
+    rank: topPickKeys ? topPickKeys.get(`hit:${b.batterName}:${b.team}`) : i + 1,
     personId: b.batterId,
     name: b.batterName,
     sub: `${b.jerseyNumber ? `#${esc(b.jerseyNumber)} ` : ''}${b.position ? esc(b.position) + ' · ' : ''}1+ hit`,
@@ -757,44 +715,20 @@ function hitStreakSection(hs, topPickKeys) {
   return `<div class="pick-grid">${cards.join('')}</div>`;
 }
 
-function windHrSection(wh, topPickKeys) {
-  const list = (wh.watchList || []).filter((b) => topPickKeys.has(`hr:${b.batterName}:${b.team}`));
-  if (!list.length) return '';
-  const cards = list.map((b, i) => pickCard({
-    rank: topPickKeys.get(`hr:${b.batterName}:${b.team}`),
-    personId: b.batterId,
-    name: b.batterName,
-    sub: `${b.jerseyNumber ? `#${esc(b.jerseyNumber)} ` : ''}${b.position ? esc(b.position) + ' · ' : ''}home run`,
-    teamName: b.team,
-    prob: estHrProb(b.trailing15HrRate),
-    probLabel: 'est',
-    spark: sparkBars(b.last5Results),
-    flags: [
-      b.windBlowingOut ? `<span class="pill hot"><span class="pill-dot"></span>Wind out${b.windSpeedMph ? ` ${fmtNum(b.windSpeedMph, 0)} mph` : ''}</span>` : '',
-      b.lineupConfirmed === false ? '<span class="pill warn"><span class="pill-dot"></span>Projected</span>' : '',
-    ].join(''),
-    why: [
-      whyRow('Power', `${fmtNum(b.trailing15HrRate, 2)} HR per game, last 15`),
-      whyRow('Park', b.venue ? `${esc(b.venue)}${b.windBlowingOut ? `, wind out ${fmtNum(b.windSpeedMph, 0)} mph` : ''}` : null),
-      whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `, ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
-    ].join(''),
-    mlbGameId: b.mlbGameId,
-    gameDate: state.signalsDate || state.today,
-  }));
-  return `<div class="pick-grid">${cards.join('')}</div>`;
-}
-
 function formKsHtml(ks, floor) {
   if (!ks || !ks.length) return '<span class="faint" style="font-size:11px">no data</span>';
   return `<span class="form-ks">${ks.map((k) => `<i class="${k >= floor ? 'over' : ''}">${k}</i>`).join('')}</span>`;
 }
 
-function strikeoutSection(so) {
-  if (!so?.watchList?.length) {
-    return emptyHtml('No strikeout spots', 'No probable starter today has a high, consistent strikeout floor over his recent starts.');
-  }
-  const cards = so.watchList.map((p, i) => pickCard({
-    rank: i + 1,
+// With topPickKeys (Daily Slate): only the K/O picks in the top 6. Without
+// it (Research): all 10, ranked in order.
+function strikeoutSection(so, topPickKeys = null) {
+  const list = topPickKeys
+    ? (so?.watchList || []).filter((p) => topPickKeys.has(`ko:${p.pitcherName}`))
+    : (so?.watchList || []);
+  if (!list.length) return '';
+  const cards = list.map((p, i) => pickCard({
+    rank: topPickKeys ? topPickKeys.get(`ko:${p.pitcherName}`) : i + 1,
     personId: p.pitcherId,
     name: p.pitcherName,
     sub: `P · over ${p.suggestedLine.toFixed(1)} Ks`,
@@ -802,16 +736,18 @@ function strikeoutSection(so) {
     prob: estKOverProb(p.last5StartKs, p.strictFloorKs),
     probLabel: 'est',
     spark: formKsHtml(p.last5StartKs, p.strictFloorKs),
-    flags: '',
+    flags: p.trailingEra !== null && p.trailingEra !== undefined && p.trailingEra <= 3.5
+      ? '<span class="pill ok"><span class="pill-dot"></span>Low ERA arm</span>' : '',
     why: [
       whyRow('Floor', `Reached ${p.strictFloorKs}+ Ks in every recent start`),
       whyRow('Average', `${fmtNum(p.kPerStart, 1)} Ks per start`),
-      whyRow('Matchup', `vs ${esc(p.opponent)}`),
+      whyRow('ERA', p.trailingEra !== null && p.trailingEra !== undefined ? `${fmtNum(p.trailingEra)} last 5` : null),
+      whyRow('Matchup', `${p.isHome ? 'Home, ' : ''}vs ${esc(p.opponent)}`),
     ].join(''),
     mlbGameId: p.mlbGameId,
     gameDate: state.signalsDate || state.today,
   }));
-  return `<div class="pick-grid center">${cards.join('')}</div>`;
+  return `<div class="pick-grid">${cards.join('')}</div>`;
 }
 
 // --- jumbotron ---------------------------------------------------------------
@@ -822,12 +758,13 @@ function strikeoutSection(so) {
 function buildBoardItems(d) {
   return (d.topPicks || []).map((p) => {
     if (p.type === 'moneyline') {
-      return { personId: null, name: p.homeTeam, team: p.homeTeam, label: `ML ${p.homeMl !== null ? fmtOdds(p.homeMl) : ''}`.trim(), prob: p.breakevenPct ?? null, probLabel: 'mkt' };
+      return { personId: null, name: p.homeTeam, team: p.homeTeam, label: `ML ${p.homeMl !== null && p.homeMl !== undefined ? fmtOdds(p.homeMl) : ''}`.trim(), prob: p.breakevenPct ?? null, probLabel: 'mkt' };
     }
     if (p.type === 'hit_streak') {
       return { personId: p.batterId, name: p.batterName, team: p.team, label: '1+ HIT', prob: estHitProb(p.trailing15Avg), probLabel: 'est' };
     }
-    return { personId: p.batterId, name: p.batterName, team: p.team, label: 'HOME RUN', prob: estHrProb(p.trailing15HrRate), probLabel: 'est' };
+    // strikeout / K-over
+    return { personId: p.pitcherId, name: p.pitcherName, team: p.team, label: `OVER ${p.suggestedLine?.toFixed(1)} K`, prob: estKOverProb(p.last5StartKs, p.strictFloorKs), probLabel: 'est' };
   });
 }
 
@@ -887,6 +824,26 @@ function yesterdayStrip(perf, today) {
     </div>`;
 }
 
+// --- 9 AM go-live gate -------------------------------------------------------
+// Today's picks are built off overnight probables and aren't finalized
+// until the 9 AM ET run has the confirmed lineups. Only *today* is gated,
+// and only before 9 AM ET, past dates are always viewable.
+function currentEtHour() {
+  return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' }).format(new Date()));
+}
+function isBeforeGoLive(dateStr) {
+  return dateStr === state.today && currentEtHour() < 9;
+}
+function goLiveGate(btnId, subText) {
+  return `
+    <div class="golive-gate">
+      <div class="golive-emoji">☕️</div>
+      <div class="golive-title">Today's slate drops at 9:00 AM ET</div>
+      <p class="golive-sub">${subText}</p>
+      <button class="btn primary" id="${btnId}">See yesterday's picks</button>
+    </div>`;
+}
+
 // silent=true is used by the 120s auto-refresh: skip the loading spinner
 // and put the scroll position back so a picture that hasn't changed
 // doesn't visibly jump or flash while someone's mid-read.
@@ -901,6 +858,21 @@ async function renderSignals(silent = false) {
       api('/api/performance').catch(() => null), // strip is optional, never blocks the page
     ]);
     state.signalsDate = d.date;
+
+    // Go-live gate: today's slate is built off overnight probables and
+    // isn't finalized until the 9 AM ET run has confirmed lineups. Before
+    // then, don't show today, offer yesterday instead.
+    if (isBeforeGoLive(d.date)) {
+      host.innerHTML = yesterdayStrip(perf, state.today) +
+        goLiveGate('gateSeeYesterday', "The 6 best plays go live once the morning run has confirmed lineups and updated pitching. Check back at 9, or look at yesterday in the meantime.");
+      $('#gateSeeYesterday')?.addEventListener('click', () => {
+        state.signalsDate = addDays(state.today, -1);
+        renderSignals();
+      });
+      if (scrollY !== null) window.scrollTo(0, scrollY);
+      return;
+    }
+
     const dateOptions = (d.availableDates.length ? d.availableDates : [d.date])
       .map((dd) => `<option value="${dd}" ${dd === d.date ? 'selected' : ''}>${dd}</option>`).join('');
 
@@ -908,8 +880,9 @@ async function renderSignals(silent = false) {
     // server ranked them, so the sections below only show these 6, in
     // the same rank order as the jumbotron.
     const topPickKeys = new Map((d.topPicks || []).map((p, i) => [p.key, i + 1]));
+    const mlBody = moneylineCards(d.moneyline, topPickKeys);
     const hitBody = hitStreakSection(d.hitStreak, topPickKeys);
-    const hrBody = windHrSection(d.windHr, topPickKeys);
+    const koBody = strikeoutSection(d.strikeouts, topPickKeys);
 
     host.innerHTML = `
       ${jumbotronHtml(d)}
@@ -918,7 +891,7 @@ async function renderSignals(silent = false) {
       <div class="signals-toolbar">
         <select class="date-select" id="signalsDate">${dateOptions}</select>
         <span class="toolbar-note">${esc(longDate(d.date))}${d.updatedAt ? ` · screener ran ${esc(fmtRunTime(d.updatedAt))}` : ''}</span>
-        <span class="toolbar-note" style="margin-left:auto">Percentages are estimates from recent form, not guarantees.</span>
+        <span class="toolbar-note" style="margin-left:auto">The 6 best plays today. Percentages are estimates, not guarantees.</span>
       </div>
 
       <div class="board-head">
@@ -926,17 +899,14 @@ async function renderSignals(silent = false) {
         <button class="btn small" data-add-manual-pick>Add a pick</button>
       </div>
       ${manualPickCards(d.manualPicks)}
-      ${moneylineCards(d.moneyline, topPickKeys)}
+      ${mlBody || emptyHtml('No moneyline in today’s 6', 'The day’s best plays are hit and strikeout props. See all moneyline picks on the Research tab.')}
 
       ${hitBody ? `<h2 class="board-title">+1 Hits</h2>${hitBody}` : ''}
 
-      ${hrBody ? `<h2 class="board-title">Home Runs</h2>${hrBody}` : ''}
-
-      <h2 class="board-title center">Strikeout Watch</h2>
-      ${strikeoutSection(d.strikeouts)}
+      ${koBody ? `<h2 class="board-title">Strikeouts</h2>${koBody}` : ''}
 
       <h2 class="board-title">Close Calls</h2>
-      ${nearMissCards(d.moneyline.otherGames) || emptyHtml('Nothing else evaluated', 'Every home favorite today either qualified or there were none.')}
+      ${nearMissCards(d.moneyline.otherGames) || emptyHtml('Nothing else evaluated', 'Every home team today either qualified or there were none.')}
 
       ${digestWarningBanner(d.warnings)}`;
 
@@ -1119,7 +1089,7 @@ function showView(name, force = false) {
   state.view = name;
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
-  if (name === 'slate') { renderSlateShell(); loadSlateGames(); }
+  if (name === 'slate') renderResearch();
   if (name === 'signals') renderSignals();
   if (name === 'chat') renderChat();
   if (name !== 'chat') stopChatPolling();

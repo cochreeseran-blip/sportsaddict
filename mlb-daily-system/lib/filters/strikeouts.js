@@ -27,10 +27,10 @@ export async function runStrikeoutFilter(pool, gameDate) {
   const starters = [];
   for (const g of games) {
     if (g.home_starter_id) {
-      starters.push({ pitcherId: g.home_starter_id, pitcherName: g.home_starter_name, team: g.home_team, opponent: g.away_team, mlbGameId: g.mlb_game_id });
+      starters.push({ pitcherId: g.home_starter_id, pitcherName: g.home_starter_name, team: g.home_team, opponent: g.away_team, mlbGameId: g.mlb_game_id, isHome: true });
     }
     if (g.away_starter_id) {
-      starters.push({ pitcherId: g.away_starter_id, pitcherName: g.away_starter_name, team: g.away_team, opponent: g.home_team, mlbGameId: g.mlb_game_id });
+      starters.push({ pitcherId: g.away_starter_id, pitcherName: g.away_starter_name, team: g.away_team, opponent: g.home_team, mlbGameId: g.mlb_game_id, isHome: false });
     }
   }
   if (!starters.length) return { watchList: [] };
@@ -61,8 +61,10 @@ export async function runStrikeoutFilter(pool, gameDate) {
       pitcherName: form.pitcher_name ?? s.pitcherName,
       team: s.team,
       opponent: s.opponent,
+      isHome: s.isHome,
       last5StartKs: ks,
       kPerStart: form.trailing_k_per_start !== null ? Number(form.trailing_k_per_start) : null,
+      trailingEra: form.trailing_era !== null && form.trailing_era !== undefined ? Number(form.trailing_era) : null,
       strictFloorKs: strictFloor,
       softFloorKs: softFloor,
       suggestedLine,
@@ -70,6 +72,14 @@ export async function runStrikeoutFilter(pool, gameDate) {
     });
   }
 
-  watchList.sort((a, b) => b.strictFloorKs - a.strictFloorKs || (b.kPerStart ?? 0) - (a.kPerStart ?? 0));
+  // Best K spots first: highest reliable floor, then most Ks per start,
+  // then the lower-ERA arm (the sketch's "home low era pitchers"). Home
+  // starters get a nudge on ties since they're the emphasis.
+  watchList.sort((a, b) =>
+    b.strictFloorKs - a.strictFloorKs ||
+    (b.kPerStart ?? 0) - (a.kPerStart ?? 0) ||
+    (a.trailingEra ?? 9) - (b.trailingEra ?? 9) ||
+    (b.isHome === a.isHome ? 0 : b.isHome ? 1 : -1)
+  );
   return { watchList: watchList.slice(0, MAX_WATCH) };
 }

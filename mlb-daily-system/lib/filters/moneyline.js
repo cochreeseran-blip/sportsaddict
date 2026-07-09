@@ -2,18 +2,23 @@ import { fmtOdds, fmtNum } from '../util/format.js';
 import { breakevenPct } from '../breakeven.js';
 
 export const BAND_LOW = -250;
-export const BAND_HIGH = -100;
-const MAX_PICKS = 3;
-const MAX_OTHER_GAMES = 5;
+export const BAND_HIGH = 100;
+// How many runs better (lower) the home starter's ERA must be than the
+// visitor's to qualify. "Facing a worse ERA by 2 runs", per the sketch.
+const ERA_EDGE_MIN = 2.0;
+const MAX_OTHER_GAMES = 6;
 
 // The moneyline screener, in the order the research is actually done:
 //   1. all of today's games
-//   2. home favorites only (skip home underdogs)
-//   3. odds between -100 and -250
-//   4. both starters known, confirmed from the posted lineup when it's
+//   2. the home team priced from +100 (even) to -250 (solid favorite),
+//      skip home dogs bigger than +100 and huge -250+ chalk
+//   3. both starters known, confirmed from the posted lineup when it's
 //      out, otherwise the projected/probable starter MLB has published
-//   5. the HOME starter has the better (lower) ERA than the visitor,
-//      compared on last 5 starts (season ERA as fallback)
+//   4. the HOME starter's ERA is at least 2 runs better (lower) than the
+//      visitor's, compared on last 5 starts (season ERA as fallback)
+// Every qualifying home team is returned (ranked by ERA edge), not just a
+// top few, so the full list feeds the Research tab and the daily email.
+// The Daily Slate then shows only whichever land in the day's top 6.
 //
 // Every pick carries two honesty flags so the UI can be upfront:
 //   lineStatus       'priced'  = a real betting line was available and in band
@@ -67,14 +72,15 @@ export async function runMoneylineFilter(pool, gameDate) {
     const home = { trailingEra: num(r.home_trailing_era), seasonEra: num(r.home_season_era) };
     const away = { trailingEra: num(r.away_trailing_era), seasonEra: num(r.away_season_era) };
 
-    const homeIsFavorite = hasLine && homeMl < 0;
-    const inBand = homeIsFavorite && homeMl >= BAND_LOW && homeMl <= BAND_HIGH;
+    // In band = the home team is priced anywhere from +100 to -250.
+    const inBand = hasLine && homeMl >= BAND_LOW && homeMl <= BAND_HIGH;
     const bandDistance = inBand ? 0 : hasLine ? Math.min(Math.abs(homeMl - BAND_LOW), Math.abs(homeMl - BAND_HIGH)) : 0;
 
     const startersKnown = r.home_starter_name !== null && r.away_starter_name !== null;
     const cmp = startersKnown ? eraComparison(home, away) : null;
-    const homeHasBetterEra = cmp !== null && cmp.homeEra < cmp.awayEra;
     const eraEdge = cmp !== null ? cmp.awayEra - cmp.homeEra : null;
+    // Home starter's ERA at least 2 runs better than the visitor's.
+    const homeEdgeEnough = eraEdge !== null && eraEdge >= ERA_EDGE_MIN;
 
     // No line yet? Show it on the pitching matchup alone (can't check the
     // band, but the home-ERA-edge rule still applies). A real line that's
@@ -82,15 +88,13 @@ export async function runMoneylineFilter(pool, gameDate) {
     const lineStatus = inBand ? 'priced' : hasLine ? 'out-of-band' : 'no-line';
     const startersConfirmed = confirmedTeams.has(r.home_team) && confirmedTeams.has(r.away_team);
 
-    const qualifies = homeHasBetterEra && (inBand || (!hasLine));
+    const qualifies = homeEdgeEnough && (inBand || (!hasLine));
 
     const reasons = [];
-    if (hasLine && !homeIsFavorite) {
-      reasons.push(`${r.home_team} is the underdog (${fmtOdds(homeMl)}) at home, the screener only plays home favorites`);
-    } else if (homeIsFavorite && !inBand) {
+    if (hasLine && !inBand) {
       reasons.push(
         homeMl > BAND_HIGH
-          ? `${r.home_team} is not favored strongly enough (${fmtOdds(homeMl)}), the screener wants ${BAND_HIGH} to ${BAND_LOW}`
+          ? `${r.home_team} is too big a home dog (${fmtOdds(homeMl)}), the screener wants ${fmtOdds(BAND_HIGH)} to ${BAND_LOW}`
           : `${r.home_team} is too big a favorite (${fmtOdds(homeMl)}), huge favorites don't pay, so we cap it at ${BAND_LOW}`
       );
     }
@@ -98,9 +102,11 @@ export async function runMoneylineFilter(pool, gameDate) {
       reasons.push('a starter has not been announced yet for this game, check back once MLB posts it');
     } else if (cmp === null) {
       reasons.push(`no ERA data yet for ${home.trailingEra === null && home.seasonEra === null ? r.home_starter_name : r.away_starter_name}, check back after he has made a start`);
-    } else if (!homeHasBetterEra) {
+    } else if (!homeEdgeEnough) {
       reasons.push(
-        `${r.away_starter_name} (${fmtNum(cmp.awayEra)} ERA, ${cmp.basis}) has the better arm than ${r.home_starter_name} (${fmtNum(cmp.homeEra)}), the home pitcher has to hold the edge`
+        eraEdge > 0
+          ? `${r.home_starter_name}'s ERA edge over ${r.away_starter_name} is only ${fmtNum(eraEdge)} runs (${cmp.basis}), the screener wants a ${ERA_EDGE_MIN}+ run gap`
+          : `${r.away_starter_name} (${fmtNum(cmp.awayEra)} ERA, ${cmp.basis}) has the better arm than ${r.home_starter_name} (${fmtNum(cmp.homeEra)}), the home pitcher has to hold the edge`
       );
     }
 
@@ -136,16 +142,12 @@ export async function runMoneylineFilter(pool, gameDate) {
       return b.eraEdge - a.eraEdge;
     });
 
-  const picks = qualifying.slice(0, MAX_PICKS);
+  // Every qualifying home team is a pick, ranked, not just a top few.
+  const picks = qualifying;
   const pickIds = new Set(picks.map((p) => p.gameId));
 
   const otherGames = evaluated
     .filter((g) => !pickIds.has(g.gameId))
-    .map((g) =>
-      g.qualifies
-        ? { ...g, closeness: -1, reason: `Qualified too, but only the top ${MAX_PICKS} make the card, this one's ERA edge (${fmtNum(g.eraEdge)} runs) was smaller.` }
-        : g
-    )
     .sort((a, b) => a.closeness - b.closeness)
     .slice(0, MAX_OTHER_GAMES)
     .map(({ gameId, qualifies, closeness, ...g }) => g);

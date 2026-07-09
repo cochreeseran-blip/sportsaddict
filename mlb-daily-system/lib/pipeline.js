@@ -386,21 +386,30 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   }
   log(`Weather: ${windOk}/${venues.size} venue(s) updated (${windSkippedUnverified} skipped, unverified park orientation).`);
 
-  // Filters + digest
+  // Filters + digest. Three buckets feed everything: all qualifying home
+  // moneyline calls, the top 15 hit picks, and the top 10 K/O picks.
   const moneyline = await runMoneylineFilter(pool, gameDate);
   const hitStreak = await runHitStreakFilter(pool, gameDate);
   const windHr = await runWindHrFilter(pool, gameDate);
   const strikeouts = await runStrikeoutFilter(pool, gameDate);
   warnings.push(...(windHr.warnings || []));
 
-  // Top 6 for the Daily Slate board/jumbotron: moneyline calls + player
-  // props (hit/HR), factoring opposing pitcher ERA, batting average,
-  // last-5-game form, stadium/wind for HR props, and ERA edge for
-  // moneyline. Heuristic and explainable, not a model, see lib/topPicks.js.
-  const topPicks = buildTopPicks({ moneyline, hitStreak, windHr }, 6);
+  // The bulk surfaced on the Research tab and in the daily email is the
+  // top 15 hit picks (the filter ranks a wider pool so the cross-bucket
+  // top 6 can see everyone). Slice here so the digest, email, Research,
+  // and Daily Slate all agree on the same 15.
+  hitStreak.watchList = (hitStreak.watchList || []).slice(0, 15);
+
+  // Top 6 for the Daily Slate board/jumbotron: moneyline calls + hit
+  // props + K/O picks, factoring opposing pitcher ERA, batting average,
+  // last-5-game form, K floor, and ERA edge. Heuristic and explainable,
+  // not a model, see lib/topPicks.js.
+  const topPicks = buildTopPicks({ moneyline, hitStreak, strikeouts }, 6);
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
+  // Wind/HR still computed (park/weather infra stays warm) but no longer
+  // surfaced, the third bucket is K/O now, not home runs.
   await saveDigest(pool, gameDate, 'wind_hr', windHr);
   await saveDigest(pool, gameDate, 'strikeouts', strikeouts);
   await saveDigest(pool, gameDate, 'top_picks', { picks: topPicks });

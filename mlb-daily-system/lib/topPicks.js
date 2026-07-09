@@ -75,44 +75,40 @@ function hitPropCandidates(hitStreak) {
   });
 }
 
-function hrPropCandidates(windHr) {
-  return (windHr?.watchList || []).map((b) => {
-    const penalty = b.lineupConfirmed === false ? UNCONFIRMED_LINEUP_PENALTY : 0;
-    // Stadium/wind: only a real factor once it's actually blowing out.
-    const windBonus = b.windBlowingOut ? Math.max(0, (b.windSpeedMph ?? 0) - 8) * 0.5 : 0;
+function koCandidates(strikeouts) {
+  return (strikeouts?.watchList || []).map((p) => {
+    // Higher reliable K floor and more Ks per start are the signal; a
+    // low ERA (a good arm, the sketch's emphasis) tilts it up.
     const score =
-      eraScore(b.opposingStarterTrailingEra) * 1.2 +
-      (b.trailing15HrRate ?? 0) * 9 +
-      last5HitCount(b.last5Results) * 0.6 +
-      windBonus -
-      penalty;
+      p.strictFloorKs * 2 +
+      (p.kPerStart ?? 0) * 0.5 +
+      Math.max(0, 4.5 - (p.trailingEra ?? 4.5)) * 1.2 +
+      (p.isHome ? 0.4 : 0);
     return {
-      type: 'wind_hr',
-      key: `hr:${b.batterName}:${b.team}`,
+      type: 'strikeout',
+      key: `ko:${p.pitcherName}`,
       score,
-      mlbGameId: b.mlbGameId ?? null,
-      batterId: b.batterId ?? null,
-      batterName: b.batterName,
-      team: b.team,
-      position: b.position ?? null,
-      jerseyNumber: b.jerseyNumber ?? null,
-      lineupConfirmed: b.lineupConfirmed,
-      last5Results: b.last5Results,
-      trailing15HrRate: b.trailing15HrRate ?? null,
-      headline: `${b.batterName} (${b.team}) to go deep`,
-      detail: `Wind blowing out ${fmtNum(b.windSpeedMph, 1)} mph at ${b.venue}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
+      mlbGameId: p.mlbGameId ?? null,
+      pitcherId: p.pitcherId ?? null,
+      pitcherName: p.pitcherName,
+      team: p.team,
+      suggestedLine: p.suggestedLine,
+      last5StartKs: p.last5StartKs,
+      strictFloorKs: p.strictFloorKs,
+      headline: `${p.pitcherName} over ${p.suggestedLine.toFixed(1)} strikeouts`,
+      detail: `Reached ${p.strictFloorKs}+ Ks in every recent start (${fmtNum(p.kPerStart, 1)} per start${p.trailingEra !== null && p.trailingEra !== undefined ? `, ${fmtNum(p.trailingEra)} ERA` : ''}), ${p.isHome ? 'at home ' : ''}vs ${p.opponent}.`,
     };
   });
 }
 
-// Top 6 across moneyline + both prop watchlists, ranked by the composite
-// scores above. A batter who qualifies for both a hit prop and an HR
-// prop can take two slots, they're different bets.
-export function buildTopPicks({ moneyline, hitStreak, windHr }, limit = 6) {
+// Top 6 across moneyline + hit props + K/O picks, ranked by the composite
+// scores above. Same player can appear in more than one bucket, they're
+// different bets.
+export function buildTopPicks({ moneyline, hitStreak, strikeouts }, limit = 6) {
   const all = [
     ...moneylineCandidates(moneyline),
     ...hitPropCandidates(hitStreak),
-    ...hrPropCandidates(windHr),
+    ...koCandidates(strikeouts),
   ].sort((a, b) => b.score - a.score);
 
   const seen = new Set();

@@ -108,11 +108,17 @@ function koCandidates(strikeouts) {
 // scores above. Same player can appear in more than one bucket, they're
 // different bets. At least one moneyline pick is always in the slate: if
 // none makes the natural cut, the best available ML takes the last slot.
-export function buildTopPicks({ moneyline, hitStreak, strikeouts }, limit = 6) {
+//
+// Takes an already-built moneyline candidate list (not the raw filter
+// output) so the caller can pass either the live-computed candidates or,
+// once the board is frozen for the day (see pipeline.js), the locked
+// candidates read back from the tracked-picks ledger, the jumbotron and
+// the moneyline board always agree on the same picks.
+export function buildTopPicks({ moneylineCandidates: mlCandidates, hitStreak, strikeouts }, limit = 6) {
   const ranked = [];
   const seen = new Set();
   for (const c of [
-    ...moneylineCandidates(moneyline),
+    ...(mlCandidates || []),
     ...hitPropCandidates(hitStreak),
     ...koCandidates(strikeouts),
   ].sort((a, b) => b.score - a.score)) {

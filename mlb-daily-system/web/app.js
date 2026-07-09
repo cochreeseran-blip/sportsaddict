@@ -695,11 +695,17 @@ function resultChip(result) {
 
 // A big, obvious badge for the day's outcome on this pick: a real win
 // gets a celebratory treatment (bright green, a checkmark), not just a
-// quiet pill, that's the whole point of a public track record.
-function bigResultBadge(result) {
+// quiet pill, that's the whole point of a public track record. A pick
+// still pending whose game has thrown its first pitch gets LIVE instead
+// of a flat PENDING, that's the moment there's actually something to watch.
+function bigResultBadge(result, liveGame) {
   if (result === 'win') return '<span class="mlv-big win"><i>✓</i>WON</span>';
   if (result === 'loss') return '<span class="mlv-big loss"><i>✕</i>LOST</span>';
   if (result === 'push') return '<span class="mlv-big push">PUSH</span>';
+  if (liveGame) {
+    const inn = liveGame.inning ? `${(liveGame.inningState || 'Live')} ${liveGame.inning}` : '';
+    return `<span class="mlv-big live"><i class="live-dot"></i>LIVE${inn ? `<b>${esc(inn)}</b>` : ''}</span>`;
+  }
   return '<span class="mlv-big pending"><i class="pulse"></i>PENDING</span>';
 }
 
@@ -707,23 +713,30 @@ function bigResultBadge(result) {
 // comment on lockedMoneyline server-side): every game that qualified at
 // any point today, in the order it first qualified, each with its result.
 // This deliberately does NOT re-derive from the live screener on every
-// render, once a game's on today's board it stays there all day.
-function lockedMoneylineCard(p) {
+// render, once a game's on today's board it stays there all day. Status
+// (Preview/Live/Final) is looked up from the already-fetched slate so a
+// pending pick flips to a LIVE badge the moment its game's first pitch is
+// thrown, no extra fetch needed, the card stays clickable either way.
+function lockedMoneylineCard(p, statusByGamePk) {
   const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : null;
+  const isPending = !p.result || p.result === 'pending';
+  const g = isPending && p.mlbGameId ? statusByGamePk?.get(String(p.mlbGameId)) : null;
+  const isLive = g?.abstractState === 'Live';
+  const stateCls = isLive ? 'live' : (p.result || 'pending');
   return `
-    <div class="sig-card locked-${p.result || 'pending'}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
+    <div class="sig-card locked-${stateCls}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
       <div class="sig-head">
         <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}</span>
-        ${bigResultBadge(p.result)}
+        ${bigResultBadge(p.result, isLive ? g : null)}
       </div>
       <div class="sig-sub">${esc(p.detail || `To beat ${p.awayTeam || 'the visitor'}.`)}</div>
       ${breakeven ? `<div class="sig-note">Break-even ${breakeven}</div>` : ''}
     </div>`;
 }
 
-function lockedMoneylineCards(picks) {
+function lockedMoneylineCards(picks, statusByGamePk) {
   if (!picks?.length) return '';
-  return `<div class="sig-cards">${picks.map(lockedMoneylineCard).join('')}</div>`;
+  return `<div class="sig-cards">${picks.map((p) => lockedMoneylineCard(p, statusByGamePk)).join('')}</div>`;
 }
 
 function opposingStarterCell(b) {
@@ -823,6 +836,7 @@ async function renderSignals(silent = false) {
     const gated = isBeforeGoLive(d.date);
     const lockedPicks = d.lockedMoneyline || [];
     const mlCount = gated ? null : lockedPicks.length;
+    const statusByGamePk = new Map(games.map((g) => [String(g.gamePk), g]));
     // Today so far, straight off the locked ledger for this date.
     let dayW = 0, dayL = 0, dayPend = 0;
     for (const p of lockedPicks) {
@@ -835,7 +849,7 @@ async function renderSignals(silent = false) {
       : '';
     const mlBody = gated
       ? goLiveGate('gateSeeYesterday', 'The moneyline board is published with the 9 AM ET run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
-      : (lockedMoneylineCards(lockedPicks) || emptyHtml('No qualifying moneyline today', 'No home team is priced +100 to -250 with a 2+ run starting-pitcher ERA edge. Sitting out is a position too.'));
+      : (lockedMoneylineCards(lockedPicks, statusByGamePk) || emptyHtml('No qualifying moneyline today', 'No home team is priced +100 to -250 with a 2+ run starting-pitcher ERA edge. Sitting out is a position too.'));
 
     host.innerHTML = `
       ${yesterdayStrip(perf, d.date)}

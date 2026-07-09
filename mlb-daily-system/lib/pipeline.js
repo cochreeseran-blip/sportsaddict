@@ -14,6 +14,7 @@ import { buildTopPicks, moneylineCandidates } from './topPicks.js';
 import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
+import { GO_LIVE_HOUR_UTC } from './goLive.js';
 
 // How many player stat lookups run in flight at once during the full-roster
 // pass. Sequential would mean ~1,000+ calls back to back on a full slate;
@@ -400,11 +401,32 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // and Daily Slate all agree on the same 15.
   hitStreak.watchList = (hitStreak.watchList || []).slice(0, 15);
 
+  // The moneyline board locks for the day once the go-live run has
+  // happened (see migrations/013_moneyline_lock.sql): after that, no new
+  // games get added even if odds or rosters keep shifting, the board that
+  // went live at 9am ET is the board for the rest of the day. Games
+  // already on it keep grading normally via gradePendingPicks below.
+  const { rows: lockRows } = await pool.query('SELECT 1 FROM moneyline_lock WHERE game_date = $1', [gameDate]);
+  const boardLocked = lockRows.length > 0;
+
+  let liveMlCandidates = moneylineCandidates(moneyline);
+  let mlCandidatesForTopPicks = liveMlCandidates;
+  if (boardLocked) {
+    const { rows: lockedRows } = await pool.query(
+      `SELECT qualifying_metrics FROM tracked_picks
+       WHERE game_date = $1 AND signal_type = 'moneyline'
+       ORDER BY id`,
+      [gameDate]
+    );
+    mlCandidatesForTopPicks = lockedRows.map((r) => r.qualifying_metrics);
+    log(`Moneyline board frozen for ${gameDate}: reusing ${mlCandidatesForTopPicks.length} locked pick(s), ${liveMlCandidates.length} live candidate(s) ignored.`);
+  }
+
   // Top 6 for the Daily Slate board/jumbotron: moneyline calls + hit
   // props + K/O picks, factoring opposing pitcher ERA, batting average,
   // last-5-game form, K floor, and ERA edge. Heuristic and explainable,
   // not a model, see lib/topPicks.js.
-  const topPicks = buildTopPicks({ moneyline, hitStreak, strikeouts }, 6);
+  const topPicks = buildTopPicks({ moneylineCandidates: mlCandidatesForTopPicks, hitStreak, strikeouts }, 6);
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
@@ -421,9 +443,25 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // The permanent ledger (the "All-time" record on Daily Slate) tracks
   // every qualifying moneyline call, that's the board the Daily Slate
   // publishes and stands behind, graded by a clean final score. Player
-  // props stay out of the ledger.
-  const trackedCount = await recordTrackedPicks(pool, gameDate, moneylineCandidates(moneyline));
-  log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
+  // props stay out of the ledger. Skipped entirely once the board is
+  // locked for the day, that's the whole point of the freeze.
+  if (boardLocked) {
+    log('Tracked picks: skipped, moneyline board is locked for the day.');
+  } else {
+    const trackedCount = await recordTrackedPicks(pool, gameDate, liveMlCandidates);
+    log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
+
+    // Lock the board once this run happens at or after go-live, so every
+    // later run today (hourly refreshes, manual "Refresh") stops adding
+    // new moneyline picks. The board that just went live is final.
+    if (new Date().getUTCHours() >= GO_LIVE_HOUR_UTC) {
+      await pool.query(
+        'INSERT INTO moneyline_lock (game_date) VALUES ($1) ON CONFLICT (game_date) DO NOTHING',
+        [gameDate]
+      );
+      log(`Moneyline board locked for ${gameDate} at go-live.`);
+    }
+  }
 
   // No UI button for this anymore, the pipeline running 3x/day is what
   // keeps the All-time record moving as games finish.

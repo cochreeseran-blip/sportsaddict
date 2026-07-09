@@ -446,6 +446,12 @@ tr.exp-detail:hover td { background: rgba(0, 0, 0, 0.22); }
 }
 .sig-card.locked-loss { cursor: pointer; box-shadow: inset 3px 0 0 var(--red), var(--shadow); }
 .sig-card.locked-pending { cursor: pointer; }
+.sig-card.locked-live {
+  cursor: pointer;
+  border-color: rgba(255, 93, 108, 0.5);
+  background: linear-gradient(180deg, rgba(255, 93, 108, 0.09), transparent 60%), var(--panel);
+  box-shadow: 0 0 0 1px rgba(255, 93, 108, 0.2), 0 10px 26px rgba(255, 93, 108, 0.12), var(--shadow);
+}
 
 .mlv-big {
   display: inline-flex; align-items: center; gap: 5px;
@@ -458,6 +464,9 @@ tr.exp-detail:hover td { background: rgba(0, 0, 0, 0.22); }
 .mlv-big.push { color: var(--amber); background: var(--amber-bg); }
 .mlv-big.pending { color: var(--text-2); background: rgba(255, 255, 255, 0.06); }
 .mlv-big.pending i.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: blink 1.2s ease-in-out infinite; }
+.mlv-big.live { color: #fff; background: var(--red); box-shadow: 0 0 14px rgba(255, 93, 108, 0.5); }
+.mlv-big.live i.live-dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: blink 0.9s ease-in-out infinite; }
+.mlv-big.live b { font-weight: 800; margin-left: 2px; opacity: 0.85; }
 
 /* --- jumbotron -------------------------------------------------------------------- */
 .jumbotron {

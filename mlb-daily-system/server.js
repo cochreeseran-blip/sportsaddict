@@ -13,6 +13,7 @@ import { createUser, authenticate, createSession, destroySession, userForSession
 import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
 import { gradePendingPicks } from './lib/trackedPicks.js';
+import { GO_LIVE_HOUR_UTC } from './lib/goLive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,9 +31,10 @@ const BUILD = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.BUILD_SHA || 'd
 // odds, pitcher/batter form, lineups, the moneyline screen) runs at the
 // top of EVERY hour so lineups get picked up within the hour they post
 // and the research keeps moving all day. The daily email still goes out
-// once, after the morning run; NEWSLETTER_HOUR_UTC overrides when
-// (default 13 = 9 AM ET).
-const NEWSLETTER_HOUR_UTC = Number(process.env.NEWSLETTER_HOUR_UTC || 13);
+// once, after the morning run, at GO_LIVE_HOUR_UTC (see lib/goLive.js);
+// the same hour is also when the pipeline freezes the moneyline board for
+// the day.
+const NEWSLETTER_HOUR_UTC = GO_LIVE_HOUR_UTC;
 
 let isRefreshing = false;
 let refreshStartedAt = null;

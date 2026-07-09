@@ -47,6 +47,7 @@ const state = {
   today: new Date().toISOString().slice(0, 10), // corrected from /api/status
   view: 'signals',
   signalsDate: null,
+  slateDate: null,
   slateCache: new Map(),
   user: null,
 };
@@ -132,6 +133,11 @@ const fmtNum = (n, d = 2) => (n === null || n === undefined ? '-' : Number(n).to
 
 function longDate(dateStr) {
   return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+function addDays(dateStr, delta) {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
 }
 function etTime(iso) {
   if (!iso) return 'TBD';
@@ -241,11 +247,34 @@ function emptyHtml(title, msg) {
 // ---------------------------------------------------------------------------
 // SLATE VIEW, today's games only. Open a game for lineups, batting order,
 // and pitcher form.
+function dateStripHtml() {
+  const date = state.slateDate || state.today;
+  const days = [
+    { d: addDays(state.today, -1), label: 'Yesterday' },
+    { d: state.today, label: 'Today' },
+    { d: addDays(state.today, 1), label: 'Tomorrow' },
+  ];
+  return `<div class="date-strip" id="slateDateStrip">${days.map((x) => `
+    <button type="button" class="date-strip-btn ${x.d === date ? 'active' : ''}" data-date="${x.d}">
+      <span class="ds-label">${x.label}</span>
+      <span class="ds-date">${new Date(`${x.d}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}</span>
+    </button>`).join('')}</div>`;
+}
+
 function renderSlateShell() {
+  const date = state.slateDate || state.today;
   $('#view-slate').innerHTML = `
-    <div class="section-head"><h2 class="section-title">Today's slate</h2></div>
-    <p class="section-sub">${esc(longDate(state.today))}</p>
+    <div class="section-head"><h2 class="section-title">Slate</h2></div>
+    ${dateStripHtml()}
+    <p class="section-sub">${esc(longDate(date))}</p>
     <div id="slateGames">${loadingHtml}</div>`;
+  $('#slateDateStrip').querySelectorAll('.date-strip-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.slateDate = btn.dataset.date;
+      renderSlateShell();
+      loadSlateGames();
+    });
+  });
 }
 
 function statusLabel(g) {
@@ -305,7 +334,7 @@ function gameCardHtml(g) {
 
 async function loadSlateGames() {
   const host = $('#slateGames');
-  const date = state.today;
+  const date = state.slateDate || state.today;
   host.innerHTML = loadingHtml;
   try {
     let slate = state.slateCache.get(date);
@@ -451,12 +480,11 @@ function closeGamePanel() {
 }
 
 // ---------------------------------------------------------------------------
-// Bet tracking was removed with the My Bets / Performance tabs. trackBtn is
-// kept as a no-op so the pick render functions don't need to change, and
-// there are no dead "Track bet" buttons pointing at a screen that no longer
-// exists.
-function trackBtn() {
-  return '';
+// "Track" button on a pick card: stashes the prefill as JSON on the button
+// itself. A single delegated click listener (see init()) reads it back and
+// opens the bet modal, no per-card listeners to wire up.
+function trackBtn(prefill) {
+  return `<button type="button" class="btn-track" data-track="${esc(JSON.stringify(prefill))}">+ Track</button>`;
 }
 
 function openBetModal(prefill = {}) {
@@ -501,11 +529,11 @@ async function submitBet(e) {
     state.lastStake = $('#betStake').value;
     state.lastBook = $('#betBook').value.trim();
     const hint = $('#betHint');
-    hint.textContent = 'Saved to My Bets.';
+    hint.textContent = 'Saved to Tracking.';
     hint.hidden = false;
     setTimeout(() => {
       closeBetModal();
-      if (state.view === 'performance') renderBets();
+      if (state.view === 'tracking') renderTracking();
     }, 550);
   } catch (ex) {
     $('#betSave').disabled = false;
@@ -569,13 +597,18 @@ async function deleteManualPick(id) {
 }
 
 // ---------------------------------------------------------------------------
-// MY BETS VIEW
-function resultPill(result) {
-  const label = result.charAt(0).toUpperCase() + result.slice(1);
-  return `<span class="result-pill ${esc(result)}">${esc(label)}</span>`;
+// TRACKING VIEW: every tracked pick, grouped by game with a tick mark
+// (win/loss/push/pending) so the whole slate reads at a glance. Built on
+// the same /api/bets ledger as before, just grouped by matchup instead of
+// laid out as a spreadsheet.
+function tickIcon(result) {
+  if (result === 'win') return '<span class="tick tick-win" title="Win">✓</span>';
+  if (result === 'loss') return '<span class="tick tick-loss" title="Loss">✕</span>';
+  if (result === 'push') return '<span class="tick tick-push" title="Push">–</span>';
+  return '<span class="tick tick-pending" title="Pending">•</span>';
 }
 
-function betRow(b) {
+function trackRow(b) {
   const actions = [];
   if (b.result === 'pending') {
     actions.push(`
@@ -587,45 +620,80 @@ function betRow(b) {
   } else {
     actions.push(`<button class="btn-mini" data-reopen="${b.id}" title="Undo and mark pending again">Undo</button>`);
   }
-  actions.push(`<button class="btn-mini x" data-del="${b.id}" title="Delete bet">×</button>`);
+  actions.push(`<button class="btn-mini x" data-del="${b.id}" title="Delete">×</button>`);
 
-  const autoTag = b.betKind !== 'manual' && b.result === 'pending' ? '<span class="auto-tag">auto-settles</span>' : '';
   const profitCell = b.result === 'pending'
-    ? '<span class="faint">-</span>'
-    : `<span class="${(b.profit ?? 0) > 0 ? 'profit-pos' : (b.profit ?? 0) < 0 ? 'profit-neg' : 'dim'}">${fmtMoney(b.profit, true)}</span>`;
+    ? ''
+    : `<span class="track-profit ${(b.profit ?? 0) > 0 ? 'profit-pos' : (b.profit ?? 0) < 0 ? 'profit-neg' : 'dim'}">${fmtMoney(b.profit, true)}</span>`;
 
   return `
-    <tr>
-      <td class="mono faint" style="white-space:nowrap">${esc(b.gameDate)}</td>
-      <td><div class="bet-desc">${esc(b.description)}${autoTag}${b.book ? `<div class="bk">${esc(b.book)}</div>` : ''}</div></td>
-      <td class="mono">${b.odds !== null ? fmtOdds(b.odds) : '-'}</td>
-      <td class="mono">${fmtMoney(b.stake)}</td>
-      <td>${b.result === 'pending' ? resultPill('pending') : resultPill(b.result)}</td>
-      <td class="mono">${profitCell}</td>
-      <td style="white-space:nowrap;text-align:right">${actions.join(' ')}</td>
-    </tr>`;
+    <div class="track-row">
+      ${tickIcon(b.result)}
+      <div class="track-desc">
+        <div class="track-desc-main">${esc(b.description)}</div>
+        <div class="track-desc-sub">${b.odds !== null ? fmtOdds(b.odds) : ''}${b.stake ? ` · $${fmtMoney(b.stake).replace('$', '')}` : ''}${b.book ? ` · ${esc(b.book)}` : ''}</div>
+      </div>
+      ${profitCell}
+      <span class="track-actions">${actions.join(' ')}</span>
+    </div>`;
 }
 
-async function renderBets(host = $('#betsBlock')) {
-  if (!host) return;
+function trackGroupHtml(group) {
+  const g = group.game;
+  const title = g
+    ? `<span class="track-group-teams">${logoHtml(g.away.id, g.away.name, 18)}${esc(g.away.name)} <span class="faint">at</span> ${esc(g.home.name)}${logoHtml(g.home.id, g.home.name, 18)}</span>`
+    : `<span class="track-group-teams">${esc(longDate(group.gameDate))}</span>`;
+  return `
+    <div class="track-group">
+      <div class="track-group-head">
+        ${title}
+        ${group.mlbGameId ? `<button type="button" class="btn ghost small" data-open-game="${esc(group.mlbGameId)}" data-open-date="${esc(group.gameDate)}">Open game</button>` : ''}
+      </div>
+      ${group.bets.map(trackRow).join('')}
+    </div>`;
+}
+
+async function renderTracking() {
+  const host = $('#view-tracking');
   host.innerHTML = loadingHtml;
   try {
     const d = await api('/api/bets');
     const s = d.summary;
     const profitCls = s.profit > 0 ? 'profit-pos' : s.profit < 0 ? 'profit-neg' : '';
 
+    // Pull matchup info (team names/logos) for whichever dates the tracked
+    // picks touch, so groups read as real games, not raw bet descriptions.
+    const dates = [...new Set(d.bets.map((b) => b.gameDate).filter(Boolean))];
+    const slates = await Promise.all(dates.map((dt) => {
+      const cached = state.slateCache.get(dt);
+      return cached ? Promise.resolve(cached) : api(`/api/slate?date=${dt}`).catch(() => null);
+    }));
+    const gameByPk = new Map();
+    slates.forEach((slate) => (slate?.games || []).forEach((g) => gameByPk.set(String(g.gamePk), g)));
+
+    const groups = new Map();
+    for (const b of d.bets) {
+      const key = b.mlbGameId ? `g:${b.mlbGameId}` : `d:${b.gameDate}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          game: b.mlbGameId ? gameByPk.get(String(b.mlbGameId)) : null,
+          gameDate: b.gameDate,
+          mlbGameId: b.mlbGameId,
+          bets: [],
+        });
+      }
+      groups.get(key).bets.push(b);
+    }
+    const groupList = [...groups.values()].sort((a, b2) => (a.gameDate < b2.gameDate ? 1 : a.gameDate > b2.gameDate ? -1 : 0));
+
     host.innerHTML = `
-      <div class="bets-toolbar">
-        <button class="btn primary" id="addBetBtn">Add a bet</button>
-        <button class="btn" id="gradeBetsBtn" ${s.pending ? '' : 'disabled'}>Check results</button>
-        <span class="spacer"></span>
-      </div>
+      <div class="section-head"><h2 class="section-title">Tracking</h2></div>
 
       <div class="stat-tiles">
         <div class="stat-tile">
           <div class="st-label">Profit</div>
           <div class="st-value ${profitCls}">${fmtMoney(s.profit, true)}</div>
-          <div class="st-sub">${fmtMoney(s.staked)} staked on settled bets</div>
+          <div class="st-sub">${fmtMoney(s.staked)} staked on settled picks</div>
         </div>
         <div class="stat-tile">
           <div class="st-label">Record</div>
@@ -644,12 +712,12 @@ async function renderBets(host = $('#betsBlock')) {
         </div>
       </div>
 
-      ${d.bets.length
-        ? `<div class="table-wrap"><table class="data-table">
-            <thead><tr><th>Date</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>Profit</th><th></th></tr></thead>
-            <tbody>${d.bets.map(betRow).join('')}</tbody>
-          </table></div>`
-        : emptyHtml('No bets yet', 'Hit Track bet on any pick, or add one manually with the button above.')}`;
+      <div class="bets-toolbar">
+        <button class="btn primary" id="addBetBtn">Track a pick</button>
+        <button class="btn" id="gradeBetsBtn" ${s.pending ? '' : 'disabled'}>Check results</button>
+      </div>
+
+      ${groupList.length ? groupList.map(trackGroupHtml).join('') : emptyHtml('Nothing tracked yet', 'Hit + Track on any pick, or track one manually with the button above.')}`;
 
     $('#addBetBtn').addEventListener('click', () => openBetModal());
     $('#gradeBetsBtn')?.addEventListener('click', async (e) => {
@@ -658,7 +726,7 @@ async function renderBets(host = $('#betsBlock')) {
       btn.textContent = 'Checking…';
       try {
         await apiSend('/api/bets/grade', 'POST');
-        await renderBets();
+        await renderTracking();
       } catch (ex) {
         btn.disabled = false;
         btn.textContent = 'Check results';
@@ -667,19 +735,19 @@ async function renderBets(host = $('#betsBlock')) {
 
     host.querySelectorAll('[data-settle]').forEach((btn) => btn.addEventListener('click', async () => {
       await apiSend(`/api/bets/${btn.dataset.bet}/settle`, 'POST', { result: btn.dataset.settle });
-      renderBets();
+      renderTracking();
     }));
     host.querySelectorAll('[data-reopen]').forEach((btn) => btn.addEventListener('click', async () => {
       await apiSend(`/api/bets/${btn.dataset.reopen}/reopen`, 'POST');
-      renderBets();
+      renderTracking();
     }));
     host.querySelectorAll('[data-del]').forEach((btn) => btn.addEventListener('click', async () => {
-      if (!confirm('Delete this bet?')) return;
+      if (!confirm('Stop tracking this pick?')) return;
       await apiSend(`/api/bets/${btn.dataset.del}`, 'DELETE');
-      renderBets();
+      renderTracking();
     }));
   } catch (err) {
-    host.innerHTML = emptyHtml('Bets unavailable', err.message);
+    host.innerHTML = emptyHtml('Tracking unavailable', err.message);
   }
 }
 
@@ -817,13 +885,6 @@ function digestWarningBanner(warnings) {
     </div>`;
 }
 
-function batterTable(rows, cols) {
-  return `<div class="table-wrap"><table class="data-table">
-    <thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>
-    <tbody>${rows.join('')}</tbody>
-  </table></div>`;
-}
-
 function opposingStarterCell(b) {
   return `${esc(b.opposingStarterName ?? 'TBD')}${
     b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined
@@ -846,7 +907,15 @@ function whyRow(label, value) {
   return value ? `<div class="why-row"><span>${esc(label)}</span><b>${value}</b></div>` : '';
 }
 
-function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark, why, flags, track }) {
+function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark, why, flags, track, mlbGameId, gameDate }) {
+  // The team logo doubles as a link to that matchup: tap the player to
+  // open the why panel, then tap the team mark to jump straight to the
+  // game (who's pitching, full lineup) to see the whole matchup at a
+  // glance. It's a <button>, so the card's own tap-to-expand handler
+  // (which ignores clicks on button/a/[data-track]) leaves it alone.
+  const teamLink = mlbGameId
+    ? `<button type="button" class="pc-team-link" data-open-game="${esc(mlbGameId)}" data-open-date="${esc(gameDate || '')}" title="Open this game">${logoHtml(null, teamName, 20)}</button>`
+    : logoHtml(null, teamName, 20);
   return `
     <article class="pick-card" data-expand>
       <div class="pc-rank">${rank}</div>
@@ -859,7 +928,7 @@ function pickCard({ rank, personId, name, sub, teamName, prob, probLabel, spark,
         ${probChip(prob, probLabel)}
       </div>
       <div class="pc-mid">
-        ${logoHtml(null, teamName, 20)}
+        ${teamLink}
         ${spark || ''}
         ${flags || ''}
       </div>
@@ -891,6 +960,8 @@ function hitStreakSection(hs) {
       whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `, ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
     ].join(''),
     track: trackBtn(pickPrefill({ type: 'hit_streak', headline: `${b.batterName} to record a hit`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
+    mlbGameId: b.mlbGameId,
+    gameDate: state.signalsDate || state.today,
   }));
   return `<div class="pick-grid">${cards.join('')}</div>`;
 }
@@ -916,6 +987,8 @@ function windHrSection(wh) {
       whyRow('Opposing arm', `${esc(b.opposingStarterName ?? 'TBD')}${b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined ? `, ${fmtNum(b.opposingStarterTrailingEra)} ERA${b.weakerArm ? ' (weaker arm)' : ''}` : ''}`),
     ].join(''),
     track: trackBtn(pickPrefill({ type: 'wind_hr', headline: `${b.batterName} to hit a home run`, mlbGameId: b.mlbGameId, batterId: b.batterId })),
+    mlbGameId: b.mlbGameId,
+    gameDate: state.signalsDate || state.today,
   }));
   return `<div class="pick-grid">${cards.join('')}</div>`;
 }
@@ -945,6 +1018,8 @@ function strikeoutSection(so) {
       whyRow('Matchup', `vs ${esc(p.opponent)}`),
     ].join(''),
     track: trackBtn({ description: `${p.pitcherName} over ${p.suggestedLine.toFixed(1)} strikeouts`, odds: null, betKind: 'manual', mlbGameId: p.mlbGameId, batterId: null, gameDate: state.signalsDate || state.today }),
+    mlbGameId: p.mlbGameId,
+    gameDate: state.signalsDate || state.today,
   }));
   return `<div class="pick-grid center">${cards.join('')}</div>`;
 }
@@ -972,7 +1047,7 @@ function buildBoardItems(d) {
     .filter((x) => x.prob !== null)
     .filter((x) => (seen.has(x.name + x.label) ? false : seen.add(x.name + x.label)))
     .sort((a, b) => b.prob - a.prob)
-    .slice(0, 12);
+    .slice(0, 6); // only the absolute best picks make the board
 }
 
 function jumbotronHtml(d) {
@@ -987,11 +1062,18 @@ function jumbotronHtml(d) {
       ${probChip(x.prob, x.probLabel)}
     </span>`;
   const row = items.map(chip).join('<span class="jumbo-sep"></span>');
+  // Repeated 4x (not 2x): with only 6 short items the row can be narrower
+  // than a wide desktop viewport, which makes a 2-copy loop look static
+  // since there's nothing to scroll past. Four copies guarantees the
+  // track overflows any real screen so the marquee is always visibly
+  // moving, on phone and on desktop. The keyframe below moves exactly
+  // one row-width (-25% of the 4x track), so playback speed is unchanged.
+  const track = Array(4).fill(row).join('<span class="jumbo-sep"></span>');
   return `
     <div class="jumbotron" aria-label="Today's top picks board">
       <div class="jumbo-title"><span class="jumbo-live"></span>TODAY'S BOARD</div>
       <div class="jumbo-viewport">
-        <div class="jumbo-track">${row}<span class="jumbo-sep"></span>${row}<span class="jumbo-sep"></span></div>
+        <div class="jumbo-track">${track}<span class="jumbo-sep"></span></div>
       </div>
     </div>`;
 }
@@ -1020,9 +1102,13 @@ function yesterdayStrip(perf, today) {
     </div>`;
 }
 
-async function renderSignals() {
+// silent=true is used by the 120s auto-refresh: skip the loading spinner
+// and put the scroll position back so a picture that hasn't changed
+// doesn't visibly jump or flash while someone's mid-read.
+async function renderSignals(silent = false) {
   const host = $('#view-signals');
-  host.innerHTML = loadingHtml;
+  if (!silent) host.innerHTML = loadingHtml;
+  const scrollY = silent ? window.scrollY : null;
   try {
     const date = state.signalsDate || state.today;
     const [d, perf] = await Promise.all([
@@ -1068,9 +1154,30 @@ async function renderSignals() {
       state.signalsDate = e.target.value;
       renderSignals();
     });
+    if (scrollY !== null) window.scrollTo(0, scrollY);
   } catch (err) {
-    host.innerHTML = emptyHtml('Signals unavailable', err.message);
+    if (!silent) host.innerHTML = emptyHtml('Signals unavailable', err.message);
+    // A silent refresh that fails leaves the last good render on screen
+    // rather than replacing it with an error, next tick tries again.
   }
+}
+
+// Auto-refresh: the pipeline updates lineups/odds through the day, and
+// the chat/tracking data changes too, so Daily Picks quietly re-fetches
+// itself every 120s while it's the active tab.
+let signalsAutoTimer = null;
+function startSignalsAutoRefresh() {
+  clearTimeout(signalsAutoTimer);
+  signalsAutoTimer = setTimeout(async () => {
+    if (state.view === 'signals') {
+      await renderSignals(true);
+      startSignalsAutoRefresh();
+    }
+  }, 120000);
+}
+function stopSignalsAutoRefresh() {
+  clearTimeout(signalsAutoTimer);
+  signalsAutoTimer = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,53 +1269,6 @@ function renderChat() {
 }
 
 // ---------------------------------------------------------------------------
-// PERFORMANCE VIEW
-const SIGNAL_NAMES = { moneyline: 'Moneyline', hit_streak: 'Hot hitters', wind_hr: 'HR weather' };
-
-async function renderPerformance() {
-  const host = $('#view-performance');
-  host.innerHTML = loadingHtml;
-  try {
-    const d = await api('/api/performance');
-    const tiles = d.summary.length ? d.summary.map((s) => {
-      const wr = s.winRate !== null ? (s.winRate * 100).toFixed(1) : null;
-      const edge = s.winRate !== null && s.avgBreakeven !== null ? ((s.winRate - s.avgBreakeven) * 100) : null;
-      return `
-        <div class="stat-tile">
-          <div class="st-label">${esc(SIGNAL_NAMES[s.signalType] || s.signalType)}</div>
-          <div class="st-value">${wr !== null ? `${wr}<span class="unit">%</span>` : '-'}</div>
-          <div class="st-sub">${s.wins}W / ${s.losses}L${s.pushes ? ` / ${s.pushes} push` : ''} · ${s.pending} pending${
-            edge !== null ? `<br>Edge vs break-even: <span class="${edge >= 0 ? 'pos' : 'neg'} mono">${edge >= 0 ? '+' : ''}${edge.toFixed(1)} pts</span>` : ''
-          }${s.graded > 0 && s.graded < 20 ? `<br><span class="faint">Only ${s.graded} graded, too small a sample to mean anything yet.</span>` : ''}</div>
-        </div>`;
-    }).join('') : '';
-
-    const recentRows = d.recent.map((r) => `
-      <tr>
-        <td class="mono faint" style="white-space:nowrap">${esc(r.gameDate)}</td>
-        <td><span class="pill dim">${esc(SIGNAL_NAMES[r.signalType] || r.signalType)}</span></td>
-        <td>${esc(r.description)}</td>
-        <td class="mono">${r.lockedPrice !== null ? fmtOdds(r.lockedPrice) : '-'}</td>
-        <td><span class="result-pill ${esc(r.result)}">${esc(r.result.charAt(0).toUpperCase() + r.result.slice(1))}</span></td>
-      </tr>`);
-
-    host.innerHTML = `
-      <h2 class="board-title">Track Record</h2>
-      ${tiles ? `<div class="stat-tiles">${tiles}</div>` : emptyHtml('No picks tracked yet', 'Picks accumulate as the daily refresh finds qualifying signals.')}
-
-      <h2 class="board-title">Recent Picks</h2>
-      ${d.recent.length ? batterTable(recentRows, ['Date', 'Signal', 'Pick', 'Price', 'Result']) : emptyHtml('Nothing recorded yet', 'Recent picks will appear here as the pipeline runs.')}
-
-      <h2 class="board-title">My Bets</h2>
-      <div id="betsBlock">${loadingHtml}</div>`;
-
-    renderBets($('#betsBlock'));
-  } catch (err) {
-    host.innerHTML = emptyHtml('Performance unavailable', err.message);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // STATUS + REFRESH
 let statusTimer = null;
 async function pollStatus(fast = false) {
@@ -1271,8 +1331,10 @@ function showView(name, force = false) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'slate') { renderSlateShell(); loadSlateGames(); }
   if (name === 'signals') renderSignals();
+  if (name === 'tracking') renderTracking();
   if (name === 'chat') renderChat();
   if (name !== 'chat') stopChatPolling();
+  if (name === 'signals') startSignalsAutoRefresh(); else stopSignalsAutoRefresh();
 }
 
 async function init() {
@@ -1285,6 +1347,7 @@ async function init() {
     if (e.key === 'Escape') {
       closeGamePanel();
       closeManualPickModal();
+      closeBetModal();
     }
   });
 
@@ -1296,6 +1359,22 @@ async function init() {
     if (e.target.closest('[data-add-manual-pick]')) openManualPickModal();
     const delBtn = e.target.closest('[data-delete-manual-pick]');
     if (delBtn) deleteManualPick(Number(delBtn.dataset.deleteManualPick));
+  });
+
+  // Bet/tracking modal wiring + delegated "+ Track" buttons on pick cards.
+  $('#betForm').addEventListener('submit', submitBet);
+  $('#betCancel').addEventListener('click', closeBetModal);
+  $('#betModal').addEventListener('click', (e) => { if (e.target === $('#betModal')) closeBetModal(); });
+  document.addEventListener('click', (e) => {
+    const trackButton = e.target.closest('[data-track]');
+    if (trackButton) openBetModal(JSON.parse(trackButton.dataset.track));
+  });
+
+  // Team-mark links on pick cards: jump straight to that matchup.
+  document.addEventListener('click', (e) => {
+    const link = e.target.closest('[data-open-game]');
+    if (!link) return;
+    openGamePanel(link.dataset.openGame, link.dataset.openDate || state.today);
   });
 
   // Account gate + topbar chip.
@@ -1365,6 +1444,7 @@ async function init() {
   }, true);
 
   renderSignals(); // Daily Picks is home
+  startSignalsAutoRefresh();
   pollStatus();
 }
 

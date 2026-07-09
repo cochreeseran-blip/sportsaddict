@@ -33,6 +33,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab active" data-view="signals">Daily Slate</button>
     <button class="tab" data-view="slate">Research</button>
+    <button class="tab" data-view="tracking">Tracking</button>
     <button class="tab" data-view="chat">Live Chat</button>
   </nav>
 
@@ -56,8 +57,42 @@
 <main id="app">
   <section id="view-signals" class="view active"></section>
   <section id="view-slate" class="view"></section>
+  <section id="view-tracking" class="view"></section>
   <section id="view-chat" class="view"></section>
 </main>
+
+<div id="betModal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-label="Track a pick">
+    <div class="modal-title" id="betModalTitle">Track a pick</div>
+    <form id="betForm">
+      <label class="field"><span>Pick</span>
+        <input type="text" id="betDesc" maxlength="300" required placeholder="e.g. Yankees ML vs Red Sox">
+      </label>
+      <div class="field-row">
+        <label class="field"><span>Odds <em>optional</em></span>
+          <input type="text" id="betOdds" inputmode="numeric" placeholder="-150" autocomplete="off">
+        </label>
+        <label class="field"><span>Stake ($)</span>
+          <input type="number" id="betStake" min="0.01" step="0.01" required placeholder="10">
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Sportsbook <em>optional</em></span>
+          <input type="text" id="betBook" maxlength="60" placeholder="DraftKings">
+        </label>
+        <label class="field"><span>Game date</span>
+          <input type="date" id="betDate" required>
+        </label>
+      </div>
+      <div class="modal-error" id="betError" hidden></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="betCancel">Cancel</button>
+        <button type="submit" class="btn primary" id="betSave">Save</button>
+      </div>
+      <div class="modal-hint" id="betHint" hidden></div>
+    </form>
+  </div>
+</div>
 
 <div id="manualPickModal" class="modal-backdrop" hidden>
   <div class="modal" role="dialog" aria-label="Add a moneyline pick">

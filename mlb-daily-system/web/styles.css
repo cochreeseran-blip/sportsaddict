@@ -78,8 +78,26 @@ body {
 .tab:hover { color: var(--text-2); background: rgba(255,255,255,0.03); }
 .tab.active { color: var(--text); background: rgba(91, 140, 255, 0.12); }
 
-.topbar-right { display: flex; align-items: center; gap: 14px; margin-left: auto; }
-.sys-status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); }
+.topbar-right { display: flex; align-items: center; gap: 14px; margin-left: auto; position: relative; }
+.sys-status {
+  display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3);
+  background: none; border: 0; padding: 4px 6px; border-radius: 7px;
+  font-family: var(--font); cursor: pointer;
+}
+.sys-status:hover { color: var(--text-2); background: rgba(255, 255, 255, 0.04); }
+
+/* click the status, the last sync's data gaps drop down */
+.status-drop {
+  position: absolute; top: calc(100% + 10px); right: 0; z-index: 80;
+  width: min(420px, 90vw);
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  padding: 13px 15px;
+}
+.status-drop .sd-title { font-weight: 700; font-size: 12.5px; margin-bottom: 7px; }
+.status-drop ul { margin: 0; padding-left: 17px; }
+.status-drop li { font-size: 12.5px; color: var(--text-2); line-height: 1.5; margin-bottom: 4px; }
+.status-drop li:last-child { margin-bottom: 0; }
 .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
 .pulse-dot.busy { background: var(--amber); animation: blink 1.2s ease-in-out infinite; }
 .pulse-dot.err { background: var(--red); }
@@ -268,6 +286,19 @@ body {
 /* rank number column */
 .rank-col { width: 26px; text-align: center; font-size: 12px; }
 
+/* expandable research rows: click a row, the breakdown drops out under it */
+tr.exp-row { cursor: pointer; }
+tr.exp-row .exp-caret { float: right; color: var(--text-3); font-size: 11px; margin-left: 8px; transition: transform 0.15s ease; display: inline-block; }
+tr.exp-row.open .exp-caret { transform: rotate(180deg); }
+tr.exp-row.open td { background: var(--panel-2); }
+tr.exp-detail td { background: rgba(0, 0, 0, 0.22); padding: 14px 16px 15px; }
+tr.exp-detail:hover td { background: rgba(0, 0, 0, 0.22); }
+.exp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 10px 22px; }
+.exp-stat .k { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); margin-bottom: 3px; }
+.exp-stat .v { font-size: 13px; color: var(--text-2); line-height: 1.45; }
+.exp-stat .v b { color: var(--text); font-weight: 700; }
+.exp-actions { margin-top: 12px; }
+
 /* strikeouts-by-start form guide */
 .form-ks { display: inline-flex; gap: 3px; align-items: center; }
 .form-ks i {
@@ -379,6 +410,31 @@ body {
 .sb-outs i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--border-strong); }
 .sb-outs i.on { background: var(--amber); border-color: var(--amber); }
 .sb-outs b { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--text-3); margin-left: 3px; }
+
+/* the screener's verdict on this game, at the bottom of the panel */
+.ml-verdict {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px;
+}
+.ml-verdict.on { border-color: rgba(52, 209, 127, 0.4); background: linear-gradient(180deg, rgba(52, 209, 127, 0.06), transparent), var(--panel); }
+.mlv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.mlv-badge {
+  display: inline-flex; align-items: center;
+  font-family: var(--font-mono, monospace); font-size: 12px; font-weight: 700;
+  color: var(--green); background: var(--green-bg);
+  border-radius: 7px; padding: 3px 9px;
+}
+.mlv-badge.dim { color: var(--text-3); background: rgba(255, 255, 255, 0.05); }
+.mlv-text { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+
+/* today's running record beside the Moneyline Board title */
+.ml-day-record {
+  font-family: var(--font-mono, monospace); font-size: 12.5px; font-weight: 700;
+  color: var(--text-2); background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+}
+.ml-day-record.up { color: var(--green); background: var(--green-bg); border-color: rgba(52, 209, 127, 0.35); }
+.ml-day-record.down { color: var(--red); background: var(--red-bg); border-color: rgba(255, 93, 108, 0.35); }
 
 /* graded moneyline cards: a colored left edge once the result is in
    (keeps the facelift's soft card shadow in the same list) */

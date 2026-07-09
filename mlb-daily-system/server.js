@@ -8,7 +8,6 @@ import { runMigrations } from './lib/migrate.js';
 import { runPipeline, todayIsoDate } from './lib/pipeline.js';
 import * as mlb from './lib/sources/mlbStats.js';
 import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
-import { listManualPicks, addManualPick, deleteManualPick } from './lib/manualPicks.js';
 import { unsubscribeAccount, sendDailyNewsletter } from './lib/newsletter.js';
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
 import { listMessages, postMessage } from './lib/chat.js';
@@ -27,15 +26,13 @@ const BUILD = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.BUILD_SHA || 'd
 
 // MLB teams usually don't post the actual starting lineup until 1-3 hours
 // before that specific game's first pitch, and games are staggered all
-// day, so no single fixed time catches everyone. Instead we run a few
-// times a day: once in the morning for schedule/odds/pitcher data (which
-// IS known well ahead of time), then twice more in the afternoon/evening
-// as lineups trickle in. Defaults: 9am, 4pm, 7pm ET. Override with a
-// comma-separated list of UTC hours, e.g. DIGEST_REFRESH_HOURS_UTC=13,20,23.
-const REFRESH_HOURS_UTC = (process.env.DIGEST_REFRESH_HOURS_UTC || '13,20,23')
-  .split(',')
-  .map((h) => Number(h.trim()))
-  .filter((h) => Number.isFinite(h) && h >= 0 && h <= 23);
+// day, so no single fixed time catches everyone. The pipeline (schedule,
+// odds, pitcher/batter form, lineups, the moneyline screen) runs at the
+// top of EVERY hour so lineups get picked up within the hour they post
+// and the research keeps moving all day. The daily email still goes out
+// once, after the morning run; NEWSLETTER_HOUR_UTC overrides when
+// (default 13 = 9 AM ET).
+const NEWSLETTER_HOUR_UTC = Number(process.env.NEWSLETTER_HOUR_UTC || 13);
 
 let isRefreshing = false;
 let refreshStartedAt = null;
@@ -65,51 +62,48 @@ async function triggerPipelineRun(gameDate = todayIsoDate()) {
   return { skipped: false };
 }
 
-function msUntilNextRun(hourUtc) {
+// Top of every hour: the full sync (schedule, odds, pitcher/batter form,
+// lineups, the moneyline screen). The newsletter fires once a day, after
+// the NEWSLETTER_HOUR_UTC run.
+function scheduleHourlyRuns() {
   const now = new Date();
-  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hourUtc, 0, 0));
-  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
-  return next - now;
-}
-
-// Human-friendly ET label for a UTC hour, computed against today's actual
-// date so it accounts for daylight saving automatically.
-function etLabel(hourUtc) {
-  const now = new Date();
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hourUtc, 0, 0));
-  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }).format(d);
-}
-
-function scheduleDailyRunAt(hourUtc) {
-  const delay = msUntilNextRun(hourUtc);
-  console.log(`Next scheduled pipeline run at ${hourUtc}:00 UTC (~${etLabel(hourUtc)} ET) in ${(delay / 3600000).toFixed(1)}h.`);
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1, 0, 0));
+  const delay = next - now;
+  console.log(`Next hourly pipeline run in ${(delay / 60000).toFixed(0)}m.`);
   setTimeout(async () => {
+    const hourUtc = new Date().getUTCHours();
     await triggerPipelineRun();
-    // Yesterday's games are final by any of these run times, settle
-    // whatever auto-gradable bets are still pending.
     try {
       const { graded, checked } = await gradePendingBets(pool);
       if (checked) console.log(`Bets: auto-graded ${graded}/${checked} pending.`);
     } catch (err) {
       console.warn(`Bet grading pass failed: ${err.message}`);
     }
-    // The earliest run of the day doubles as the newsletter send. No-op
-    // until RESEND_API_KEY / NEWSLETTER_FROM are configured.
-    if (hourUtc === Math.min(...REFRESH_HOURS_UTC)) {
+    // No-op until RESEND_API_KEY / NEWSLETTER_FROM are configured.
+    if (hourUtc === NEWSLETTER_HOUR_UTC) {
       try {
         await sendDailyNewsletter(pool, todayIsoDate());
       } catch (err) {
         console.warn(`Newsletter send failed: ${err.message}`);
       }
     }
-    scheduleDailyRunAt(hourUtc);
+    scheduleHourlyRuns();
   }, delay);
 }
 
-function scheduleDailyRuns() {
-  for (const hourUtc of REFRESH_HOURS_UTC) {
-    scheduleDailyRunAt(hourUtc);
-  }
+// Between pipeline runs, keep the moneyline board's results moving: every
+// 10 minutes grade whatever tracked picks and bets have gone final, so a
+// call flips to W/L shortly after the game ends instead of at the next
+// hourly sync.
+function startGradingLoop() {
+  setInterval(async () => {
+    try {
+      await gradePendingPicks(pool);
+      await gradePendingBets(pool);
+    } catch (err) {
+      console.warn(`Grading loop: ${err.message}`);
+    }
+  }, 10 * 60 * 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -526,7 +520,6 @@ const server = http.createServer(async (req, res) => {
         lastRunDate,
         lastRunError,
         lastRunWarnings,
-        refreshHoursEt: REFRESH_HOURS_UTC.map(etLabel),
         today: todayIsoDate(),
         build: BUILD,
       });
@@ -536,10 +529,9 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/digest') {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
-      const [digest, availableDates, manualPicks, mlResults] = await Promise.all([
+      const [digest, availableDates, mlResults] = await Promise.all([
         loadDigest(date),
         listDigestDates(),
-        listManualPicks(pool, date),
         // Graded outcomes for the date's tracked moneyline calls, so the
         // board shows W/L next to each pick once the game is final.
         pool.query(
@@ -553,7 +545,7 @@ const server = http.createServer(async (req, res) => {
           result: p.result,
         }))),
       ]);
-      sendJson(res, 200, { date, availableDates, ...digest, manualPicks, mlResults });
+      sendJson(res, 200, { date, availableDates, ...digest, mlResults });
       return;
     }
 
@@ -656,37 +648,6 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // --- manual moneyline picks -------------------------------------------
-    // A direct publish path for a pick you've researched yourself (e.g. in
-    // a separate Claude project) without waiting on or depending on the
-    // automated odds/schedule pipeline.
-    if (url.pathname === '/api/manual-picks' && req.method === 'POST') {
-      if (!(await requireUser(req, res))) return;
-      const b = await readJsonBody(req);
-      const gameDate = b.gameDate || todayIsoDate();
-      const homeTeam = String(b.homeTeam || '').trim();
-      // Optional: the game matcher fills the opponent in from the slate.
-      const awayTeam = String(b.awayTeam || '').trim() || 'TBD';
-      const homeMl = Number(b.homeMl);
-      if (!ISO_DATE_RE.test(gameDate)) return sendJson(res, 400, { error: 'bad date' });
-      if (!homeTeam) return sendJson(res, 400, { error: 'Team is required.' });
-      if (!Number.isInteger(homeMl) || Math.abs(homeMl) < 100 || Math.abs(homeMl) > 100000) {
-        return sendJson(res, 400, { error: 'Odds must be American style, e.g. -150 or +120.' });
-      }
-      const reason = b.reason ? String(b.reason).trim().slice(0, 500) : null;
-      const created = await addManualPick(pool, { gameDate, homeTeam, awayTeam, homeMl, reason });
-      sendJson(res, 201, created);
-      return;
-    }
-
-    if (url.pathname.match(/^\/api\/manual-picks\/\d+$/) && req.method === 'DELETE') {
-      if (!(await requireUser(req, res))) return;
-      const id = Number(url.pathname.split('/').pop());
-      await deleteManualPick(pool, id);
-      sendJson(res, 200, { deleted: true });
-      return;
-    }
-
     // --- newsletter unsubscribe (from the daily email's one-click link) --
     if (url.pathname === '/unsubscribe') {
       const ok = await unsubscribeAccount(pool, url.searchParams.get('token') || '');
@@ -724,7 +685,8 @@ async function start() {
   });
 
   triggerPipelineRun(); // fire-and-forget initial populate
-  scheduleDailyRuns();
+  scheduleHourlyRuns();
+  startGradingLoop();
 }
 
 start().catch((err) => {

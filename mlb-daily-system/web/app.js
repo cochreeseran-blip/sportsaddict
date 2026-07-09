@@ -51,6 +51,7 @@ const state = {
   signalsDate: null,
   researchDate: null,
   slateCache: new Map(),
+  digestCache: new Map(),
   user: null,
 };
 
@@ -181,12 +182,13 @@ function form5Html(results) {
   return `<span class="form5">${results.map((hit) => `<i class="${hit ? 'hit' : ''}"></i>`).join('')}</span>`;
 }
 
+// Confirmed gets a pill; anything short of confirmed says nothing, the
+// lineup section itself already reads "not posted yet" until it's real.
 function lineupPill(confirmed, confirmedAt) {
   if (confirmed === true) {
     const when = confirmedAt ? ` · ${etDateTime(confirmedAt)}` : '';
     return `<span class="pill ok"><span class="pill-dot"></span>Lineup confirmed${esc(when)}</span>`;
   }
-  if (confirmed === false) return '<span class="pill warn"><span class="pill-dot"></span>Projected lineup</span>';
   return '';
 }
 
@@ -244,19 +246,42 @@ function skeletonPanel() {
 // promises. Free for now, this is the part that pay-gates later.
 
 // Hot bats vs beatable arms: the ranked hitter pool with all the numbers
-// the screener used, batting form, streak, and the arm he's facing.
-function hitterResearchTable(hs) {
+// the screener used. Every row expands: click it and the full breakdown
+// drops out underneath (form, streak, the arm he's facing, lineup state),
+// with a jump straight into that game's panel.
+function hitterDetailRow(b, date) {
+  const stat = (k, v) => `<div class="exp-stat"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const era = b.opposingStarterTrailingEra;
+  const arm = b.opposingStarterName
+    ? `${esc(b.opposingStarterName)}${era !== null && era !== undefined ? `, ${fmtNum(era)} ERA over his last starts` : ', no ERA data yet'}`
+    : 'Starter not announced yet';
+  return `
+    <tr class="exp-detail" hidden><td colspan="6">
+      <div class="exp-grid">
+        ${stat('Batting form', b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<b class="mono">${fmtNum(b.trailing15Avg, 3)}</b> over his last 15 games` : 'No trailing average yet')}
+        ${stat('Hit streak', b.hitStreak >= 2 ? `<b class="mono">${b.hitStreak}</b> straight games with a hit` : 'No active streak')}
+        ${stat('Last 5 games', `${form5Html(b.last5Results)} <span class="faint">hit / no hit</span>`)}
+        ${stat('The matchup', arm)}
+        ${stat('Arm quality', era !== null && era !== undefined ? (b.weakerArm ? 'Beatable: this arm has been giving up runs' : 'Tough: this arm has been sharp lately') : 'Unknown until he has made a start')}
+        ${stat('Lineup', b.lineupConfirmed ? 'Officially in today’s lineup' : 'Not posted yet, check back closer to first pitch')}
+      </div>
+      ${b.mlbGameId ? `<div class="exp-actions"><button class="btn small" data-open-game="${esc(b.mlbGameId)}" data-open-date="${esc(date)}">Open this game</button></div>` : ''}
+    </td></tr>`;
+}
+
+function hitterResearchTable(hs, date) {
   const list = hs?.watchList || [];
   if (!list.length) return '';
   const rows = list.map((b, i) => `
-    <tr class="${b.highConfidence ? 'hc' : ''}">
+    <tr class="exp-row ${b.highConfidence ? 'hc' : ''}" data-exp>
       <td class="rank-col mono">${i + 1}</td>
       <td>${playerCell(b, b.highConfidence ? '<span class="pill info"><span class="pill-dot"></span>Prime matchup</span>' : '')}</td>
       <td class="mono">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<strong>${fmtNum(b.trailing15Avg, 3)}</strong>` : '-'}</td>
       <td class="mono">${b.hitStreak >= 2 ? `${b.hitStreak}` : '-'}</td>
       <td>${form5Html(b.last5Results)}</td>
-      <td>${opposingStarterCell(b)}</td>
-    </tr>`).join('');
+      <td>${opposingStarterCell(b)}<span class="exp-caret" aria-hidden="true">▾</span></td>
+    </tr>
+    ${hitterDetailRow(b, date)}`).join('');
   return `
     <div class="table-wrap">
       <table class="data-table">
@@ -309,6 +334,7 @@ async function renderResearch() {
     const date = state.researchDate || state.today;
     const d = await api(`/api/digest?date=${date}`);
     state.researchDate = d.date;
+    state.digestCache.set(d.date, d);
 
     if (isBeforeGoLive(d.date)) {
       host.innerHTML = `<div class="section-head"><h2 class="section-title">Research</h2></div>` +
@@ -333,12 +359,11 @@ async function renderResearch() {
 
       <div class="signals-toolbar">
         <select class="date-select" id="researchDate">${dateOptions}</select>
-        <span class="toolbar-note">${esc(longDate(d.date))}${d.updatedAt ? ` · ran ${esc(fmtRunTime(d.updatedAt))}` : ''}</span>
       </div>
 
       <h2 class="board-title">Hot bats vs beatable arms${count(hitCount)}</h2>
       <p class="section-sub">Ranked by recent batting form against how the opposing starter has actually been throwing. Confirm the lineup before reading anything into it.</p>
-      ${hitterResearchTable(d.hitStreak) || emptyHtml('No standout bats', 'Nobody cleared the hot-bat bar against a beatable arm today.')}
+      ${hitterResearchTable(d.hitStreak, d.date) || emptyHtml('No standout bats', 'Nobody cleared the hot-bat bar against a beatable arm today.')}
 
       <h2 class="board-title">Strikeout floors${count(koCount)}</h2>
       <p class="section-sub">Starters who reached the same strikeout count in every one of their recent starts. The floor is history, not a guarantee.</p>
@@ -467,6 +492,48 @@ function scorebugHtml(live) {
     ${live.batterName ? `<div class="gp-live-now"><span class="lu-ball">⚾</span> ${esc(live.batterName)} at the plate${live.onDeckName ? ` · ${esc(live.onDeckName)} on deck` : ''}</div>` : ''}`;
 }
 
+// The screener's verdict on this specific game: on the board (with its
+// result once graded), or the plain-English reason it didn't qualify.
+// Reads the digest already cached by the board; falls back to a fetch
+// when the panel opens on a date the board hasn't loaded.
+async function moneylineVerdictBlock(gamePk, date) {
+  if (isBeforeGoLive(date)) return ''; // today's board isn't public before 9 AM ET
+  let d = state.digestCache.get(date);
+  if (!d) {
+    try {
+      d = await api(`/api/digest?date=${date}`);
+      state.digestCache.set(date, d);
+    } catch { return ''; }
+  }
+  const idStr = String(gamePk);
+  const pick = (d.moneyline?.picks || []).find((p) => String(p.mlbGameId) === idStr);
+  if (pick) {
+    const result = (d.mlResults || []).find((r) => String(r.mlbGameId) === idStr)?.result ?? null;
+    const edge = pick.eraEdge !== null && pick.eraEdge !== undefined ? fmtNum(pick.eraEdge) : null;
+    return `
+      <div class="gp-block">
+        <div class="gp-block-title">Moneyline screen</div>
+        <div class="ml-verdict on">
+          <div class="mlv-head"><span class="mlv-badge">${esc(pick.homeTeam)} ML${pick.homeMl !== null && pick.homeMl !== undefined ? ` ${fmtOdds(pick.homeMl)}` : ''}</span>${resultChip(result)}</div>
+          <div class="mlv-text">${edge ? `${esc(pick.homeStarterName ?? 'The home starter')}'s ERA is ${edge} runs better than ${esc(pick.awayStarterName ?? 'the visitor')}'s (${esc(pick.eraBasis || '')}).` : 'On today’s board.'}</div>
+        </div>
+      </div>`;
+  }
+  const other = (d.moneyline?.otherGames || []).find((g) => String(g.mlbGameId) === idStr);
+  if (other && other.reason) {
+    const sentence = other.reason.charAt(0).toUpperCase() + other.reason.slice(1);
+    return `
+      <div class="gp-block">
+        <div class="gp-block-title">Moneyline screen</div>
+        <div class="ml-verdict off">
+          <div class="mlv-head"><span class="mlv-badge dim">Not on the board</span></div>
+          <div class="mlv-text">${esc(sentence)}.</div>
+        </div>
+      </div>`;
+  }
+  return '';
+}
+
 // While the panel is open on a live game it re-fetches itself every 60s
 // so the score, scorebug, and the at-bat baseball keep moving.
 let panelTimer = null;
@@ -490,7 +557,10 @@ async function openGamePanel(gamePk, date, silent = false) {
   const slateGame = (state.slateCache.get(date)?.games || []).find((g) => String(g.gamePk) === String(gamePk));
 
   try {
-    const d = await api(`/api/game?gamePk=${gamePk}&date=${date}`);
+    const [d, mlBlock] = await Promise.all([
+      api(`/api/game?gamePk=${gamePk}&date=${date}`),
+      moneylineVerdictBlock(gamePk, date), // never throws, '' when unknown
+    ]);
     // The user closed it (or opened another game) while we were fetching.
     if (panelOpenKey !== `${gamePk}:${date}`) return;
     const away = slateGame?.away || { id: d.away.teamId, name: d.away.teamName };
@@ -566,7 +636,9 @@ async function openGamePanel(gamePk, date, silent = false) {
         <div class="gp-block-title">${esc(home.name || 'Home')} lineup</div>
         <div style="margin-bottom:10px">${luMeta(d.home.posted, home.name)}</div>
         ${lineupRows(d.home, live)}
-      </div>`;
+      </div>
+
+      ${mlBlock}`;
     $('#gpClose').addEventListener('click', closeGamePanel);
     if (silent) panel.scrollTop = panelScroll;
     // Keep a live game's panel moving: score, lines, and the baseball.
@@ -589,61 +661,6 @@ function closeGamePanel() {
   $('#panelOverlay').classList.remove('open');
   $('#gamePanel').setAttribute('aria-hidden', 'true');
 }
-
-// ---------------------------------------------------------------------------
-// MANUAL MONEYLINE PICKS
-// A direct publish path: add a pick you researched yourself without
-// waiting on or depending on the automated odds/schedule pipeline.
-function openManualPickModal() {
-  const modal = $('#manualPickModal');
-  $('#mpHomeTeam').value = '';
-  $('#mpAwayTeam').value = '';
-  $('#mpHomeMl').value = '';
-  $('#mpDate').value = state.signalsDate || state.today;
-  $('#mpReason').value = '';
-  $('#mpError').hidden = true;
-  $('#mpHint').hidden = true;
-  $('#mpSave').disabled = false;
-  modal.hidden = false;
-  $('#mpHomeTeam').focus();
-}
-
-function closeManualPickModal() { $('#manualPickModal').hidden = true; }
-
-async function submitManualPick(e) {
-  e.preventDefault();
-  const oddsRaw = $('#mpHomeMl').value.trim().replace(/^\+/, '');
-  const payload = {
-    homeTeam: $('#mpHomeTeam').value.trim(),
-    awayTeam: $('#mpAwayTeam').value.trim(),
-    homeMl: Number(oddsRaw),
-    gameDate: $('#mpDate').value,
-    reason: $('#mpReason').value.trim() || null,
-  };
-  const err = $('#mpError');
-  try {
-    $('#mpSave').disabled = true;
-    await apiSend('/api/manual-picks', 'POST', payload);
-    const hint = $('#mpHint');
-    hint.textContent = 'Added to the Moneyline section.';
-    hint.hidden = false;
-    setTimeout(() => {
-      closeManualPickModal();
-      if (state.view === 'signals') renderSignals();
-    }, 550);
-  } catch (ex) {
-    $('#mpSave').disabled = false;
-    err.textContent = ex.message;
-    err.hidden = false;
-  }
-}
-
-async function deleteManualPick(id) {
-  if (!confirm('Remove this manual pick?')) return;
-  await apiSend(`/api/manual-picks/${id}`, 'DELETE');
-  renderSignals();
-}
-
 
 // ---------------------------------------------------------------------------
 // SIGNALS VIEW
@@ -739,48 +756,6 @@ function moneylineCards(ml, resultByGame = null) {
   }).join('')}</div>`;
 }
 
-function manualPickCards(picks) {
-  if (!picks?.length) return '';
-  return `<div class="sig-cards">${picks.map((p) => `
-    <div class="sig-card manual">
-      <div class="sig-head">
-        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam)} <span class="manual-tag">Manual</span></span>
-        <span class="sig-odds">${fmtOdds(p.homeMl)}</span>
-      </div>
-      <div class="sig-sub">To beat ${esc(p.awayTeam)}.${p.reason ? ` ${esc(p.reason)}` : ''}</div>
-      <div class="sig-note">Break-even ${p.breakevenPct !== null && p.breakevenPct !== undefined ? (p.breakevenPct * 100).toFixed(1) + '%' : '-'}</div>
-      <div style="margin-top:10px">
-        <button class="btn ghost small" data-delete-manual-pick="${p.id}">Remove</button>
-      </div>
-    </div>`).join('')}</div>`;
-}
-
-function nearMissCards(otherGames) {
-  if (!otherGames?.length) return '';
-  return `
-    <div class="sig-cards">${otherGames.map((g) => `
-      <div class="sig-card miss">
-        <div class="sig-head">
-          <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, g.homeTeam, 26)} ${esc(g.awayTeam)} at ${esc(g.homeTeam)}</span>
-          <span class="sig-odds dim mono">${fmtOdds(g.homeMl)}</span>
-        </div>
-        <div class="sig-sub">${esc(g.reason)}</div>
-      </div>`).join('')}</div>`;
-}
-
-function digestWarningBanner(warnings) {
-  if (!warnings?.length) return '';
-  const items = warnings.map((w) => `<li>${esc(w)}</li>`).join('');
-  return `
-    <div class="digest-warning">
-      <span class="dot"></span>
-      <div>
-        <strong>Heads up · ${warnings.length} data gap${warnings.length === 1 ? '' : 's'} today</strong>
-        <ul>${items}</ul>
-      </div>
-    </div>`;
-}
-
 function opposingStarterCell(b) {
   return `${esc(b.opposingStarterName ?? 'TBD')}${
     b.opposingStarterTrailingEra !== null && b.opposingStarterTrailingEra !== undefined
@@ -860,8 +835,10 @@ async function renderSignals(silent = false) {
       api('/api/performance').catch(() => null), // strip is optional, never blocks the page
     ]);
     state.signalsDate = d.date;
-    // The game panel reads team ids/records/status out of this cache.
+    // The game panel reads team ids/records/status out of this cache, and
+    // the moneyline verdict block reads the digest.
     state.slateCache.set(d.date, slate);
+    state.digestCache.set(d.date, d);
 
     const dateOptions = (d.availableDates.length ? d.availableDates : [d.date])
       .map((dd) => `<option value="${dd}" ${dd === d.date ? 'selected' : ''}>${dd}</option>`).join('');
@@ -875,34 +852,33 @@ async function renderSignals(silent = false) {
     // board itself is published by the 9 AM ET run and gated before then.
     const gated = isBeforeGoLive(d.date);
     const resultByGame = new Map((d.mlResults || []).map((r) => [String(r.mlbGameId), r.result]));
-    const mlCount = gated ? null : (d.moneyline?.picks?.length || 0) + (d.manualPicks?.length || 0);
+    const mlCount = gated ? null : (d.moneyline?.picks?.length || 0);
+    // Today so far, straight off the tracked ledger for this date.
+    let dayW = 0, dayL = 0, dayPend = 0;
+    for (const r of d.mlResults || []) {
+      if (r.result === 'win') dayW++;
+      else if (r.result === 'loss') dayL++;
+      else if (r.result === 'pending') dayPend++;
+    }
+    const dayRecord = !gated && (dayW + dayL + dayPend) > 0
+      ? `<span class="ml-day-record${dayW > dayL ? ' up' : dayL > dayW ? ' down' : ''}">${dayW}–${dayL}${dayPend ? ` · ${dayPend} pending` : ''}</span>`
+      : '';
     const mlBody = gated
       ? goLiveGate('gateSeeYesterday', 'The moneyline board is published with the 9 AM ET run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
-      : manualPickCards(d.manualPicks) +
-        (moneylineCards(d.moneyline, resultByGame) || emptyHtml('No qualifying moneyline today', 'No home team is priced +100 to -250 with a 2+ run starting-pitcher ERA edge. Sitting out is a position too.'));
+      : (moneylineCards(d.moneyline, resultByGame) || emptyHtml('No qualifying moneyline today', 'No home team is priced +100 to -250 with a 2+ run starting-pitcher ERA edge. Sitting out is a position too.'));
 
     host.innerHTML = `
       ${yesterdayStrip(perf, d.date)}
 
       <div class="signals-toolbar">
         <select class="date-select" id="signalsDate">${dateOptions}</select>
-        <span class="toolbar-note">${esc(longDate(d.date))}${d.updatedAt ? ` · board ran ${esc(fmtRunTime(d.updatedAt))}` : ''}</span>
-        <span class="toolbar-note" style="margin-left:auto">Tap a game for lineups &amp; live at-bats</span>
       </div>
 
       <h2 class="board-title">Games<span class="board-count">${games.length}</span></h2>
       ${gamesHtml}
 
-      <div class="board-head">
-        <h2 class="board-title">Moneyline Board${mlCount !== null ? `<span class="board-count">${mlCount}</span>` : ''}</h2>
-        <button class="btn small" data-add-manual-pick>Add a pick</button>
-      </div>
-      ${mlBody}
-
-      ${gated ? '' : `<h2 class="board-title">Close Calls</h2>` +
-        (nearMissCards(d.moneyline.otherGames) || emptyHtml('No close calls', 'Nothing else came near the cut today.'))}
-
-      ${digestWarningBanner(d.warnings)}`;
+      <h2 class="board-title">Moneyline Board${mlCount !== null ? `<span class="board-count">${mlCount}</span>` : ''}${dayRecord}</h2>
+      ${mlBody}`;
 
     $('#signalsDate').addEventListener('change', (e) => {
       state.signalsDate = e.target.value;
@@ -1029,6 +1005,22 @@ function renderChat() {
 // ---------------------------------------------------------------------------
 // STATUS + REFRESH
 let statusTimer = null;
+// Latest sync warnings; the topbar status is a button that drops these
+// down instead of a banner sitting at the bottom of the board.
+let lastWarningsList = [];
+
+function toggleStatusDrop(forceClose = false) {
+  const drop = $('#statusDrop');
+  if (!drop) return;
+  if (forceClose || !drop.hidden) {
+    drop.hidden = true;
+    return;
+  }
+  drop.innerHTML = lastWarningsList.length
+    ? `<div class="sd-title">Data gaps on the last sync</div><ul>${lastWarningsList.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`
+    : `<div class="sd-title">All clear</div><ul><li>The last sync finished with no data gaps.</li></ul>`;
+  drop.hidden = false;
+}
 async function pollStatus(fast = false) {
   clearTimeout(statusTimer);
   try {
@@ -1056,6 +1048,7 @@ async function pollStatus(fast = false) {
       state.slateCache.clear();
       showView(state.view, true);
     }
+    lastWarningsList = s.lastRunWarnings || [];
     if (s.lastRunError) {
       dot.className = 'pulse-dot err';
       txt.textContent = 'Last refresh failed';
@@ -1063,7 +1056,7 @@ async function pollStatus(fast = false) {
     } else if (s.lastRunWarnings && s.lastRunWarnings.length) {
       dot.className = 'pulse-dot warn';
       txt.textContent = `Updated with ${s.lastRunWarnings.length} warning${s.lastRunWarnings.length === 1 ? '' : 's'}`;
-      txt.title = s.lastRunWarnings.join('\n');
+      txt.title = 'Click for details';
     } else if (s.lastRunAt) {
       dot.className = 'pulse-dot';
       txt.textContent = `Updated ${new Date(s.lastRunAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
@@ -1101,20 +1094,7 @@ async function init() {
   });
   $('#panelOverlay').addEventListener('click', closeGamePanel);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      closeGamePanel();
-      closeManualPickModal();
-    }
-  });
-
-  // Manual pick modal wiring + delegated add/delete buttons.
-  $('#manualPickForm').addEventListener('submit', submitManualPick);
-  $('#mpCancel').addEventListener('click', closeManualPickModal);
-  $('#manualPickModal').addEventListener('click', (e) => { if (e.target === $('#manualPickModal')) closeManualPickModal(); });
-  document.addEventListener('click', (e) => {
-    if (e.target.closest('[data-add-manual-pick]')) openManualPickModal();
-    const delBtn = e.target.closest('[data-delete-manual-pick]');
-    if (delBtn) deleteManualPick(Number(delBtn.dataset.deleteManualPick));
+    if (e.key === 'Escape') closeGamePanel();
   });
 
   // Team-mark links on pick cards: jump straight to that matchup.
@@ -1158,6 +1138,24 @@ async function init() {
     if (e.target.closest('button, a')) return;
     const card = e.target.closest('[data-expand]');
     if (card) card.classList.toggle('open');
+    // Research rows: tap a row, its full breakdown drops out underneath.
+    const row = e.target.closest('tr[data-exp]');
+    if (row) {
+      const detail = row.nextElementSibling;
+      if (detail?.classList.contains('exp-detail')) {
+        detail.hidden = !detail.hidden;
+        row.classList.toggle('open', !detail.hidden);
+      }
+    }
+  });
+
+  // Topbar status doubles as the warnings dropdown.
+  $('#sysStatus').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleStatusDrop();
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#statusDrop')) toggleStatusDrop(true);
   });
 
   // Image fallbacks: swap any failed logo/headshot for its initials badge.

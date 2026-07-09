@@ -6,7 +6,6 @@ export const BAND_HIGH = 100;
 // How many runs better (lower) the home starter's ERA must be than the
 // visitor's to qualify. "Facing a worse ERA by 2 runs", per the sketch.
 const ERA_EDGE_MIN = 2.0;
-const MAX_OTHER_GAMES = 6;
 
 // The moneyline screener, in the order the research is actually done:
 //   1. all of today's games
@@ -146,10 +145,11 @@ export async function runMoneylineFilter(pool, gameDate) {
   const picks = qualifying;
   const pickIds = new Set(picks.map((p) => p.gameId));
 
+  // Every non-qualifying game, each with its why-not sentence. The game
+  // panel shows the reason when you open that game from the Daily Slate.
   const otherGames = evaluated
     .filter((g) => !pickIds.has(g.gameId))
     .sort((a, b) => a.closeness - b.closeness)
-    .slice(0, MAX_OTHER_GAMES)
     .map(({ gameId, qualifies, closeness, ...g }) => g);
 
   return {

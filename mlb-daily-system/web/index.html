@@ -37,10 +37,11 @@
   </nav>
 
   <div class="topbar-right">
-    <div class="sys-status" id="sysStatus">
+    <button class="sys-status" id="sysStatus" type="button">
       <span class="pulse-dot" id="statusDot"></span>
       <span id="statusText">Connecting</span>
-    </div>
+    </button>
+    <div class="status-drop" id="statusDrop" hidden></div>
     <button class="btn-refresh" id="refreshBtn">
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1v3.5H10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span>Refresh</span>
@@ -58,39 +59,6 @@
   <section id="view-slate" class="view"></section>
   <section id="view-chat" class="view"></section>
 </main>
-
-<div id="manualPickModal" class="modal-backdrop" hidden>
-  <div class="modal" role="dialog" aria-label="Add a moneyline pick">
-    <div class="modal-title">Add a moneyline pick</div>
-    <form id="manualPickForm">
-      <div class="field-row">
-        <label class="field"><span>Team to win (home)</span>
-          <input type="text" id="mpHomeTeam" maxlength="60" required placeholder="e.g. baltimore">
-        </label>
-        <label class="field"><span>Opponent <em>optional</em></span>
-          <input type="text" id="mpAwayTeam" maxlength="60" placeholder="filled in automatically">
-        </label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Home odds</span>
-          <input type="text" id="mpHomeMl" inputmode="numeric" required placeholder="-150" autocomplete="off">
-        </label>
-        <label class="field"><span>Game date</span>
-          <input type="date" id="mpDate" required>
-        </label>
-      </div>
-      <label class="field"><span>Reason <em>optional</em></span>
-        <input type="text" id="mpReason" maxlength="500" placeholder="Why this pick">
-      </label>
-      <div class="modal-error" id="mpError" hidden></div>
-      <div class="modal-actions">
-        <button type="button" class="btn ghost" id="mpCancel">Cancel</button>
-        <button type="submit" class="btn primary" id="mpSave">Save pick</button>
-      </div>
-      <div class="modal-hint" id="mpHint" hidden></div>
-    </form>
-  </div>
-</div>
 
 <aside id="gamePanel" class="game-panel" aria-hidden="true">
   <div class="game-panel-inner" id="gamePanelInner"></div>

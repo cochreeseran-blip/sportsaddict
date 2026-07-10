@@ -9,11 +9,22 @@ import { runPipeline, todayIsoDate } from './lib/pipeline.js';
 import * as mlb from './lib/sources/mlbStats.js';
 import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
 import { unsubscribeAccount, sendDailyNewsletter } from './lib/newsletter.js';
-import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
+import {
+  createUser, authenticate, createSession, destroySession, userForSession, touchLastSeen,
+  parseCookies, sessionCookie, ensureAuthSchema,
+} from './lib/auth.js';
 import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
 import { gradePendingPicks } from './lib/trackedPicks.js';
-import { GO_LIVE_HOUR_UTC } from './lib/goLive.js';
+import { requireAdmin } from './lib/adminAuth.js';
+import { listAlgorithmPicks, publishPick } from './lib/publishing.js';
+import { buildDualRecord, MIN_GRADED_FOR_RATE } from './lib/record.js';
+import { applyTierGate } from './lib/tierGate.js';
+import { pullClosingLines } from './lib/closingLine.js';
+import {
+  marketingAudience, marketingAudienceCount, audienceToCsv, publishedPicksForDate,
+  sendAdminEmail, unsubscribeMarketing,
+} from './lib/adminEmail.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,16 +36,32 @@ const PORT = process.env.PORT || 3000;
 // deploy actually land?" is answerable at a glance.
 const BUILD = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.BUILD_SHA || 'dev').slice(0, 7);
 
-// MLB teams usually don't post the actual starting lineup until 1-3 hours
-// before that specific game's first pitch, and games are staggered all
-// day, so no single fixed time catches everyone. The pipeline (schedule,
-// odds, pitcher/batter form, lineups, the moneyline screen) runs at the
-// top of EVERY hour so lineups get picked up within the hour they post
-// and the research keeps moving all day. The daily email still goes out
-// once, after the morning run, at GO_LIVE_HOUR_UTC (see lib/goLive.js);
-// the same hour is also when the pipeline freezes the moneyline board for
-// the day.
-const NEWSLETTER_HOUR_UTC = GO_LIVE_HOUR_UTC;
+// The daily research email still goes out once a day, after this hour.
+// There's no more "go-live"/freeze tied to this — publishing is now a
+// manual admin decision (see /admin/slate), not something that happens
+// automatically at a clock time, so this constant now controls exactly
+// one thing: when the automated research digest fires.
+const NEWSLETTER_HOUR_UTC = Number(process.env.NEWSLETTER_HOUR_UTC || 13); // 13 UTC = 9am ET
+
+// The Odds API free tier is 500 requests/month. Odds get fetched at most
+// TWICE a day, on a clock, full stop:
+//   1. MORNING_ODDS_HOUR_UTC: the day's opening line, feeds the moneyline
+//      screen for the rest of the day. Default 10 UTC = 6am ET, well
+//      before a typical 9am-ish review — "leaving real review time
+//      before anything publishes" is now mostly automatic anyway, since
+//      NOTHING auto-publishes anymore, but an early, fully-populated
+//      board still matters for the admin actually having something
+//      worth reviewing that early.
+//   2. CLOSING_LINE_HOUR_UTC: one pull near typical evening first pitches
+//      for closing-line value on published picks (see lib/closingLine.js).
+//      This is a once-a-day approximation, not per-game-precise — MLB
+//      games start anywhere from early afternoon to 10pm ET, and a
+//      twice-a-day budget doesn't allow chasing each one individually.
+//      Default 23 UTC = 7pm ET/6pm EDT, mid-pack for a typical slate.
+// Every hourly run in between passes fetchOdds:false to runPipeline and
+// never touches the Odds API, see the fetchOdds note on runPipeline.
+const MORNING_ODDS_HOUR_UTC = Number(process.env.MORNING_ODDS_HOUR_UTC || 10);
+const CLOSING_LINE_HOUR_UTC = Number(process.env.CLOSING_LINE_HOUR_UTC || 23);
 
 let isRefreshing = false;
 let refreshStartedAt = null;
@@ -43,12 +70,12 @@ let lastRunError = null;
 let lastRunWarnings = [];
 let lastRunDate = null;
 
-async function triggerPipelineRun(gameDate = todayIsoDate()) {
+async function triggerPipelineRun(gameDate = todayIsoDate(), { fetchOdds = false } = {}) {
   if (isRefreshing) return { skipped: true };
   isRefreshing = true;
   refreshStartedAt = new Date();
   try {
-    const result = await runPipeline(gameDate);
+    const result = await runPipeline(gameDate, { fetchOdds });
     lastRunAt = new Date();
     lastRunDate = gameDate;
     lastRunError = null;
@@ -64,9 +91,11 @@ async function triggerPipelineRun(gameDate = todayIsoDate()) {
   return { skipped: false };
 }
 
-// Top of every hour: the full sync (schedule, odds, pitcher/batter form,
-// lineups, the moneyline screen). The newsletter fires once a day, after
-// the NEWSLETTER_HOUR_UTC run.
+// Top of every hour: the full MLB-Stats-only sync (schedule, pitcher/
+// batter form, lineups, Savant, the moneyline screen re-evaluated against
+// whatever price is already on file). fetchOdds is true only at
+// MORNING_ODDS_HOUR_UTC, see the budget note above. The research
+// newsletter fires once a day, after the NEWSLETTER_HOUR_UTC run.
 function scheduleHourlyRuns() {
   const now = new Date();
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1, 0, 0));
@@ -74,7 +103,7 @@ function scheduleHourlyRuns() {
   console.log(`Next hourly pipeline run in ${(delay / 60000).toFixed(0)}m.`);
   setTimeout(async () => {
     const hourUtc = new Date().getUTCHours();
-    await triggerPipelineRun();
+    await triggerPipelineRun(todayIsoDate(), { fetchOdds: hourUtc === MORNING_ODDS_HOUR_UTC });
     try {
       const { graded, checked } = await gradePendingBets(pool);
       if (checked) console.log(`Bets: auto-graded ${graded}/${checked} pending.`);
@@ -89,14 +118,23 @@ function scheduleHourlyRuns() {
         console.warn(`Newsletter send failed: ${err.message}`);
       }
     }
+    if (hourUtc === CLOSING_LINE_HOUR_UTC) {
+      try {
+        const r = await pullClosingLines(pool, todayIsoDate());
+        console.log(`Closing line: ${JSON.stringify(r)}`);
+      } catch (err) {
+        console.warn(`Closing line pull failed: ${err.message}`);
+      }
+    }
     scheduleHourlyRuns();
   }, delay);
 }
 
-// Between pipeline runs, keep the moneyline board's results moving: every
-// 10 minutes grade whatever tracked picks and bets have gone final, so a
-// call flips to W/L shortly after the game ends instead of at the next
-// hourly sync.
+// Between pipeline runs, keep the record moving: every 10 minutes grade
+// whatever tracked picks and bets have gone final, so a call flips to W/L
+// shortly after the game ends instead of at the next hourly sync. This
+// never touches the Odds API (see gradePendingPicks / mlb.fetchGameResult,
+// both MLB-Stats-only), so it isn't part of the twice-a-day odds budget.
 function startGradingLoop() {
   setInterval(async () => {
     try {
@@ -304,12 +342,14 @@ async function buildPerformance() {
              count(*) FILTER (WHERE result = 'pending') AS pending,
              avg(breakeven_pct) FILTER (WHERE result IN ('win', 'loss') AND breakeven_pct IS NOT NULL) AS avg_breakeven
       FROM tracked_picks
+      WHERE published = true
       GROUP BY signal_type
       ORDER BY signal_type
     `),
     pool.query(`
       SELECT game_date, signal_type, mlb_game_id, description, locked_price, breakeven_pct, result
       FROM tracked_picks
+      WHERE published = true
       ORDER BY game_date DESC, id DESC
       LIMIT 100
     `),
@@ -339,12 +379,15 @@ async function buildPerformance() {
 
 // ---------------------------------------------------------------------------
 // Static assets: the SlateFinder single-page app. Whitelisted files only -
-// no directory traversal surface.
+// no directory traversal surface. admin.html/admin.js are NOT in this map:
+// they're gated by an admin-session check, see the /admin route below,
+// not served as a plain static file to anyone who asks.
 const STATIC_FILES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
+  '/admin.js': { file: 'admin.js', type: 'text/javascript; charset=utf-8' },
 };
 
 function sendJson(res, status, body) {
@@ -356,8 +399,8 @@ function sendJson(res, status, body) {
 // Security helpers.
 
 // Per-IP sliding-window rate limiter for the abuse-prone endpoints (login
-// brute force, signup/subscribe spam). In-memory is fine for a single
-// Railway instance; entries expire as they age out of the window.
+// brute force, signup spam, publish/send spam). In-memory is fine for a
+// single Railway instance; entries expire as they age out of the window.
 const rateBuckets = new Map();
 function rateLimited(req, key, maxHits, windowMs) {
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
@@ -375,15 +418,18 @@ function rateLimited(req, key, maxHits, windowMs) {
   return hits.length > maxHits;
 }
 
-// Mutating endpoints (bets, manual picks, refresh) require a logged-in
-// session, without this, anyone on the internet could delete bets or
-// publish picks onto the site. Read-only research data stays public.
+// Mutating endpoints (bets, refresh) require a logged-in session, without
+// this, anyone on the internet could delete bets or force a refresh.
+// Read-only research data stays public. Touches last_seen_at (throttled
+// server-side to 1/hr, see lib/auth.js) so every authenticated call also
+// counts as activity for the admin Users panel, not just page loads.
 async function requireUser(req, res) {
   const user = await userForSession(pool, parseCookies(req).sf_session);
   if (!user) {
     sendJson(res, 401, { error: 'Log in to do that.' });
     return null;
   }
+  touchLastSeen(pool, user.id).catch(() => {});
   return user;
 }
 
@@ -408,6 +454,51 @@ function readJsonBody(req, limit = 64 * 1024) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// /record: the dual public track record, server-rendered (not part of the
+// SPA bundle) since it's meant to be a shareable, self-contained trust
+// page. See lib/record.js for what ALGORITHM vs PUBLISHED means and why
+// both are shown, always, unfiltered.
+function fmtPct(n) {
+  return n === null || n === undefined ? '—' : `${(n * 100).toFixed(1)}%`;
+}
+function recordBlockHtml(title, blurb, s) {
+  const rateLine = s.sampleTooSmall
+    ? `<span class="rec-note">(sample too small for a rate, ${s.graded}/${MIN_GRADED_FOR_RATE} graded)</span>`
+    : `<span class="rec-rate">${fmtPct(s.winRate)} win rate</span>`;
+  return `
+    <div class="rec-block">
+      <h2>${title}</h2>
+      <p class="rec-blurb">${blurb}</p>
+      <div class="rec-line"><b>${s.wins}-${s.losses}${s.pushes ? `-${s.pushes}` : ''}</b> ${rateLine}</div>
+      <div class="rec-meta">${s.graded} graded &middot; ${s.pending} pending${s.avgRequiredBreakeven !== null ? ` &middot; avg required win rate to break even: ${fmtPct(s.avgRequiredBreakeven)}` : ''}</div>
+    </div>`;
+}
+function renderRecordPage(record) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Slatefinder — Track Record</title>
+  <style>
+    body{margin:0;padding:32px 16px 60px;background:#101216;color:#e7e9ee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+    .wrap{max-width:640px;margin:0 auto}
+    h1{font-size:22px;margin:0 0 6px}
+    .sub{color:#9ba3b0;font-size:13px;margin:0 0 28px;line-height:1.5}
+    .rec-block{background:#16181d;border:1px solid #262a32;border-radius:10px;padding:20px 22px;margin-bottom:16px}
+    .rec-block h2{font-size:15px;margin:0 0 6px}
+    .rec-blurb{color:#9ba3b0;font-size:12.5px;margin:0 0 14px;line-height:1.5}
+    .rec-line{font-size:20px;margin-bottom:6px}
+    .rec-rate{color:#5b9cff;font-size:14px;margin-left:8px}
+    .rec-note{color:#6b7380;font-size:12.5px;margin-left:8px}
+    .rec-meta{color:#6b7380;font-size:12px}
+    .disclaim{color:#6b7380;font-size:11.5px;margin-top:24px;line-height:1.6}
+    a{color:#5b9cff}
+  </style></head><body><div class="wrap">
+    <h1>Track Record</h1>
+    <p class="sub">Two records, both always visible, neither one hidden or pruned. This is the whole point of the product.</p>
+    ${recordBlockHtml('Picks I actually called', 'Only the moneyline picks an admin chose to publish. This is what Slatefinder actually told people to bet.', record.published)}
+    ${recordBlockHtml('Every pick the screener generated, including ones I passed on', 'Every moneyline the algorithm flagged as qualifying, published or not. This is the only honest way to check whether the filter itself works, independent of editorial judgment.', record.algorithm)}
+    <p class="disclaim">Research signals only, not betting advice. Win rates below a ${MIN_GRADED_FOR_RATE}-pick sample are shown as raw win-loss with no percentage, a small sample isn't a real rate. <a href="/">Back to Slatefinder</a></p>
+  </div></body></html>`;
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -440,10 +531,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // --- admin dashboard shell ---------------------------------------------
+    // Not linked from anywhere in the public UI. Gated server-side same as
+    // every /api/admin/* route: a non-admin (or logged-out visitor) gets a
+    // plain 403, not the page, not a redirect to login.
+    if (url.pathname === '/admin' && req.method === 'GET') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      res.end(fs.readFileSync(path.join(__dirname, 'web', 'admin.html')));
+      return;
+    }
+
     if ((url.pathname === '/api/refresh' || url.pathname === '/refresh') && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
       if (rateLimited(req, 'refresh', 6, 10 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down, refresh is already running on a schedule.' });
-      triggerPipelineRun(); // fire-and-forget; client polls /api/status
+      // A manual click is a deliberate, infrequent human action (rate-
+      // limited above), not the unbounded hourly loop the odds budget is
+      // protecting against, so this is allowed to pull fresh odds.
+      triggerPipelineRun(todayIsoDate(), { fetchOdds: true }); // fire-and-forget; client polls /api/status
       sendJson(res, 202, { started: true });
       return;
     }
@@ -453,12 +559,14 @@ const server = http.createServer(async (req, res) => {
     // broken auth flow can never brick the research pages.
     if (url.pathname === '/api/auth/signup' && req.method === 'POST') {
       if (rateLimited(req, 'signup', 10, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many signups from this address, try again later.' });
-      const { email, password, rememberMe } = await readJsonBody(req);
+      const { email, password, rememberMe, marketingOptIn } = await readJsonBody(req);
       const cleanEmail = String(email || '').trim();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return sendJson(res, 400, { error: 'That email does not look right.' });
       if (typeof password !== 'string' || password.length < 8) return sendJson(res, 400, { error: 'Password needs at least 8 characters.' });
       try {
-        const user = await createUser(pool, cleanEmail, password);
+        // marketingOptIn defaults false unless the signup form's checkbox
+        // was explicitly checked, see web/index.html's #authMarketing.
+        const user = await createUser(pool, cleanEmail, password, marketingOptIn === true);
         const token = await createSession(pool, user.id);
         res.setHeader('Set-Cookie', sessionCookie(token, req, { remember: rememberMe !== false }));
         sendJson(res, 201, { user });
@@ -489,6 +597,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/auth/me') {
       const user = await userForSession(pool, parseCookies(req).sf_session);
+      if (user) touchLastSeen(pool, user.id).catch(() => {});
       sendJson(res, 200, { user });
       return;
     }
@@ -532,17 +641,21 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/digest') {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      const viewer = await userForSession(pool, parseCookies(req).sf_session);
       const [digest, availableDates, lockedMoneyline] = await Promise.all([
         loadDigest(date),
         listDigestDates(),
-        // The Daily Slate's Moneyline Board renders from THIS, not
-        // digest.moneyline.picks. It's the permanent per-day ledger (see
-        // trackedPicks.js): ONE official pick per day, the best-graded
-        // qualifier, locked in and graded against the final score, so a
-        // later re-screen can never swap or drop the call we published.
+        // The Daily Slate's Moneyline Board renders from THIS: only rows
+        // an admin has actually PUBLISHED (see lib/publishing.js), not
+        // the live re-screen and not every algorithm candidate. This is
+        // the free-tier surface's "exactly one published moneyline pick"
+        // — the query doesn't hardcode a LIMIT 1 (an admin could in
+        // principle publish more than one; the UI just doesn't encourage
+        // it), it shows whatever is actually published for the date.
         pool.query(
           `SELECT mlb_game_id, locked_price, breakeven_pct, qualifying_metrics, result
-           FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline' ORDER BY id`,
+           FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline' AND published = true
+           ORDER BY published_at`,
           [date]
         ).then((r) => r.rows.map((p) => {
           const m = p.qualifying_metrics || {};
@@ -566,7 +679,7 @@ const server = http.createServer(async (req, res) => {
           };
         })),
       ]);
-      sendJson(res, 200, { date, availableDates, ...digest, lockedMoneyline });
+      sendJson(res, 200, { date, availableDates, ...applyTierGate(digest, viewer), lockedMoneyline });
       return;
     }
 
@@ -598,15 +711,26 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Grades Slatefinder's own tracked top picks against final MLB
-    // results, same idea as the periodic pipeline refresh but on demand
-    // from the Tracking tab's "Check results" button.
+    // Grades Slatefinder's own tracked picks against final MLB results,
+    // same idea as the periodic pipeline refresh but on demand.
     if (url.pathname === '/api/tracked-picks/grade' && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
       if (rateLimited(req, 'tracked-picks-grade', 10, 10 * 60 * 1000)) {
         return sendJson(res, 429, { error: 'Slow down, try again in a bit.' });
       }
       sendJson(res, 200, await gradePendingPicks(pool));
+      return;
+    }
+
+    // --- public track record ------------------------------------------
+    if (url.pathname === '/api/record') {
+      sendJson(res, 200, await buildDualRecord(pool));
+      return;
+    }
+    if (url.pathname === '/record' && req.method === 'GET') {
+      const record = await buildDualRecord(pool);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      res.end(renderRecordPage(record));
       return;
     }
 
@@ -669,7 +793,116 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // --- newsletter unsubscribe (from the daily email's one-click link) --
+    // --- admin: slate review + publish ------------------------------------
+    if (url.pathname === '/api/admin/slate' && req.method === 'GET') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      const date = url.searchParams.get('date') || todayIsoDate();
+      if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      sendJson(res, 200, { date, picks: await listAlgorithmPicks(pool, date) });
+      return;
+    }
+
+    if (url.pathname === '/api/admin/publish' && req.method === 'POST') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      if (rateLimited(req, 'admin-publish', 30, 10 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down.' });
+      const { pickId } = await readJsonBody(req);
+      if (!Number.isInteger(pickId)) return sendJson(res, 400, { error: 'pickId is required.' });
+      try {
+        const row = await publishPick(pool, pickId, admin.id);
+        sendJson(res, 200, { published: true, ...row });
+      } catch (err) {
+        // Trigger rejections (already published, game started) and the
+        // app-level "no such pick" all land here as a 409: the request
+        // was well-formed, the state just won't allow it.
+        sendJson(res, 409, { error: err.message });
+      }
+      return;
+    }
+
+    // --- admin: users panel -------------------------------------------
+    if (url.pathname === '/api/admin/users' && req.method === 'GET') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      const [totalRow, activeRow, sparkRows] = await Promise.all([
+        pool.query('SELECT count(*)::int AS n FROM users'),
+        pool.query(`SELECT count(*)::int AS n FROM users WHERE last_seen_at > now() - interval '7 days'`),
+        pool.query(`
+          SELECT to_char(d.day, 'YYYY-MM-DD') AS date, count(u.id)::int AS signups
+          FROM generate_series(current_date - interval '29 days', current_date, interval '1 day') d(day)
+          LEFT JOIN users u ON u.created_at::date = d.day
+          GROUP BY d.day ORDER BY d.day
+        `),
+      ]);
+      sendJson(res, 200, {
+        totalUsers: totalRow.rows[0].n,
+        activeLast7Days: activeRow.rows[0].n,
+        signupsLast30Days: sparkRows.rows,
+      });
+      return;
+    }
+
+    // --- admin: email panel --------------------------------------------
+    if (url.pathname === '/api/admin/email/audience-count' && req.method === 'GET') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      sendJson(res, 200, { count: await marketingAudienceCount(pool) });
+      return;
+    }
+
+    // CSV export as a file download from a POST, per spec: never GET, never
+    // in a URL/query string, so an email address can't end up in access
+    // logs, browser history, or a shared link the way a GET would risk.
+    if (url.pathname === '/api/admin/email/export' && req.method === 'POST') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      const rows = await marketingAudience(pool);
+      const csv = audienceToCsv(rows);
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="slatefinder-marketing-audience-${todayIsoDate()}.csv"`,
+        'Cache-Control': 'no-store',
+      });
+      res.end(csv);
+      return;
+    }
+
+    if (url.pathname === '/api/admin/email/published-picks' && req.method === 'GET') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      const date = url.searchParams.get('date') || todayIsoDate();
+      if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      sendJson(res, 200, { picks: await publishedPicksForDate(pool, date) });
+      return;
+    }
+
+    if (url.pathname === '/api/admin/email/send' && req.method === 'POST') {
+      const admin = await requireAdmin(pool, req, res, sendJson);
+      if (!admin) return;
+      if (rateLimited(req, 'admin-email-send', 10, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down.' });
+      const { gameDate, pickIds, intro, subject } = await readJsonBody(req);
+      const date = gameDate || todayIsoDate();
+      if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      try {
+        const result = await sendAdminEmail(pool, {
+          adminUserId: admin.id,
+          gameDate: date,
+          pickIds: Array.isArray(pickIds) ? pickIds : [],
+          intro: String(intro || '').slice(0, 4000),
+          subject: subject ? String(subject).slice(0, 200) : null,
+        });
+        sendJson(res, 200, result);
+      } catch (err) {
+        // Compliance-footer failures, unpublished-pick selection, no
+        // configured Resend key, no audience — all real, all 400s, none
+        // of them silently swallowed or downgraded to a "best effort" send.
+        sendJson(res, 400, { error: err.message });
+      }
+      return;
+    }
+
+    // --- newsletter unsubscribe (from the daily research digest) --------
     if (url.pathname === '/unsubscribe') {
       const ok = await unsubscribeAccount(pool, url.searchParams.get('token') || '');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -677,6 +910,22 @@ const server = http.createServer(async (req, res) => {
         <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#101216;color:#e7e9ee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
         <div style="text-align:center;padding:24px"><p style="font-size:16px;font-weight:600">${ok ? "You're unsubscribed." : 'That link has already been used or is invalid.'}</p>
         <p style="color:#9ba3b0;font-size:13px">${ok ? "No more daily emails. Your account still works, this only turns off the morning digest." : ''}</p>
+        <p><a href="/" style="color:#5b9cff;font-size:13px">Back to Slatefinder</a></p></div></body>`);
+      return;
+    }
+
+    // --- marketing-list unsubscribe (from an admin-composed send) -------
+    // Deliberately separate from /unsubscribe above: this only clears
+    // marketing_opt_in, the daily research digest keeps sending unless
+    // that's separately turned off. No login required — a signed,
+    // expiring token in the URL is the whole auth, see lib/emailCompliance.js.
+    if (url.pathname === '/unsubscribe-marketing') {
+      const ok = await unsubscribeMarketing(pool, url.searchParams.get('token') || '');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#101216;color:#e7e9ee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+        <div style="text-align:center;padding:24px"><p style="font-size:16px;font-weight:600">${ok ? "You're unsubscribed." : 'That link has expired or is invalid.'}</p>
+        <p style="color:#9ba3b0;font-size:13px">${ok ? "You won't get any more emails from this list." : ''}</p>
         <p><a href="/" style="color:#5b9cff;font-size:13px">Back to Slatefinder</a></p></div></body>`);
       return;
     }
@@ -705,7 +954,11 @@ async function start() {
     console.log(`SlateFinder listening on :${PORT}`);
   });
 
-  triggerPipelineRun(); // fire-and-forget initial populate
+  // Boot-time populate. Doesn't fetch odds (see the budget note above) —
+  // whatever the server picks up at whatever hour it happens to (re)start
+  // isn't one of the two scheduled odds slots, and a restart shouldn't be
+  // able to spend odds-API budget just by happening.
+  triggerPipelineRun(todayIsoDate(), { fetchOdds: false });
   scheduleHourlyRuns();
   startGradingLoop();
 }

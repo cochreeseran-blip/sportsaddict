@@ -13,7 +13,11 @@
 // NOT NULL column in the list is ours and keeps its constraint (our
 // inserts always supply it); anything outside the list is legacy.
 const OWNED_COLUMNS = {
-  users: ['id', 'email', 'username', 'avatar_seed', 'password_hash', 'created_at', 'newsletter_unsubscribed_at', 'newsletter_token'],
+  users: [
+    'id', 'email', 'username', 'avatar_seed', 'password_hash', 'created_at',
+    'newsletter_unsubscribed_at', 'newsletter_token', 'role', 'tier', 'last_seen_at',
+    'email_verified', 'marketing_opt_in',
+  ],
   sessions: ['token', 'user_id', 'created_at', 'expires_at'],
   games: [
     'id', 'game_date', 'mlb_game_id', 'home_team', 'away_team', 'game_time_utc', 'venue',
@@ -33,6 +37,7 @@ const OWNED_COLUMNS = {
   tracked_picks: [
     'id', 'game_date', 'signal_type', 'mlb_game_id', 'description', 'locked_price',
     'breakeven_pct', 'closing_price', 'clv_pct', 'qualifying_metrics', 'result', 'created_at',
+    'published', 'published_at', 'published_by',
   ],
   bets: [
     'id', 'game_date', 'description', 'odds', 'stake', 'book', 'bet_kind', 'mlb_game_id',
@@ -41,6 +46,7 @@ const OWNED_COLUMNS = {
   subscribers: ['id', 'email', 'unsubscribe_token', 'created_at', 'unsubscribed_at'],
   manual_picks: ['id', 'game_date', 'home_team', 'away_team', 'home_ml', 'reason', 'mlb_game_id', 'created_at'],
   park_orientations: ['venue', 'latitude', 'longitude', 'out_bearing_degrees', 'confidence', 'source'],
+  email_sends: ['id', 'sent_by', 'recipient_count', 'pick_ids', 'subject', 'created_at'],
 };
 
 export async function ensureInsertSafety(pool) {

@@ -11,10 +11,9 @@ import { runWindHrFilter } from './filters/windHr.js';
 import { runStrikeoutFilter } from './filters/strikeouts.js';
 import { saveDigest } from './digest.js';
 import { buildTopPicks, moneylineCandidates } from './topPicks.js';
-import { recordBestMoneyline, gradePendingPicks } from './trackedPicks.js';
+import { recordAllQualifyingMoneyline, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
-import { GO_LIVE_HOUR_UTC } from './goLive.js';
 import { fetchSavantProbablePitchers, applySavantMetrics } from './sources/savant.js';
 
 // How many player stat lookups run in flight at once during the full-roster
@@ -60,12 +59,29 @@ async function upsertGame(g, gameDate) {
 // The full daily pipeline: fetch, upsert, compute, filter, save digest.
 // Shared by the CLI (job.js) and the web dashboard's boot/refresh/daily
 // timer (server.js) so there's exactly one implementation.
-export async function runPipeline(gameDate = todayIsoDate()) {
+//
+// fetchOdds: The Odds API free tier is 500 requests/month. This pipeline
+// used to run hourly AND call the odds endpoint every single run, which
+// would exhaust that budget in days. Odds now get pulled exactly twice a
+// day: once here on the morning run (fetchOdds: true, the default, for
+// job.js/manual refreshes), and once near first pitch for closing-line
+// value (see server.js's closing-line timer, which calls this with
+// fetchOdds: false and pulls odds itself via lib/sources/odds.js
+// directly, scoped to picks that need a closing price). Every hourly
+// in-between run passes fetchOdds: false: lineups, probable-starter
+// changes, and roster/injury status all come from the free, unmetered
+// MLB Stats API, which this pipeline is free to poll as often as it
+// wants. The moneyline screen itself doesn't need fresh odds every
+// hour — it re-reads whatever price is already on the games row, and a
+// stale-by-an-hour price is still a reasonable read on "is this team a
+// -115-to-180 favorite", it's not going to flip to a completely
+// different game state the way a lineup or a probable-starter swap can.
+export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true } = {}) {
   const season = gameDate.slice(0, 4);
   const warnings = [];
   const log = (msg) => console.log(`  ${msg}`);
 
-  console.log(`Running MLB daily pipeline for ${gameDate}...`);
+  console.log(`Running MLB daily pipeline for ${gameDate}${fetchOdds ? '' : ' (MLB Stats API only, no odds call)'}...`);
 
   // 1. Schedule + probable starters
   let scheduleGames = [];
@@ -94,7 +110,12 @@ export async function runPipeline(gameDate = todayIsoDate()) {
 
   // 2. Odds, matched against the in-memory schedule by team name. A
   // single unmatched/missing game is logged and skipped, not fatal.
-  if (!process.env.ODDS_API_KEY) {
+  // Skipped entirely on the hourly (fetchOdds: false) runs, see the
+  // budget note on runPipeline above; whatever price is already on the
+  // games row from the morning run keeps being used.
+  if (!fetchOdds) {
+    log('Odds: skipped (MLB-Stats-only run), reusing this morning\'s prices.');
+  } else if (!process.env.ODDS_API_KEY) {
     warnings.push('Odds data unavailable, ODDS_API_KEY not set. Check manually.');
   } else {
     try {
@@ -429,32 +450,20 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // and Daily Slate all agree on the same 15.
   hitStreak.watchList = (hitStreak.watchList || []).slice(0, 15);
 
-  // The moneyline board locks for the day once the go-live run has
-  // happened (see migrations/013_moneyline_lock.sql): after that, no new
-  // games get added even if odds or rosters keep shifting, the board that
-  // went live at 9am ET is the board for the rest of the day. Games
-  // already on it keep grading normally via gradePendingPicks below.
-  const { rows: lockRows } = await pool.query('SELECT 1 FROM moneyline_lock WHERE game_date = $1', [gameDate]);
-  const boardLocked = lockRows.length > 0;
-
-  let liveMlCandidates = moneylineCandidates(moneyline);
-  let mlCandidatesForTopPicks = liveMlCandidates;
-  if (boardLocked) {
-    const { rows: lockedRows } = await pool.query(
-      `SELECT qualifying_metrics FROM tracked_picks
-       WHERE game_date = $1 AND signal_type = 'moneyline'
-       ORDER BY id`,
-      [gameDate]
-    );
-    mlCandidatesForTopPicks = lockedRows.map((r) => r.qualifying_metrics);
-    log(`Moneyline board frozen for ${gameDate}: reusing ${mlCandidatesForTopPicks.length} locked pick(s), ${liveMlCandidates.length} live candidate(s) ignored.`);
-  }
+  // There is no more automatic freeze-at-go-live. Publishing is now an
+  // editorial decision an admin makes on /admin/slate (see
+  // migrations/018_publish_tracked_picks.sql), not something the pipeline
+  // does on a clock. The old moneyline_lock table (migrations/014) is
+  // unused as of this change; left in place rather than dropped, since
+  // dropping a table in a migration that re-runs on every boot is a
+  // one-way door of its own and there's no upside to risking it here.
+  const liveMlCandidates = moneylineCandidates(moneyline);
 
   // Top 6 for the Daily Slate board/jumbotron: moneyline calls + hit
   // props + K/O picks, factoring opposing pitcher ERA, batting average,
   // last-5-game form, K floor, and ERA edge. Heuristic and explainable,
   // not a model, see lib/topPicks.js.
-  const topPicks = buildTopPicks({ moneylineCandidates: mlCandidatesForTopPicks, hitStreak, strikeouts }, 6);
+  const topPicks = buildTopPicks({ moneylineCandidates: liveMlCandidates, hitStreak, strikeouts }, 6);
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
@@ -468,31 +477,15 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // run's in-memory warnings.
   await saveDigest(pool, gameDate, 'warnings', { warnings });
 
-  // The permanent ledger (the public W-L record on Daily Slate) tracks
-  // ONE official moneyline per day: the single best-graded qualifier, the
-  // pick the Daily Slate publishes and stands behind, graded by a clean
-  // final score. Player props stay out of the ledger. Skipped entirely
-  // once the board is locked for the day, that's the whole point of the
-  // freeze.
-  if (boardLocked) {
-    log('Tracked picks: skipped, moneyline board is locked for the day.');
-  } else {
-    const trackedCount = await recordBestMoneyline(pool, gameDate, liveMlCandidates);
-    log(`Tracked picks: best moneyline recorded (${trackedCount} row change).`);
+  // The algorithm's untouched dataset (see trackedPicks.js): every game
+  // that qualifies gets written here, published=false, the FIRST time a
+  // run sees it qualify. This runs every pipeline run, hourly included,
+  // there's no freeze, an admin reviews and publishes from /admin/slate
+  // on their own schedule.
+  const trackedCount = await recordAllQualifyingMoneyline(pool, gameDate, liveMlCandidates);
+  log(`Tracked picks: ${trackedCount} new qualifying game(s) recorded to the algorithm ledger.`);
 
-    // Lock the board once this run happens at or after go-live, so every
-    // later run today (hourly refreshes, manual "Refresh") stops adding
-    // new moneyline picks. The board that just went live is final.
-    if (new Date().getUTCHours() >= GO_LIVE_HOUR_UTC) {
-      await pool.query(
-        'INSERT INTO moneyline_lock (game_date) VALUES ($1) ON CONFLICT (game_date) DO NOTHING',
-        [gameDate]
-      );
-      log(`Moneyline board locked for ${gameDate} at go-live.`);
-    }
-  }
-
-  // No UI button for this anymore, the pipeline running 3x/day is what
+  // No UI button for this anymore, the pipeline running hourly is what
   // keeps the All-time record moving as games finish.
   const graded = await gradePendingPicks(pool);
   log(`Tracked picks grading: ${graded.graded} newly graded, ${graded.stillPending} still pending, ${graded.errors} error(s).`);

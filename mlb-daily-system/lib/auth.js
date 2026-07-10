@@ -91,6 +91,14 @@ export async function ensureAuthSchema(pool) {
     UPDATE users SET newsletter_token = md5(random()::text || clock_timestamp()::text || id::text)
       WHERE newsletter_token IS NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS users_newsletter_token_uidx ON users (newsletter_token);
+    -- Admin role, content tier, activity tracking, email compliance flags.
+    -- See migrations/017_admin_and_tiers.sql, this mirrors it for the same
+    -- self-heal-on-boot reason as everything else in this function.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'free';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS marketing_opt_in BOOLEAN NOT NULL DEFAULT false;
   `);
 
   // The production database turned out to host a users table from an older
@@ -147,22 +155,45 @@ export async function destroySession(pool, token) {
   await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
 }
 
+// Includes role/tier: this is the ONLY place role is ever read for an
+// authorization decision (see requireAdmin in server.js), and it's a real
+// DB read on every call, no caching, so a role change (e.g. via `npm run
+// make-admin`) takes effect on the user's very next request rather than
+// waiting for a stale session claim to expire.
 export async function userForSession(pool, token) {
   if (!token) return null;
   const { rows } = await pool.query(
-    `SELECT u.id, u.email, u.username, u.avatar_seed
+    `SELECT u.id, u.email, u.username, u.avatar_seed, u.role, u.tier, u.email_verified, u.marketing_opt_in
      FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token = $1 AND s.expires_at > now()`,
     [token]
   );
   if (!rows.length) return null;
   const u = rows[0];
-  return { id: u.id, email: u.email, username: u.username, avatarSeed: u.avatar_seed };
+  return {
+    id: u.id, email: u.email, username: u.username, avatarSeed: u.avatar_seed,
+    role: u.role, tier: u.tier, emailVerified: u.email_verified, marketingOptIn: u.marketing_opt_in,
+  };
+}
+
+// Throttled to at most one write per user per hour (see migrations/017):
+// last_seen_at powers the admin Users panel's "active in last 7 days"
+// count, it doesn't need to be precise to the second, and writing it on
+// every single authenticated request would be a write-per-request tax
+// for no real benefit.
+export async function touchLastSeen(pool, userId) {
+  await pool.query(
+    `UPDATE users SET last_seen_at = now()
+     WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 hour')`,
+    [userId]
+  );
 }
 
 // Creates the user with a generated identity, retrying the username on the
-// (rare) collision. Returns the public user shape.
-export async function createUser(pool, email, password) {
+// (rare) collision. Returns the public user shape. marketingOptIn defaults
+// false, per the explicit-opt-in-only requirement: nobody is subscribed to
+// marketing email without checking the box themselves at signup.
+export async function createUser(pool, email, password, marketingOptIn = false) {
   const passwordHash = hashPassword(password);
   for (let attempt = 0; attempt < 5; attempt++) {
     const username = generateUsername();
@@ -170,13 +201,13 @@ export async function createUser(pool, email, password) {
     try {
       const newsletterToken = crypto.randomBytes(24).toString('hex');
       const { rows } = await pool.query(
-        `INSERT INTO users (email, username, avatar_seed, password_hash, newsletter_token)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, email, username, avatar_seed`,
-        [email, username, avatarSeed, passwordHash, newsletterToken]
+        `INSERT INTO users (email, username, avatar_seed, password_hash, newsletter_token, marketing_opt_in)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, email, username, avatar_seed, role, tier`,
+        [email, username, avatarSeed, passwordHash, newsletterToken, Boolean(marketingOptIn)]
       );
       const u = rows[0];
-      return { id: u.id, email: u.email, username: u.username, avatarSeed: u.avatar_seed };
+      return { id: u.id, email: u.email, username: u.username, avatarSeed: u.avatar_seed, role: u.role, tier: u.tier };
     } catch (err) {
       // 23505 = unique_violation. On email it's the caller's problem; on
       // username just roll new dice.
@@ -189,13 +220,13 @@ export async function createUser(pool, email, password) {
 
 export async function authenticate(pool, email, password) {
   const { rows } = await pool.query(
-    'SELECT id, email, username, avatar_seed, password_hash FROM users WHERE lower(email) = lower($1)',
+    'SELECT id, email, username, avatar_seed, password_hash, role, tier FROM users WHERE lower(email) = lower($1)',
     [email]
   );
   if (!rows.length) return null;
   const u = rows[0];
   if (!verifyPassword(password, u.password_hash)) return null;
-  return { id: u.id, email: u.email, username: u.username, avatarSeed: u.avatar_seed };
+  return { id: u.id, email: u.email, username: u.username, avatarSeed: u.avatar_seed, role: u.role, tier: u.tier };
 }
 
 // ---------------------------------------------------------------------------

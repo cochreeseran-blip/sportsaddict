@@ -154,11 +154,21 @@ export async function runMoneylineFilter(pool, gameDate) {
     };
   });
 
-  // Rank qualifiers by grade (best pick first). The Daily Slate publishes
-  // only the single best; the Research tab shows the whole list.
+  // Rank qualifiers by the AWAY starter's TRAILING ERA, descending (the
+  // worst arm first). Per spec, this is deliberate and NOT the grade:
+  // "the top of the board" is the qualifying game facing the shakiest
+  // recent pitching, that's the actual thesis of the bet, not a composite
+  // score. The grade still gets computed and shown (it answers "how good
+  // a qualifier is this", useful context for admin review and Research),
+  // but it does not decide the order here. Ties (rare) fall back to the
+  // season-ERA edge, then price.
   const qualifying = evaluated
     .filter((g) => g.qualifies)
-    .sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0) || (b.seasonEraEdge ?? 0) - (a.seasonEraEdge ?? 0));
+    .sort((a, b) =>
+      (b.awayStarterTrailingEra ?? -Infinity) - (a.awayStarterTrailingEra ?? -Infinity) ||
+      (b.seasonEraEdge ?? 0) - (a.seasonEraEdge ?? 0) ||
+      (a.homeMl ?? 0) - (b.homeMl ?? 0)
+    );
 
   const pickIds = new Set(qualifying.map((p) => p.gameId));
 

@@ -1389,6 +1389,9 @@ function setAuthMode(mode) {
   $('#authToggleLabel').textContent = signup ? 'Already have an account?' : 'New here?';
   $('#authToggle').textContent = signup ? 'Log in' : 'Create an account';
   $('#authPassword').setAttribute('autocomplete', signup ? 'new-password' : 'current-password');
+  // The opt-in checkbox only makes sense at signup, an existing account's
+  // marketing_opt_in doesn't change on login.
+  $('#authMarketingRow').hidden = !signup;
   $('#authError').hidden = true;
 }
 
@@ -1426,6 +1429,7 @@ function wireAuth() {
         email: $('#authEmail').value.trim(),
         password: $('#authPassword').value,
         rememberMe: remember,
+        marketingOptIn: authMode === 'signup' && $('#authMarketing').checked,
       };
       const path = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
       const { user } = await apiSend(path, 'POST', body);

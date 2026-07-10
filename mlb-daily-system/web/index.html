@@ -94,6 +94,10 @@
           <input type="checkbox" id="authRemember" checked>
           <span>Remember me on this device</span>
         </label>
+        <label class="remember-row" id="authMarketingRow">
+          <input type="checkbox" id="authMarketing">
+          <span>Email me picks and offers (unchecked by default, unsubscribe any time)</span>
+        </label>
         <div class="modal-error" id="authError" hidden></div>
         <button type="submit" class="btn primary auth-submit" id="authSubmit">Create account</button>
       </form>
@@ -113,7 +117,7 @@
 </div>
 
 <footer class="footer">
-  <span class="footer-note">Slatefinder emails the daily board to your account every morning. Research signals only, not betting advice. Verify starters and lineups before first pitch. <span id="buildTag" class="faint"></span></span>
+  <span class="footer-note">Slatefinder emails the daily board to your account every morning. Research signals only, not betting advice. Verify starters and lineups before first pitch. <a href="/record" style="color:var(--text-2)">Track record</a>. <span id="buildTag" class="faint"></span></span>
 </footer>
 
 <script src="/app.js"></script>

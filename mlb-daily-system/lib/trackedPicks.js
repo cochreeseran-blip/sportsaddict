@@ -17,48 +17,54 @@ async function insertTrackedPick(pool, record) {
   );
 }
 
-
-// The Daily Slate publishes ONE official moneyline per day: the single
-// best-graded qualifier. That one pick is what the public W-L record
-// tracks, not every game that ever cleared the gate, so the record
-// reflects the call we actually made, not a pile of also-rans. Candidates
-// arrive already sorted best-first (see lib/filters/moneyline.js). This
-// runs only BEFORE the board locks at go-live (the pipeline skips it
-// after), and before go-live no game has started, so clearing and
-// re-writing the day's single moneyline row can never drop a real result:
-// it just keeps "today's pick" pointed at the current best until it
-// freezes. Idempotent, exactly one moneyline row per day.
-export async function recordBestMoneyline(pool, gameDate, candidates) {
-  const best = (candidates || [])[0] || null;
-  const { rows: existing } = await pool.query(
-    `SELECT id, mlb_game_id, result FROM tracked_picks
-     WHERE game_date = $1 AND signal_type = 'moneyline' ORDER BY id`,
-    [gameDate]
-  );
-  // If the current best is already the locked-in pick, leave it untouched
-  // (don't churn created_at / the row).
-  if (best && existing.length === 1 && String(existing[0].mlb_game_id) === String(best.mlbGameId)) {
-    return 0;
+// This is "the algorithm's untouched dataset" (see the admin-dashboard
+// build notes): every game that qualifies for the moneyline board gets a
+// row here, published=false, on the FIRST pipeline run that saw it
+// qualify that day. It is never updated and never deleted by later runs,
+// only inserted once per (game_date, mlb_game_id) — the trigger in
+// migrations/018_publish_tracked_picks.sql would block editing a
+// published row anyway, but this function doesn't touch unpublished rows
+// either, on purpose: the metrics recorded here are a snapshot of what
+// the algorithm said at the moment it first qualified, not a rolling
+// live view. If a starter changes or a lineup posts after that snapshot,
+// that shows up as a WARNING on the admin slate review (computed live,
+// by comparing this frozen snapshot against a fresh MLB Stats API read),
+// not as a silent rewrite of the algorithm's original call.
+//
+// This deliberately does NOT decide which one is "the" free pick or cap
+// how many rows get written — every qualifier is recorded. Selecting the
+// single free-tier pick (highest away-starter trailing ERA) and deciding
+// whether to publish it at all is entirely an editorial call the admin
+// makes on /admin/slate; the pipeline's only job here is to make sure
+// every game that ever qualified is on file to be reviewed.
+export async function recordAllQualifyingMoneyline(pool, gameDate, candidates) {
+  let inserted = 0;
+  for (const p of candidates || []) {
+    if (!p.mlbGameId) continue;
+    const { rows } = await pool.query(
+      `SELECT id FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline' AND mlb_game_id = $2 LIMIT 1`,
+      [gameDate, p.mlbGameId]
+    );
+    if (rows.length) continue;
+    await insertTrackedPick(pool, {
+      gameDate,
+      signalType: 'moneyline',
+      mlbGameId: p.mlbGameId,
+      description: `${p.headline}. ${p.detail}`,
+      lockedPrice: p.homeMl ?? null,
+      breakevenPct: p.breakevenPct ?? null,
+      qualifyingMetrics: p,
+    });
+    inserted++;
   }
-  // Never delete a row that already graded (belt-and-suspenders: shouldn't
-  // happen pre-lock, but if it somehow did we keep the graded history).
-  if (existing.some((r) => r.result && r.result !== 'pending')) return 0;
-  await pool.query(`DELETE FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline'`, [gameDate]);
-  if (!best) return 0;
-  await insertTrackedPick(pool, {
-    gameDate,
-    signalType: 'moneyline',
-    mlbGameId: best.mlbGameId,
-    description: `${best.headline}. ${best.detail}`,
-    lockedPrice: best.homeMl ?? null,
-    breakevenPct: best.breakevenPct ?? null,
-    qualifyingMetrics: best,
-  });
-  return 1;
+  return inserted;
 }
 
 // Grades a single pending pick against real results, or returns null if
-// the underlying game isn't final yet (still legitimately pending).
+// the underlying game isn't final yet (still legitimately pending). This
+// writes ONLY the `result` column, which the trigger allows on a
+// published row (see migrations/018), so grading never has to care
+// whether a pick is published or not.
 async function gradeOnePick(pick) {
   if (!pick.mlb_game_id) return null;
   const result = await mlb.fetchGameResult(pick.mlb_game_id);
@@ -89,6 +95,10 @@ async function gradeOnePick(pick) {
   return null;
 }
 
+// Grades EVERY pending pick, published or not — the point of the dual
+// public record (/record) is that the algorithm's whole dataset gets
+// graded, not just what got published, otherwise there's no way to ever
+// check whether the filter itself works.
 export async function gradePendingPicks(pool) {
   const { rows: pending } = await pool.query(`SELECT * FROM tracked_picks WHERE result = 'pending'`);
   let graded = 0;

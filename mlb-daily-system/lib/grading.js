@@ -1,14 +1,13 @@
 import { fmtNum } from './util/format.js';
 
-// One shared 0-100 score and letter grade for the PROP pick types (hit
-// prop, strikeout prop), so a user learns the scale once. Moneyline is
-// deliberately not graded (see the note where gradeMoneyline used to be):
-// it's decided by two hard facts and a deterministic sort. Built entirely
-// from data already on file: trailing ERA, K/hit form, plus Baseball
-// Savant's Statcast metrics (xERA, whiff%, hard-hit%, K%, BB%) layered on
-// top when we have them for that pitcher that day. Savant is best-effort
-// (see lib/sources/savant.js): every field here is optional, and a pick
-// with no Savant data on file still grades, just off fewer inputs.
+// One shared 0-100 score and letter grade across every pick type
+// (moneyline, hit prop, strikeout prop), so a user learns the scale once.
+// Built entirely from data already on file: season/trailing ERA, K/hit
+// form, plus Baseball Savant's Statcast metrics (xERA, whiff%, hard-hit%,
+// K%, BB%) layered on top when we have them for that pitcher that day.
+// Savant is best-effort (see lib/sources/savant.js): every field here is
+// optional, and a pick with no Savant data on file still grades, just off
+// fewer inputs.
 const THRESHOLDS = [
   [90, 'A+'],
   [80, 'A'],
@@ -94,14 +93,60 @@ function savantArmNotes(s, wantsBad) {
   return { bonus: Math.min(25, bonus), notes };
 }
 
-// NOTE: there is deliberately no gradeMoneyline. A moneyline pick is
-// defined by two hard facts, the -115/-180 favorite band and the away
-// starter's 6.00+ trailing ERA (see lib/filters/moneyline.js), and with a
-// 2-pick cap and a deterministic worst-ERA-first sort there is nothing
-// left for a grade to decide. Any score blending "distance past the ERA
-// gate" against "break-even price" would use coefficients never fit to
-// outcome data, the same unvalidated blending removed elsewhere. The
-// board shows the two qualifying facts and no letter.
+// Moneyline grade. The pick QUALIFIES on one hard gate (home season ERA
+// 2+ runs better than away, see lib/filters/moneyline.js); the grade then
+// answers "how strong a qualifier is it", so the Daily Slate can publish
+// the single BEST moneyline and the Research tab can rank them all. Every
+// term maps to something a bettor actually checks; it's an explainable
+// heuristic, not a model fit to outcomes, and the reasons list says so by
+// showing exactly what moved the score. Savant (xERA, whiff%, hard-hit%,
+// K%, BB%) sharpens "the home arm is genuinely better" and "the away arm
+// is genuinely hittable" beyond the two season-ERA numbers, and is
+// optional: a pick with no Savant on file still grades, off fewer inputs.
+export function gradeMoneyline({
+  seasonEdge, homeSeasonEra, awaySeasonEra, breakevenPct: bePct,
+  startersConfirmed, homeSavant, awaySavant,
+}) {
+  const reasons = [];
+  // Base: a bare qualifier (exactly a 2.0 edge) lands mid-B and climbs.
+  let score = 55;
+
+  // 1. Size of the season-ERA edge past the 2.0 gate: the whole reason
+  //    the pick exists. Each run beyond the threshold is worth ~11 pts.
+  const edge = seasonEdge ?? 2.0;
+  score += Math.min(26, Math.max(0, (edge - 2.0)) * 11);
+  reasons.push(`home starter's season ERA is ${fmtNum(edge)} runs better (${fmtNum(homeSeasonEra)} vs ${fmtNum(awaySeasonEra)})`);
+
+  // 2. Home starter's own quality in absolute terms: an ace anchoring the
+  //    favorite is more trustworthy than a mediocre arm who only looks
+  //    good next to a terrible one.
+  if (homeSeasonEra !== null && homeSeasonEra !== undefined) {
+    const q = Math.min(10, Math.max(0, 4.0 - homeSeasonEra) * 4);
+    if (q > 0) { score += q; reasons.push(`home starter is strong on the year (${fmtNum(homeSeasonEra)} ERA)`); }
+  }
+
+  // 3. Baseball Savant, both directions: the away arm looking hittable
+  //    (wantsBad = true) and the home arm looking legit (wantsBad = false).
+  const awayNotes = savantArmNotes(awaySavant, true);
+  if (awayNotes.bonus) { score += awayNotes.bonus; reasons.push(...awayNotes.notes.map((n) => `opposing arm: ${n}`)); }
+  const homeNotes = savantArmNotes(homeSavant, false);
+  if (homeNotes.bonus) { score += Math.min(12, homeNotes.bonus); reasons.push(...homeNotes.notes.map((n) => `home arm: ${n}`)); }
+
+  // 4. Price value: a cheaper favorite is a better bet at the same edge.
+  //    Small, deliberately, price is a filter first and a tie-breaker
+  //    second, never the main driver.
+  if (bePct !== null && bePct !== undefined) {
+    const v = (0.60 - bePct) * 30; // ~ -115 => +2, -180 => -1.3
+    score += Math.max(-4, Math.min(5, v));
+  }
+
+  // 5. Confirmed lineups: a small nudge for a pick riding on posted
+  //    starters over projected ones.
+  if (startersConfirmed) { score += 3; reasons.push('both lineups officially posted'); }
+
+  score = clampScore(score);
+  return { score, grade: letterGrade(score), reasons };
+}
 
 // Hard floor for hit props: a batter who isn't actually hitting well
 // (below .280 trailing) cannot be graded above a B, no matter how hot

@@ -1,17 +1,5 @@
 import * as mlb from './sources/mlbStats.js';
 
-async function alreadyTracked(pool, gameDate, signalType, mlbGameId, batterName) {
-  const { rows } = await pool.query(
-    `SELECT id FROM tracked_picks
-     WHERE game_date = $1 AND signal_type = $2
-       AND mlb_game_id IS NOT DISTINCT FROM $3
-       AND (qualifying_metrics->>'batterName') IS NOT DISTINCT FROM $4
-     LIMIT 1`,
-    [gameDate, signalType, mlbGameId, batterName]
-  );
-  return rows.length > 0;
-}
-
 async function insertTrackedPick(pool, record) {
   await pool.query(
     `INSERT INTO tracked_picks
@@ -29,31 +17,44 @@ async function insertTrackedPick(pool, record) {
   );
 }
 
-// Writes the day's published moneyline board (every qualifying ML call,
-// see lib/topPicks.js moneylineCandidates) into the permanent ledger, so
-// each call gets graded against the real final score and the Daily Slate
-// can show a W/L next to every pick it made plus an honest all-time
-// record. Idempotent per (game_date, signal_type, mlb_game_id, batter)
-// so running the pipeline 3x/day (or on manual refresh) doesn't spam
-// duplicate rows for the same underlying pick, the price/metrics from
-// the FIRST time a pick qualified that day are what get "locked in".
-export async function recordTrackedPicks(pool, gameDate, topPicks) {
-  let inserted = 0;
-  for (const p of topPicks || []) {
-    const batterName = p.batterName ?? null;
-    if (await alreadyTracked(pool, gameDate, p.type, p.mlbGameId, batterName)) continue;
-    await insertTrackedPick(pool, {
-      gameDate,
-      signalType: p.type,
-      mlbGameId: p.mlbGameId,
-      description: `${p.headline}. ${p.detail}`,
-      lockedPrice: p.homeMl ?? null,
-      breakevenPct: p.breakevenPct ?? null,
-      qualifyingMetrics: p,
-    });
-    inserted++;
+
+// The Daily Slate publishes ONE official moneyline per day: the single
+// best-graded qualifier. That one pick is what the public W-L record
+// tracks, not every game that ever cleared the gate, so the record
+// reflects the call we actually made, not a pile of also-rans. Candidates
+// arrive already sorted best-first (see lib/filters/moneyline.js). This
+// runs only BEFORE the board locks at go-live (the pipeline skips it
+// after), and before go-live no game has started, so clearing and
+// re-writing the day's single moneyline row can never drop a real result:
+// it just keeps "today's pick" pointed at the current best until it
+// freezes. Idempotent, exactly one moneyline row per day.
+export async function recordBestMoneyline(pool, gameDate, candidates) {
+  const best = (candidates || [])[0] || null;
+  const { rows: existing } = await pool.query(
+    `SELECT id, mlb_game_id, result FROM tracked_picks
+     WHERE game_date = $1 AND signal_type = 'moneyline' ORDER BY id`,
+    [gameDate]
+  );
+  // If the current best is already the locked-in pick, leave it untouched
+  // (don't churn created_at / the row).
+  if (best && existing.length === 1 && String(existing[0].mlb_game_id) === String(best.mlbGameId)) {
+    return 0;
   }
-  return inserted;
+  // Never delete a row that already graded (belt-and-suspenders: shouldn't
+  // happen pre-lock, but if it somehow did we keep the graded history).
+  if (existing.some((r) => r.result && r.result !== 'pending')) return 0;
+  await pool.query(`DELETE FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline'`, [gameDate]);
+  if (!best) return 0;
+  await insertTrackedPick(pool, {
+    gameDate,
+    signalType: 'moneyline',
+    mlbGameId: best.mlbGameId,
+    description: `${best.headline}. ${best.detail}`,
+    lockedPrice: best.homeMl ?? null,
+    breakevenPct: best.breakevenPct ?? null,
+    qualifyingMetrics: best,
+  });
+  return 1;
 }
 
 // Grades a single pending pick against real results, or returns null if

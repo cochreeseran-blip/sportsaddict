@@ -1,36 +1,38 @@
 import { fmtOdds, fmtNum } from '../util/format.js';
 import { breakevenPct } from '../breakeven.js';
+import { gradeMoneyline } from '../grading.js';
 
 // Qualifying price band for the home favorite: -115 to -180 inclusive.
 // Both bounds are negative by construction, "home team is the favorite"
-// is built into the band itself, not a separate check. Price is a FILTER
-// only, never a ranking criterion (see the sort below): a game either
-// clears the band or it doesn't, and once it does the price stops
-// mattering to where it ranks.
+// is built into the band itself. Price is a pre-filter only: a game
+// either clears the band or it doesn't. It never decides the grade or
+// the ranking (see the sort below).
 export const BAND_LOW = -180;
 export const BAND_HIGH = -115;
 
-// The away starter's TRAILING (last 3 starts) ERA is the sole pitching
-// gate. Season ERA is still pulled and shown on every card, but purely
-// as labeled context, it never decides qualification: a 3-start trailing
-// window is what's actually predictive of "is this arm getting hit right
-// now", a season number can hide a starter who's been rocked lately (or,
-// the other direction, one bad month early that's long since corrected).
-const AWAY_TRAILING_ERA_MIN = 6.0;
-
-// Only the 2 worst-away-arm qualifying games make the board each day.
-// Zero qualifying games is a real, displayed SIT result (see web/app.js
-// sitStateHtml), not an empty state, sitting out is the system working
-// as designed on a day nothing clears the bar.
-const MAX_PICKS_PER_DAY = 2;
+// THE deciding check, per spec: the home starter's SEASON ERA (the
+// official, on-the-books number you'd see on his roster page) must be at
+// least this many runs BETTER (lower) than the away starter's SEASON ERA.
+// Season, not trailing form: a 3-start window is too small and too noisy
+// to gate a real pick on (one blow-up swings it a full run). Trailing
+// ERA and Baseball Savant metrics still ride along and feed the GRADE
+// (how good a qualifying pick is), but the pass/fail gate is season ERA,
+// home vs away. No edge, no pick.
+const SEASON_ERA_EDGE_MIN = 2.0;
 
 export async function runMoneylineFilter(pool, gameDate) {
   const { rows } = await pool.query(
     `SELECT g.id AS game_id, g.mlb_game_id, g.home_team, g.away_team, g.home_ml,
             g.home_starter_id, g.home_starter_name, g.away_starter_id, g.away_starter_name,
-            hpf.trailing_era AS home_trailing_era, hpf.season_era AS home_season_era,
-            apf.trailing_era AS away_trailing_era, apf.trailing_starts AS away_trailing_starts,
-            apf.season_era AS away_season_era
+            hpf.season_era AS home_season_era, hpf.trailing_era AS home_trailing_era,
+            hpf.savant_era AS home_savant_era, hpf.savant_xera AS home_savant_xera,
+            hpf.savant_k_pct AS home_k_pct, hpf.savant_bb_pct AS home_bb_pct,
+            hpf.savant_whiff_pct AS home_whiff_pct, hpf.savant_hard_hit_pct AS home_hard_hit_pct,
+            apf.season_era AS away_season_era, apf.trailing_era AS away_trailing_era,
+            apf.trailing_starts AS away_trailing_starts,
+            apf.savant_era AS away_savant_era, apf.savant_xera AS away_savant_xera,
+            apf.savant_k_pct AS away_k_pct, apf.savant_bb_pct AS away_bb_pct,
+            apf.savant_whiff_pct AS away_whiff_pct, apf.savant_hard_hit_pct AS away_hard_hit_pct
      FROM games g
      LEFT JOIN pitcher_form hpf
        ON hpf.game_date = g.game_date AND hpf.pitcher_id = g.home_starter_id
@@ -50,6 +52,14 @@ export async function runMoneylineFilter(pool, gameDate) {
   const confirmedTeams = new Set(confirmedRows.map((r) => r.team));
 
   const num = (v) => (v !== null && v !== undefined ? Number(v) : null);
+  const savantOf = (r, side) => ({
+    era: num(r[`${side}_savant_era`]),
+    xera: num(r[`${side}_savant_xera`]),
+    kPct: num(r[`${side}_k_pct`]),
+    bbPct: num(r[`${side}_bb_pct`]),
+    whiffPct: num(r[`${side}_whiff_pct`]),
+    hardHitPct: num(r[`${side}_hard_hit_pct`]),
+  });
 
   const evaluated = rows.map((r) => {
     const homeMl = r.home_ml;
@@ -59,24 +69,40 @@ export async function runMoneylineFilter(pool, gameDate) {
     const awaySeasonEra = num(r.away_season_era);
     const awayTrailingEra = num(r.away_trailing_era);
     const awayTrailingStarts = r.away_trailing_starts ?? 0;
+    const homeSavant = savantOf(r, 'home');
+    const awaySavant = savantOf(r, 'away');
 
-    // In band = home priced -115 to -180. Judgment call: a game with no
-    // price yet can't be checked against a price band at all, so unlike
-    // the old rule (which allowed a "no-line" pick through on pitching
-    // alone), a real price is now required to qualify, this band IS the
-    // favorite check, there's nothing to evaluate without it.
+    // Pre-filter 1: home priced -115 to -180. A game with no price yet
+    // can't be checked against a band, so a real price is required.
     const inBand = hasLine && homeMl >= BAND_LOW && homeMl <= BAND_HIGH;
     const bandDistance = inBand ? 0 : hasLine ? Math.min(Math.abs(homeMl - BAND_LOW), Math.abs(homeMl - BAND_HIGH)) : 999;
 
+    // THE gate: home season ERA at least 2 runs lower than away season ERA.
     const startersKnown = r.home_starter_name !== null && r.away_starter_name !== null;
-    const awayEraGateMet = awayTrailingEra !== null && awayTrailingEra >= AWAY_TRAILING_ERA_MIN;
+    const haveSeasonEras = homeSeasonEra !== null && awaySeasonEra !== null;
+    const seasonEdge = haveSeasonEras ? awaySeasonEra - homeSeasonEra : null; // positive = home better
+    const edgeGateMet = seasonEdge !== null && seasonEdge >= SEASON_ERA_EDGE_MIN;
 
     const lineStatus = inBand ? 'priced' : hasLine ? 'out-of-band' : 'no-line';
     const startersConfirmed = confirmedTeams.has(r.home_team) && confirmedTeams.has(r.away_team);
 
-    const qualifies = inBand && awayEraGateMet;
-
+    const qualifies = inBand && edgeGateMet;
     const breakeven = hasLine ? breakevenPct(homeMl) : null;
+
+    // Grade every qualifier: how strong is this pick, not just does it
+    // pass. Bigger season-ERA edge, a sharper home arm, a more hittable
+    // away arm (Baseball Savant), and better price all lift the grade.
+    const graded = qualifies
+      ? gradeMoneyline({
+          seasonEdge,
+          homeSeasonEra,
+          awaySeasonEra,
+          breakevenPct: breakeven,
+          startersConfirmed,
+          homeSavant,
+          awaySavant,
+        })
+      : null;
 
     const reasons = [];
     if (!hasLine) {
@@ -90,11 +116,15 @@ export async function runMoneylineFilter(pool, gameDate) {
     }
     if (!startersKnown) {
       reasons.push('a starter has not been announced yet for this game, check back once MLB posts it');
-    } else if (!awayEraGateMet) {
+    } else if (!haveSeasonEras) {
       reasons.push(
-        awayTrailingEra === null
-          ? `no trailing ERA on file yet for ${r.away_starter_name}, check back after he has made a start`
-          : `${r.away_starter_name}'s trailing ERA is only ${fmtNum(awayTrailingEra)} over his last ${awayTrailingStarts} start(s), the screener wants ${AWAY_TRAILING_ERA_MIN.toFixed(2)}+`
+        `no season ERA on file yet for ${homeSeasonEra === null ? r.home_starter_name : r.away_starter_name}, check back after he has made a start`
+      );
+    } else if (!edgeGateMet) {
+      reasons.push(
+        seasonEdge > 0
+          ? `${r.home_starter_name}'s season ERA (${fmtNum(homeSeasonEra)}) is only ${fmtNum(seasonEdge)} runs better than ${r.away_starter_name}'s (${fmtNum(awaySeasonEra)}), the screener wants a ${SEASON_ERA_EDGE_MIN.toFixed(1)}+ run edge`
+          : `${r.away_starter_name} (${fmtNum(awaySeasonEra)} season ERA) has the better arm on paper than ${r.home_starter_name} (${fmtNum(homeSeasonEra)}), the home starter has to be the better arm`
       );
     }
 
@@ -108,53 +138,49 @@ export async function runMoneylineFilter(pool, gameDate) {
       lineStatus,
       startersConfirmed,
       homeStarterName: r.home_starter_name,
-      homeStarterTrailingEra: homeTrailingEra,
       homeStarterSeasonEra: homeSeasonEra,
+      homeStarterTrailingEra: homeTrailingEra,
       awayStarterName: r.away_starter_name,
+      awayStarterSeasonEra: awaySeasonEra,
       awayStarterTrailingEra: awayTrailingEra,
       awayStarterTrailingStarts: awayTrailingStarts,
-      awayStarterSeasonEra: awaySeasonEra,
+      seasonEraEdge: seasonEdge,
+      grade: graded?.grade ?? null,
+      gradeScore: graded?.score ?? null,
+      gradeReasons: graded?.reasons ?? [],
       qualifies,
       bandDistance,
       reason: reasons.join('; '),
     };
   });
 
-  // Rank by the REASON for the bet, not by ticket cost: worst away
-  // starter (highest trailing ERA) first, then cap at 2/day. Price is a
-  // filter (the band above), never a ranking key, sorting by cheapest
-  // break-even would systematically bury every -160/-175 game behind the
-  // -115s and silently delete the top half of the band. A rare exact ERA
-  // tie falls back to the cheaper price only to keep the order stable.
+  // Rank qualifiers by grade (best pick first). The Daily Slate publishes
+  // only the single best; the Research tab shows the whole list.
   const qualifying = evaluated
     .filter((g) => g.qualifies)
-    .sort((a, b) => (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0) || (a.breakevenPct ?? 1) - (b.breakevenPct ?? 1));
+    .sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0) || (b.seasonEraEdge ?? 0) - (a.seasonEraEdge ?? 0));
 
-  const picks = qualifying.slice(0, MAX_PICKS_PER_DAY);
-  const pickIds = new Set(picks.map((p) => p.gameId));
+  const pickIds = new Set(qualifying.map((p) => p.gameId));
 
-  // Every game NOT on the board, each with its why-not sentence. A game
-  // that actually qualified but lost out to the 2-per-day cap gets a
-  // distinct reason from one that never cleared the gates, so "so close"
-  // doesn't read the same as "way off".
+  // Every game NOT qualifying, each with its plain-English why-not, closest
+  // to the bar first.
   const otherGames = evaluated
     .filter((g) => !pickIds.has(g.gameId))
-    .map((g) => (g.qualifies
-      ? { ...g, reason: `Qualified today but only the top ${MAX_PICKS_PER_DAY} by worst away-starter ERA make the board.` }
-      : g))
     .sort((a, b) => {
-      if (a.qualifies !== b.qualifies) return a.qualifies ? -1 : 1;
-      if (a.qualifies) return (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0);
-      return a.bandDistance - b.bandDistance;
+      const aEdge = a.seasonEraEdge ?? -99;
+      const bEdge = b.seasonEraEdge ?? -99;
+      return (b.bandDistance === a.bandDistance ? bEdge - aEdge : a.bandDistance - b.bandDistance);
     })
     .map(({ gameId, qualifies, bandDistance, ...g }) => g);
 
   return {
-    // A real, first-class result: zero qualifying games today is "SIT",
-    // not a data gap, see MAX_PICKS_PER_DAY / web/app.js sitStateHtml.
-    signal: picks.length ? 'PLAY' : 'SIT',
-    hasProjected: picks.some((p) => !p.startersConfirmed),
-    picks: picks.map(({ gameId, qualifies, bandDistance, reason, ...p }) => p),
+    // A first-class result: zero qualifying games today is "SIT", not a
+    // data gap. Some days no home favorite has a 2-run season-ERA edge.
+    signal: qualifying.length ? 'PLAY' : 'SIT',
+    hasProjected: qualifying.some((p) => !p.startersConfirmed),
+    // All qualifiers, best-graded first (Research shows all, Daily Slate
+    // shows picks[0]).
+    picks: qualifying.map(({ gameId, qualifies, bandDistance, reason, ...p }) => p),
     otherGames,
   };
 }

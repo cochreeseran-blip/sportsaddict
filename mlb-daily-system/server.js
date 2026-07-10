@@ -535,14 +535,11 @@ const server = http.createServer(async (req, res) => {
       const [digest, availableDates, lockedMoneyline] = await Promise.all([
         loadDigest(date),
         listDigestDates(),
-        // The Moneyline Board renders from THIS, not digest.moneyline.picks.
-        // digest.moneyline is re-derived from live data on every pipeline
-        // run, so a game that qualified in the morning can fall back out
-        // once its own final score updates the starter's ERA (a bad final
-        // start can drop his trailing ERA edge below the 2-run bar). This
-        // is the permanent per-day ledger (see trackedPicks.js): once a
-        // game qualifies today it stays on today's board, W/L included,
-        // no matter what a later re-screen decides.
+        // The Daily Slate's Moneyline Board renders from THIS, not
+        // digest.moneyline.picks. It's the permanent per-day ledger (see
+        // trackedPicks.js): ONE official pick per day, the best-graded
+        // qualifier, locked in and graded against the final score, so a
+        // later re-screen can never swap or drop the call we published.
         pool.query(
           `SELECT mlb_game_id, locked_price, breakeven_pct, qualifying_metrics, result
            FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline' ORDER BY id`,
@@ -557,10 +554,14 @@ const server = http.createServer(async (req, res) => {
             breakevenPct: m.breakevenPct ?? (p.breakeven_pct !== null ? Number(p.breakeven_pct) : null),
             headline: m.headline ?? null,
             detail: m.detail ?? null,
+            grade: m.grade ?? null,
+            gradeScore: m.gradeScore ?? null,
+            gradeReasons: m.gradeReasons ?? [],
+            homeStarterName: m.homeStarterName ?? null,
+            homeStarterSeasonEra: m.homeStarterSeasonEra ?? null,
             awayStarterName: m.awayStarterName ?? null,
-            awayStarterTrailingEra: m.awayStarterTrailingEra ?? null,
-            awayStarterTrailingStarts: m.awayStarterTrailingStarts ?? null,
             awayStarterSeasonEra: m.awayStarterSeasonEra ?? null,
+            seasonEraEdge: m.seasonEraEdge ?? null,
             result: p.result,
           };
         })),

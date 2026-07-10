@@ -11,7 +11,7 @@ import { runWindHrFilter } from './filters/windHr.js';
 import { runStrikeoutFilter } from './filters/strikeouts.js';
 import { saveDigest } from './digest.js';
 import { buildTopPicks, moneylineCandidates } from './topPicks.js';
-import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
+import { recordBestMoneyline, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
 import { GO_LIVE_HOUR_UTC } from './goLive.js';
@@ -468,16 +468,17 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // run's in-memory warnings.
   await saveDigest(pool, gameDate, 'warnings', { warnings });
 
-  // The permanent ledger (the "All-time" record on Daily Slate) tracks
-  // every qualifying moneyline call, that's the board the Daily Slate
-  // publishes and stands behind, graded by a clean final score. Player
-  // props stay out of the ledger. Skipped entirely once the board is
-  // locked for the day, that's the whole point of the freeze.
+  // The permanent ledger (the public W-L record on Daily Slate) tracks
+  // ONE official moneyline per day: the single best-graded qualifier, the
+  // pick the Daily Slate publishes and stands behind, graded by a clean
+  // final score. Player props stay out of the ledger. Skipped entirely
+  // once the board is locked for the day, that's the whole point of the
+  // freeze.
   if (boardLocked) {
     log('Tracked picks: skipped, moneyline board is locked for the day.');
   } else {
-    const trackedCount = await recordTrackedPicks(pool, gameDate, liveMlCandidates);
-    log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
+    const trackedCount = await recordBestMoneyline(pool, gameDate, liveMlCandidates);
+    log(`Tracked picks: best moneyline recorded (${trackedCount} row change).`);
 
     // Lock the board once this run happens at or after go-live, so every
     // later run today (hourly refreshes, manual "Refresh") stops adding

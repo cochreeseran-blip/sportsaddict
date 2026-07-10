@@ -20,27 +20,30 @@ export function moneylineCandidates(moneyline) {
   return (moneyline?.picks || []).map((p) => ({
     type: 'moneyline',
     key: `ml:${p.homeTeam}:${p.awayTeam}`,
-    // Ordering key for the pooled top-6 only (worst away arm ranks
-    // higher), not a displayed grade. The moneyline board never ranks on
-    // this, it uses the deterministic sort in lib/filters/moneyline.js.
-    score: p.awayStarterTrailingEra ?? 0,
+    // The moneyline grade (lib/grading.js gradeMoneyline) is the ranking
+    // key everywhere: the pooled top-6, the single best pick the Daily
+    // Slate publishes, and the Research list order.
+    score: p.gradeScore ?? 0,
+    grade: p.grade ?? null,
+    gradeScore: p.gradeScore ?? null,
+    gradeReasons: p.gradeReasons ?? [],
     mlbGameId: p.mlbGameId ?? null,
     homeTeam: p.homeTeam,
     awayTeam: p.awayTeam,
     homeMl: p.homeMl ?? null,
     breakevenPct: p.breakevenPct ?? null,
-    // Away starter's TRAILING ERA is the qualifying signal (see
-    // lib/filters/moneyline.js), always carried with the start count it
-    // was computed from. Season ERA rides along too but is display-only
-    // context, never re-derived as a gate downstream.
-    awayStarterName: p.awayStarterName ?? null,
-    awayStarterTrailingEra: p.awayStarterTrailingEra ?? null,
-    awayStarterTrailingStarts: p.awayStarterTrailingStarts ?? null,
-    awayStarterSeasonEra: p.awayStarterSeasonEra ?? null,
+    // Season ERA (home vs away) is the qualifying signal now (see
+    // lib/filters/moneyline.js). Trailing ERA rides along as context.
     homeStarterName: p.homeStarterName ?? null,
     homeStarterSeasonEra: p.homeStarterSeasonEra ?? null,
+    homeStarterTrailingEra: p.homeStarterTrailingEra ?? null,
+    awayStarterName: p.awayStarterName ?? null,
+    awayStarterSeasonEra: p.awayStarterSeasonEra ?? null,
+    awayStarterTrailingEra: p.awayStarterTrailingEra ?? null,
+    awayStarterTrailingStarts: p.awayStarterTrailingStarts ?? null,
+    seasonEraEdge: p.seasonEraEdge ?? null,
     headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}`,
-    detail: `${p.awayStarterName ?? 'The away starter'}'s trailing ERA is ${fmtNum(p.awayStarterTrailingEra)} over his last ${p.awayStarterTrailingStarts ?? 0} start(s) (season: ${fmtNum(p.awayStarterSeasonEra)}).`,
+    detail: `${p.homeStarterName ?? 'The home starter'} (${fmtNum(p.homeStarterSeasonEra)} season ERA) is ${fmtNum(p.seasonEraEdge)} runs better than ${p.awayStarterName ?? 'the away starter'} (${fmtNum(p.awayStarterSeasonEra)}).`,
   }));
 }
 

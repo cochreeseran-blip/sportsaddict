@@ -406,6 +406,41 @@ function strikeoutResearchTable(so) {
     </div>`;
 }
 
+// Every moneyline qualifier (home season ERA 2+ better than away),
+// best-graded first. The single best is what the Daily Slate publishes as
+// the day's pick; this shows the whole field with the grade and the edge.
+function moneylineResearchTable(moneyline) {
+  const list = moneyline?.picks || [];
+  if (!list.length) return '';
+  const rows = list.map((p, i) => `
+    <tr class="${i === 0 ? 'hc' : ''}">
+      <td class="rank-col mono">${i + 1}</td>
+      <td>${gradeBadgeHtml(p.grade)}</td>
+      <td>
+        <div class="player-cell">
+          ${logoHtml(null, p.homeTeam, 26)}
+          <div>
+            <div class="player-nm">${esc(p.homeTeam)}${p.homeMl !== null && p.homeMl !== undefined ? ` <span class="mono faint">${fmtOdds(p.homeMl)}</span>` : ''}</div>
+            <div class="player-meta"><span>vs ${esc(p.awayTeam)}</span>${i === 0 ? '<span class="pill info" style="padding:0 6px">Today’s pick</span>' : ''}</div>
+          </div>
+        </div>
+      </td>
+      <td class="mono"><strong>${fmtNum(p.homeStarterSeasonEra)}</strong></td>
+      <td class="mono">${fmtNum(p.awayStarterSeasonEra)}</td>
+      <td class="mono pos">${fmtNum(p.seasonEraEdge)}</td>
+      <td class="mono">${p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '-'}</td>
+    </tr>`).join('');
+  return `
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr>
+          <th class="rank-col">#</th><th>Grade</th><th>Home favorite</th><th>Home ERA</th><th>Away ERA</th><th>Edge</th><th>Break-even</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 async function renderResearch() {
   const host = $('#view-slate');
   host.innerHTML = skeletonCards(6);
@@ -430,6 +465,7 @@ async function renderResearch() {
 
     const hitCount = d.hitStreak?.watchList?.length || 0;
     const koCount = d.strikeouts?.watchList?.length || 0;
+    const mlCount = d.moneyline?.picks?.length || 0;
     const count = (n) => `<span class="board-count">${n}</span>`;
 
     host.innerHTML = `
@@ -441,6 +477,10 @@ async function renderResearch() {
 
       ${topHitPropsStrip(d.hitStreak, d.date)}
       ${topStrikeoutPropsStrip(d.strikeouts, d.date)}
+
+      <h2 class="board-title">Moneyline qualifiers${count(mlCount)}</h2>
+      <p class="section-sub">Home favorites (-115 to -180) whose starter's season ERA is at least 2 runs better than the opponent's, graded and ranked. The Daily Slate publishes the top one as the day's pick.</p>
+      ${moneylineResearchTable(d.moneyline) || emptyHtml('No moneyline qualifiers', 'No home favorite has a 2+ run season-ERA edge on the opposing starter today.')}
 
       <h2 class="board-title">Hot bats vs beatable arms${count(hitCount)}</h2>
       <p class="section-sub">Ranked by recent batting form against how the opposing starter has actually been throwing. Confirm the lineup before reading anything into it.</p>
@@ -587,31 +627,36 @@ async function moneylineVerdictBlock(gamePk, date) {
     } catch { return ''; }
   }
   const idStr = String(gamePk);
-  // The locked ledger, not the live re-screen: once a game's on today's
-  // board it stays there (and keeps its result) even if a later run's
-  // numbers would no longer qualify it.
-  const pick = (d.lockedMoneyline || []).find((p) => String(p.mlbGameId) === idStr);
-  if (pick) {
-    return `
+  const block = (cls, head, text) => `
       <div class="gp-block">
         <div class="gp-block-title">Moneyline screen</div>
-        <div class="ml-verdict on">
-          <div class="mlv-head"><span class="mlv-badge">${esc(pick.homeTeam || '')} ML${pick.homeMl !== null && pick.homeMl !== undefined ? ` ${fmtOdds(pick.homeMl)}` : ''}</span>${resultChip(pick.result)}</div>
-          <div class="mlv-text">${esc(pick.detail || 'On today’s board.')}</div>
+        <div class="ml-verdict ${cls}">
+          <div class="mlv-head">${head}</div>
+          <div class="mlv-text">${text}</div>
         </div>
       </div>`;
+
+  // 1. Today's official published pick (the locked ledger), with its grade
+  //    and W/L once graded.
+  const pick = (d.lockedMoneyline || []).find((p) => String(p.mlbGameId) === idStr);
+  if (pick) {
+    return block('on',
+      `<span class="mlv-badge">${esc(pick.homeTeam || '')} ML${pick.homeMl !== null && pick.homeMl !== undefined ? ` ${fmtOdds(pick.homeMl)}` : ''}</span>${pick.grade ? gradeBadgeHtml(pick.grade) : ''}<span class="mlv-tag">Today's moneyline</span>${resultChip(pick.result)}`,
+      esc(pick.detail || 'On today’s board.'));
   }
+  // 2. Qualified (home season ERA 2+ better) but wasn't the single best,
+  //    so it isn't today's published pick.
+  const q = (d.moneyline?.picks || []).find((p) => String(p.mlbGameId) === idStr);
+  if (q) {
+    return block('on',
+      `<span class="mlv-badge">${esc(q.homeTeam || '')} ML${q.homeMl !== null && q.homeMl !== undefined ? ` ${fmtOdds(q.homeMl)}` : ''}</span>${q.grade ? gradeBadgeHtml(q.grade) : ''}<span class="mlv-tag dim">Qualified, not today's top play</span>`,
+      esc(q.detail || 'Cleared the season-ERA edge, just graded behind today’s pick.'));
+  }
+  // 3. Didn't clear the gate, the plain-English why-not.
   const other = (d.moneyline?.otherGames || []).find((g) => String(g.mlbGameId) === idStr);
   if (other && other.reason) {
     const sentence = other.reason.charAt(0).toUpperCase() + other.reason.slice(1);
-    return `
-      <div class="gp-block">
-        <div class="gp-block-title">Moneyline screen</div>
-        <div class="ml-verdict off">
-          <div class="mlv-head"><span class="mlv-badge dim">Not on the board</span></div>
-          <div class="mlv-text">${esc(sentence)}.</div>
-        </div>
-      </div>`;
+    return block('off', `<span class="mlv-badge dim">Not on the board</span>`, `${esc(sentence)}.`);
   }
   return '';
 }
@@ -820,35 +865,38 @@ function lockedMoneylineCard(p, statusByGamePk) {
   const g = isPending && p.mlbGameId ? statusByGamePk?.get(String(p.mlbGameId)) : null;
   const isLive = g?.abstractState === 'Live';
   const stateCls = isLive ? 'live' : (p.result || 'pending');
-  // A moneyline card shows ONLY the two facts that qualified it: the away
-  // starter's trailing ERA (with its start count) and the break-even % at
-  // the locked price. No letter grade, a moneyline pick is a pass/fail
-  // screen, not a graded one (see the note in lib/grading.js). Season ERA
-  // rides along as clearly labeled context, never the reason it's here.
-  const eraLine = p.awayStarterTrailingEra !== null && p.awayStarterTrailingEra !== undefined
-    ? `${esc(p.awayStarterName || 'Away starter')} trailing ${fmtNum(p.awayStarterTrailingEra)} ERA (last ${p.awayStarterTrailingStarts ?? 0} starts)${p.awayStarterSeasonEra !== null && p.awayStarterSeasonEra !== undefined ? `, season ${fmtNum(p.awayStarterSeasonEra)}` : ''}`
+  // The qualifying fact is the SEASON-ERA edge (home starter better than
+  // away by 2+ runs on the books). The grade says how strong a qualifier
+  // it is. Trailing/Savant context lives in the game panel's breakdown.
+  const edgeLine = p.seasonEraEdge !== null && p.seasonEraEdge !== undefined && p.homeStarterName
+    ? `${esc(p.homeStarterName)} ${fmtNum(p.homeStarterSeasonEra)} season ERA vs ${esc(p.awayStarterName || 'opp')} ${fmtNum(p.awayStarterSeasonEra)} — <strong>${fmtNum(p.seasonEraEdge)} runs better</strong>`
     : '';
   return `
     <div class="sig-card locked-${stateCls}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
       <div class="sig-head">
         <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}</span>
-        ${bigResultBadge(p.result, isLive ? g : null)}
+        <span style="display:flex;align-items:center;gap:8px">${p.grade ? gradeBadgeHtml(p.grade) : ''}${bigResultBadge(p.result, isLive ? g : null)}</span>
       </div>
       <div class="sig-sub">${esc(p.detail || `To beat ${p.awayTeam || 'the visitor'}.`)}</div>
-      ${eraLine ? `<div class="sig-note">${esc(eraLine)}</div>` : ''}
+      ${edgeLine ? `<div class="sig-note">${edgeLine}</div>` : ''}
       ${breakeven ? `<div class="sig-note">Locked ${fmtOdds(p.homeMl)} · break-even ${breakeven}</div>` : ''}
     </div>`;
 }
 
+// The Daily Slate publishes exactly ONE moneyline: the single best-graded
+// call of the day (picks arrive best-first). If the ledger somehow holds
+// more (legacy rows), only the best is shown here; the full list lives on
+// Research.
 function lockedMoneylineCards(picks, statusByGamePk) {
   if (!picks?.length) return '';
-  return `<div class="sig-cards">${picks.map((p) => lockedMoneylineCard(p, statusByGamePk)).join('')}</div>`;
+  const best = [...picks].sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0))[0];
+  return `<div class="sig-cards">${lockedMoneylineCard(best, statusByGamePk)}</div>`;
 }
 
-// SIT is a real, displayed result now (see MAX_PICKS_PER_DAY in
-// lib/filters/moneyline.js), not an absence of data: some days nothing
-// clears the -115/-180 favorite band with a 6.00+ trailing-ERA away
-// starter, and that's the system working, not a gap.
+// SIT is a real, displayed result, not an absence of data: some days no
+// game clears the bar (a home favorite priced -115 to -180 whose starter's
+// SEASON ERA is 2+ runs better than the opponent's), and sitting out is
+// the system working, not a gap.
 function sitStateHtml() {
   return `
     <div class="sig-card sit-card">
@@ -856,7 +904,7 @@ function sitStateHtml() {
         <span>Today's call</span>
         <span class="mlv-big sit">SIT</span>
       </div>
-      <div class="sig-sub">No game clears the bar today: a home favorite priced -115 to -180 with the away starter's trailing ERA at 6.00 or worse over his last 3 starts. Sitting out is the system working, not a data gap.</div>
+      <div class="sig-sub">No game clears the bar today: a home favorite priced -115 to -180 whose starter's season ERA is at least 2 runs better than the opposing starter's. Sitting out is the system working, not a data gap.</div>
     </div>`;
 }
 

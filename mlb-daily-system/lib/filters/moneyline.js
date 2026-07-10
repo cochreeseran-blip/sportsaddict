@@ -154,20 +154,25 @@ export async function runMoneylineFilter(pool, gameDate) {
     };
   });
 
-  // Rank qualifiers by the AWAY starter's TRAILING ERA, descending (the
-  // worst arm first). Per spec, this is deliberate and NOT the grade:
-  // "the top of the board" is the qualifying game facing the shakiest
-  // recent pitching, that's the actual thesis of the bet, not a composite
-  // score. The grade still gets computed and shown (it answers "how good
-  // a qualifier is this", useful context for admin review and Research),
-  // but it does not decide the order here. Ties (rare) fall back to the
-  // season-ERA edge, then price.
+  // Rank qualifiers by SAFETY, biggest edge first. The top of the board
+  // (and therefore the single free-slate pick) is the qualifying game with
+  // the largest season-ERA edge, home starter over away — the play most
+  // likely to actually win, not the one at the flashiest price. This is a
+  // deliberate change from ranking on the away starter's trailing ERA
+  // alone ("worst opposing arm"): a big trailing-ERA number off a 3-start
+  // window can sit on top of a thin real edge, which is exactly the
+  // shakier, worse-odds bet we don't want fronting the slate. Rank order:
+  //   1. season-ERA edge, descending (the safety signal, most likely to win)
+  //   2. away starter's trailing ERA, descending (worst recent arm breaks ties)
+  //   3. break-even %, ascending (better price breaks remaining ties)
+  // The grade still gets computed and shown for context, but it does not
+  // decide the order.
   const qualifying = evaluated
     .filter((g) => g.qualifies)
     .sort((a, b) =>
+      (b.seasonEraEdge ?? -Infinity) - (a.seasonEraEdge ?? -Infinity) ||
       (b.awayStarterTrailingEra ?? -Infinity) - (a.awayStarterTrailingEra ?? -Infinity) ||
-      (b.seasonEraEdge ?? 0) - (a.seasonEraEdge ?? 0) ||
-      (a.homeMl ?? 0) - (b.homeMl ?? 0)
+      (a.breakevenPct ?? 1) - (b.breakevenPct ?? 1)
     );
 
   const pickIds = new Set(qualifying.map((p) => p.gameId));

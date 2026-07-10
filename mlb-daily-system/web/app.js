@@ -406,14 +406,23 @@ function strikeoutResearchTable(so) {
     </div>`;
 }
 
-// Every moneyline qualifier (home season ERA 2+ better than away),
-// best-graded first. The single best is what the Daily Slate publishes as
-// the day's pick; this shows the whole field with the grade and the edge.
+// Every moneyline qualifier (home season ERA 2+ better than away), safest
+// (biggest edge) first. The rows Slatefinder actually published — the
+// admin's calls, the ones on the public record — are flagged as such;
+// everything else is a qualifier that was screened but passed on. Each
+// arm shows its official SEASON ERA (the number on the books, the one the
+// gate decides on) with its last-5-starts trailing ERA underneath for
+// recent-form context.
 function moneylineResearchTable(moneyline) {
   const list = moneyline?.picks || [];
   if (!list.length) return '';
+  const eraCell = (season, trailing) => `
+    <td class="mono">
+      <strong>${fmtNum(season)}</strong>
+      <div class="faint" style="font-size:11px;margin-top:2px">${fmtNum(trailing)} last 5</div>
+    </td>`;
   const rows = list.map((p, i) => `
-    <tr class="${i === 0 ? 'hc' : ''}">
+    <tr class="${p.published ? 'hc' : ''}">
       <td class="rank-col mono">${i + 1}</td>
       <td>${gradeBadgeHtml(p.grade)}</td>
       <td>
@@ -421,12 +430,12 @@ function moneylineResearchTable(moneyline) {
           ${logoHtml(null, p.homeTeam, 26)}
           <div>
             <div class="player-nm">${esc(p.homeTeam)}${p.homeMl !== null && p.homeMl !== undefined ? ` <span class="mono faint">${fmtOdds(p.homeMl)}</span>` : ''}</div>
-            <div class="player-meta"><span>vs ${esc(p.awayTeam)}</span>${i === 0 ? '<span class="pill info" style="padding:0 6px">Today’s pick</span>' : ''}</div>
+            <div class="player-meta"><span>vs ${esc(p.awayTeam)}</span>${p.published ? '<span class="pill ok" style="padding:0 6px">Slatefinder’s call</span>' : ''}</div>
           </div>
         </div>
       </td>
-      <td class="mono"><strong>${fmtNum(p.homeStarterSeasonEra)}</strong></td>
-      <td class="mono">${fmtNum(p.awayStarterSeasonEra)}</td>
+      ${eraCell(p.homeStarterSeasonEra, p.homeStarterTrailingEra)}
+      ${eraCell(p.awayStarterSeasonEra, p.awayStarterTrailingEra)}
       <td class="mono pos">${fmtNum(p.seasonEraEdge)}</td>
       <td class="mono">${p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : '-'}</td>
     </tr>`).join('');
@@ -434,7 +443,7 @@ function moneylineResearchTable(moneyline) {
     <div class="table-wrap">
       <table class="data-table">
         <thead><tr>
-          <th class="rank-col">#</th><th>Grade</th><th>Home favorite</th><th>Home ERA</th><th>Away ERA</th><th>Edge</th><th>Break-even</th>
+          <th class="rank-col">#</th><th>Grade</th><th>Home favorite</th><th>Home ERA<div class="faint" style="font-weight:400;font-size:10px">season / last 5</div></th><th>Away ERA<div class="faint" style="font-weight:400;font-size:10px">season / last 5</div></th><th>Edge</th><th>Break-even</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -883,14 +892,19 @@ function lockedMoneylineCard(p, statusByGamePk) {
     </div>`;
 }
 
-// The Daily Slate publishes exactly ONE moneyline: the single best-graded
-// call of the day (picks arrive best-first). If the ledger somehow holds
-// more (legacy rows), only the best is shown here; the full list lives on
-// Research.
+// The Daily Slate's free surface is exactly ONE moneyline: the safest of
+// the day's published picks — biggest season-ERA edge first (home starter
+// over away), the play most likely to actually win, matching how the
+// screener now ranks the board. If the admin published more than one, the
+// others are still on the record and shown in Research marked as calls;
+// the free slate just fronts the single safest one.
 function lockedMoneylineCards(picks, statusByGamePk) {
   if (!picks?.length) return '';
-  const best = [...picks].sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0))[0];
-  return `<div class="sig-cards">${lockedMoneylineCard(best, statusByGamePk)}</div>`;
+  const safest = [...picks].sort((a, b) =>
+    (b.seasonEraEdge ?? -Infinity) - (a.seasonEraEdge ?? -Infinity) ||
+    (b.gradeScore ?? 0) - (a.gradeScore ?? 0)
+  )[0];
+  return `<div class="sig-cards">${lockedMoneylineCard(safest, statusByGamePk)}</div>`;
 }
 
 // SIT is a real, displayed result, not an absence of data: some days no
@@ -1016,20 +1030,9 @@ async function renderSignals(silent = false) {
     // board itself is published by the 9 AM ET run and gated before then.
     const gated = isBeforeGoLive(d.date);
     const lockedPicks = d.lockedMoneyline || [];
-    const mlCount = gated ? null : lockedPicks.length;
     const statusByGamePk = new Map(games.map((g) => [String(g.gamePk), g]));
-    // Today so far, straight off the locked ledger for this date.
-    let dayW = 0, dayL = 0, dayPend = 0;
-    for (const p of lockedPicks) {
-      if (p.result === 'win') dayW++;
-      else if (p.result === 'loss') dayL++;
-      else if (p.result === 'pending') dayPend++;
-    }
-    const dayRecord = !gated && (dayW + dayL + dayPend) > 0
-      ? `<span class="ml-day-record${dayW > dayL ? ' up' : dayL > dayW ? ' down' : ''}">${dayW}–${dayL}${dayPend ? ` · ${dayPend} pending` : ''}</span>`
-      : '';
     const mlBody = gated
-      ? goLiveGate('gateSeeYesterday', 'The moneyline board is published with the 9 AM ET run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
+      ? goLiveGate('gateSeeYesterday', 'The free pick is published with the 9 AM ET run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
       : (lockedMoneylineCards(lockedPicks, statusByGamePk) || sitStateHtml());
 
     host.innerHTML = `
@@ -1042,7 +1045,8 @@ async function renderSignals(silent = false) {
       <h2 class="board-title">Games<span class="board-count">${games.length}</span></h2>
       ${gamesHtml}
 
-      <h2 class="board-title">Moneyline Board${mlCount !== null ? `<span class="board-count">${mlCount}</span>` : ''}${dayRecord}</h2>
+      <h2 class="board-title">Today's free pick</h2>
+      <p class="board-sub" style="margin:-4px 0 12px;color:var(--text-2);font-size:13px">The single safest call on today's slate — biggest ERA edge, home starter over away. Every published call and the full board live in <b>Research</b> and on the <a href="/record" style="color:var(--text-2)">track record</a>.</p>
       ${mlBody}`;
 
     $('#signalsDate').addEventListener('change', (e) => {

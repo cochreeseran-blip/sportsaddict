@@ -679,6 +679,17 @@ const server = http.createServer(async (req, res) => {
           };
         })),
       ]);
+      // Mark which live moneyline qualifiers are the ones actually
+      // published (the admin's calls, on the record). Research uses this to
+      // flag "Slatefinder's call" on the exact games that were chosen,
+      // instead of guessing that the top-ranked row is the pick.
+      const publishedGameIds = new Set((lockedMoneyline || []).map((p) => String(p.mlbGameId)));
+      if (digest.moneyline?.picks?.length) {
+        digest.moneyline.picks = digest.moneyline.picks.map((p) => ({
+          ...p,
+          published: publishedGameIds.has(String(p.mlbGameId)),
+        }));
+      }
       sendJson(res, 200, { date, availableDates, ...applyTierGate(digest, viewer), lockedMoneyline });
       return;
     }

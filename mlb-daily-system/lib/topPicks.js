@@ -6,23 +6,21 @@ function lineupWarning(lineupConfirmed) {
     : '';
 }
 
-// Top 6 pooled list for the daily email + console digest (NOT the site,
-// the web moneyline board renders straight from the ledger). Moneyline
-// calls and player props pooled into one ranked list. Prop candidates
-// carry a real graded score from lib/grading.js; a moneyline pick has no
-// grade (see the note in lib/grading.js), so its ordering key here is
-// simply the away starter's trailing ERA, the actual reason for the bet,
-// matching the board's own worst-arm-first sort. This is an internal
-// ordering key only, never surfaced as a "grade" or score to a reader.
-// Exported: the pipeline records every one of these moneyline calls in
-// the tracked-picks ledger, not just the ones that crack the top 6.
+// Candidate builders for the three signal types. Shared by the pooled
+// top-6 (email/console) and by the pipeline's tracked-picks recording:
+// every one of these candidates is written to the tracked_picks ledger
+// (published = false) so the algorithm's untouched record exists
+// independent of what an admin later chooses to publish.
+
+// Moneyline calls. A moneyline pick has no grade (see the note in
+// lib/grading.js): its ordering key here is simply the away starter's
+// trailing ERA, the actual reason for the bet, matching the board's own
+// worst-arm-first sort. Internal ordering only, never surfaced as a
+// score.
 export function moneylineCandidates(moneyline) {
   return (moneyline?.picks || []).map((p) => ({
     type: 'moneyline',
     key: `ml:${p.homeTeam}:${p.awayTeam}`,
-    // Ordering key for the pooled top-6 only (worst away arm ranks
-    // higher), not a displayed grade. The moneyline board never ranks on
-    // this, it uses the deterministic sort in lib/filters/moneyline.js.
     score: p.awayStarterTrailingEra ?? 0,
     mlbGameId: p.mlbGameId ?? null,
     homeTeam: p.homeTeam,
@@ -44,7 +42,7 @@ export function moneylineCandidates(moneyline) {
   }));
 }
 
-function hitPropCandidates(hitStreak) {
+export function hitPropCandidates(hitStreak) {
   return (hitStreak?.watchList || []).map((b) => ({
     type: 'hit_streak',
     key: `hit:${b.batterName}:${b.team}`,
@@ -63,12 +61,14 @@ function hitPropCandidates(hitStreak) {
     // Always carried alongside the average, a .345 on 58 at-bats and a
     // .345 on 12 at-bats are not the same claim, see lib/filters/hitStreak.js.
     trailing15Ab: b.trailing15Ab ?? 0,
+    opposingStarterName: b.opposingStarterName ?? null,
+    opposingStarterTrailingEra: b.opposingStarterTrailingEra ?? null,
     headline: `${b.batterName} (${b.team}) to get a hit`,
     detail: `${b.hitStreak >= 5 ? `On a ${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 games (${b.trailing15Ab ?? 0} AB)`}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
   }));
 }
 
-function koCandidates(strikeouts) {
+export function koCandidates(strikeouts) {
   return (strikeouts?.watchList || []).map((p) => ({
     type: 'strikeout',
     key: `ko:${p.pitcherName}`,
@@ -82,15 +82,18 @@ function koCandidates(strikeouts) {
     suggestedLine: p.suggestedLine,
     last5StartKs: p.last5StartKs,
     strictFloorKs: p.strictFloorKs,
+    kPerStart: p.kPerStart ?? null,
+    trailingEra: p.trailingEra ?? null,
+    isHome: p.isHome ?? null,
+    opponent: p.opponent ?? null,
     headline: `${p.pitcherName} over ${p.suggestedLine.toFixed(1)} strikeouts`,
     detail: `Reached ${p.strictFloorKs}+ Ks in every recent start (${fmtNum(p.kPerStart, 1)} per start${p.trailingEra !== null && p.trailingEra !== undefined ? `, ${fmtNum(p.trailingEra)} ERA` : ''}), ${p.isHome ? 'at home ' : ''}vs ${p.opponent}.`,
   }));
 }
 
-// Top 6 across moneyline + hit props + K/O picks, ranked by the composite
-// scores above. Same player can appear in more than one bucket, they're
-// different bets. At least one moneyline pick is always in the slate: if
-// none makes the natural cut, the best available ML takes the last slot.
+// Top 6 pooled list for the daily email + console digest (NOT the site,
+// the web moneyline board renders straight from the ledger). Moneyline
+// calls and player props pooled into one ranked list.
 //
 // Takes an already-built moneyline candidate list (not the raw filter
 // output) so the caller can pass either the live-computed candidates or,

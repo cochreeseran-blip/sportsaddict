@@ -1,0 +1,386 @@
+/* Slatefinder admin console. Served only on the admin host and only to
+   an admin account (server verifies role on every request; this file
+   never arrives on the customer host). No build step, vanilla JS, same
+   relative-fetch, same-origin model as the customer app. */
+'use strict';
+
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtOdds = (ml) => (ml === null || ml === undefined ? '-' : ml > 0 ? `+${ml}` : `${ml}`);
+const fmtNum = (n, d = 2) => (n === null || n === undefined ? '-' : Number(n).toFixed(d));
+const fmtPct = (n, d = 1) => (n === null || n === undefined ? '-' : `${(Number(n) * 100).toFixed(d)}%`);
+
+function todayIso() { return new Date().toISOString().slice(0, 10); }
+function fmtTime(iso) {
+  if (!iso) return 'TBD';
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
+}
+function fmtDateTime(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
+}
+
+async function api(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `${path} -> ${res.status}`);
+  return res.json();
+}
+async function apiSend(path, method, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `${path} -> ${res.status}`);
+  return data;
+}
+
+const state = { view: 'slate', slateDate: todayIso(), autoTimer: null };
+
+// ---------------------------------------------------------------------------
+// SLATE REVIEW
+// Every pick the pipeline generated for the date, published and not,
+// grouped by signal type, with the qualifying metrics that produced it.
+// Moneyline is ordered worst-away-arm first; the top row is flagged as
+// the one that goes to the free slate.
+
+function warningsHtml(warnings) {
+  if (!warnings?.length) return '';
+  return `<div class="admin-warn">${warnings.map((w) => `<div>${esc(w)}</div>`).join('')}</div>`;
+}
+
+function metricLine(label, value) {
+  return `<span class="admin-metric"><span class="k">${esc(label)}</span><span class="v">${value}</span></span>`;
+}
+
+function moneylineMetrics(p) {
+  return [
+    metricLine('Away starter', esc(p.awayStarterName || '-')),
+    metricLine('Trailing ERA', `${fmtNum(p.awayStarterTrailingEra)} (${p.awayStarterTrailingStarts ?? 0} starts)`),
+    metricLine('Season ERA', fmtNum(p.awayStarterSeasonEra)),
+    metricLine('Locked price', fmtOdds(p.homeMl ?? p.lockedPrice)),
+    metricLine('Break-even', fmtPct(p.breakevenPct)),
+  ].join('');
+}
+function hitMetrics(p) {
+  return [
+    metricLine('Batter', esc(p.batterName || '-')),
+    metricLine('Trailing avg', `${fmtNum(p.trailing15Avg, 3)} (${p.trailing15Ab ?? 0} AB)`),
+    metricLine('Lineup', p.lineupConfirmed === true ? 'confirmed' : 'not posted'),
+  ].join('');
+}
+function koMetrics(p) {
+  return [
+    metricLine('Pitcher', esc(p.pitcherName || '-')),
+    metricLine('Line', p.suggestedLine !== null && p.suggestedLine !== undefined ? `over ${Number(p.suggestedLine).toFixed(1)}` : '-'),
+    metricLine('Floor', `${p.strictFloorKs ?? '-'}+ Ks`),
+    metricLine('K/start', fmtNum(p.kPerStart, 1)),
+  ].join('');
+}
+
+function pickRow(p, { isFreeTop = false } = {}) {
+  const metrics = p.signalType === 'moneyline' ? moneylineMetrics(p)
+    : p.signalType === 'hit_streak' ? hitMetrics(p)
+    : p.signalType === 'strikeout' ? koMetrics(p) : '';
+
+  const startBadge = p.gameStarted === true
+    ? '<span class="pill hot"><span class="pill-dot"></span>Game started</span>'
+    : `<span class="pill dim">First pitch ${esc(fmtTime(p.gameTimeUtc))}</span>`;
+
+  const control = p.published
+    ? `<div class="admin-published">Published ${esc(fmtDateTime(p.publishedAt))} · locked on the record</div>`
+    : (p.gameStarted === true
+        ? '<div class="admin-locked-note">Cannot publish, game has started.</div>'
+        : `<button class="btn primary small" data-publish="${p.id}">Publish</button>`);
+
+  return `
+    <div class="admin-pick ${p.published ? 'is-published' : ''} ${isFreeTop ? 'is-free-top' : ''}">
+      <div class="admin-pick-head">
+        <div class="admin-pick-title">${isFreeTop ? '<span class="admin-free-tag">FREE SLATE</span> ' : ''}${esc(p.headline || p.description || '')}</div>
+        <div class="admin-pick-badges">${startBadge}</div>
+      </div>
+      <div class="admin-metrics">${metrics}</div>
+      ${warningsHtml(p.warnings)}
+      <div class="admin-pick-foot">${control}</div>
+    </div>`;
+}
+
+function signalSection(title, picks, opts = {}) {
+  if (!picks.length) return `<h2 class="board-title">${esc(title)}<span class="board-count">0</span></h2><p class="section-sub">Nothing generated for this date.</p>`;
+  const rows = picks.map((p, i) => pickRow(p, { isFreeTop: opts.markFreeTop && i === 0 && p.signalType === 'moneyline' })).join('');
+  return `<h2 class="board-title">${esc(title)}<span class="board-count">${picks.length}</span></h2>${rows}`;
+}
+
+async function renderSlate() {
+  const host = $('#admin-view');
+  host.innerHTML = '<div class="section-head"><h2 class="section-title">Slate review</h2></div><p class="section-sub">Loading…</p>';
+  try {
+    const d = await api(`/api/admin/slate?date=${state.slateDate}`);
+    state.slateDate = d.date;
+    const ml = d.picks.moneyline || [];
+    const hits = d.picks.hit_streak || [];
+    const kos = d.picks.strikeout || [];
+
+    const anyUnconfirmedProps = hits.some((p) => p.lineupConfirmed !== true);
+
+    host.innerHTML = `
+      <div class="section-head"><h2 class="section-title">Slate review</h2></div>
+      <div class="signals-toolbar">
+        <input type="date" class="date-select" id="slateDate" value="${esc(d.date)}" max="${esc(tomorrowIso())}">
+        <span class="section-freshness">Publishing is permanent. There is no edit or delete.</span>
+      </div>
+      ${anyUnconfirmedProps ? '<div class="admin-warn admin-warn-top">Some batter props are on games without a confirmed lineup. Batter props are unreliable until the lineup is out.</div>' : ''}
+
+      ${signalSection('Moneyline', ml, { markFreeTop: true })}
+      ${signalSection('Hit props', hits)}
+      ${signalSection('Strikeout props', kos)}`;
+
+    $('#slateDate').addEventListener('change', (e) => {
+      const v = e.target.value;
+      if (v) { state.slateDate = v; renderSlate(); }
+    });
+
+    host.querySelectorAll('[data-publish]').forEach((btn) => {
+      btn.addEventListener('click', () => confirmPublish(Number(btn.dataset.publish)));
+    });
+  } catch (err) {
+    host.innerHTML = `<div class="section-head"><h2 class="section-title">Slate review</h2></div>${emptyState('Could not load the slate', err.message)}`;
+  }
+}
+
+function tomorrowIso() {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// Publishing is permanent, so it's behind an explicit confirm with the
+// exact language the requirement specifies. No edit/delete path exists
+// anywhere, because no such endpoint exists.
+function confirmPublish(pickId) {
+  const wrap = document.createElement('div');
+  wrap.className = 'admin-modal-overlay';
+  wrap.innerHTML = `
+    <div class="admin-modal">
+      <div class="admin-modal-title">Publish this pick?</div>
+      <p class="admin-modal-body">This is permanent. Once published, this pick is on the public record whether it wins or loses. It cannot be edited or removed.</p>
+      <div class="admin-modal-actions">
+        <button class="btn ghost" id="pubCancel">Cancel</button>
+        <button class="btn primary" id="pubConfirm">Publish permanently</button>
+      </div>
+      <div class="modal-error" id="pubError" hidden></div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  $('#pubCancel', wrap).addEventListener('click', close);
+  $('#pubConfirm', wrap).addEventListener('click', async () => {
+    $('#pubConfirm', wrap).disabled = true;
+    try {
+      await apiSend('/api/admin/publish', 'POST', { pickId });
+      close();
+      renderSlate();
+    } catch (err) {
+      const e = $('#pubError', wrap);
+      e.textContent = err.message;
+      e.hidden = false;
+      $('#pubConfirm', wrap).disabled = false;
+    }
+  });
+}
+
+// Hourly auto-refresh of the slate view: re-fetches (the server side only
+// hits the free MLB Stats API on these refreshes, never The Odds API) so
+// lineup changes, starter swaps, and out-of-lineup flags surface without
+// a manual reload. Only runs while the slate tab is active.
+function startSlateAutoRefresh() {
+  stopSlateAutoRefresh();
+  state.autoTimer = setInterval(() => {
+    if (state.view === 'slate') renderSlate();
+  }, 60 * 60 * 1000);
+}
+function stopSlateAutoRefresh() {
+  if (state.autoTimer) { clearInterval(state.autoTimer); state.autoTimer = null; }
+}
+
+// ---------------------------------------------------------------------------
+// RECORD (admin view of the dual public record)
+function recordCard(kind, r) {
+  return `
+    <div class="record-card">
+      <div class="record-kind">${kind === 'algorithm' ? 'Algorithm' : 'Published'}</div>
+      <div class="record-label">${esc(r.label || '')}</div>
+      <div class="record-wl">${r.wins}<span class="record-dash">-</span>${r.losses}${r.pushes ? `<span class="record-push">-${r.pushes}</span>` : ''}</div>
+      <div class="record-rate">${r.winRate !== null && r.winRate !== undefined ? `${fmtPct(r.winRate)} win rate` : (r.graded > 0 ? 'Sample too small for a rate' : 'No graded picks yet')}</div>
+      ${r.pending ? `<div class="record-pending">${r.pending} pending</div>` : ''}
+      ${r.pricedGraded && r.pricedWinRate !== null && r.avgBreakeven !== null ? `<div class="record-clv"><span>Priced ${fmtPct(r.pricedWinRate)} vs. break-even ${fmtPct(r.avgBreakeven)}</span></div>` : ''}
+    </div>`;
+}
+async function renderRecord() {
+  const host = $('#admin-view');
+  host.innerHTML = '<div class="section-head"><h2 class="section-title">Track record</h2></div><p class="section-sub">Loading…</p>';
+  try {
+    const r = await api('/api/record');
+    host.innerHTML = `
+      <div class="section-head"><h2 class="section-title">Track record</h2></div>
+      <p class="section-sub">Both records are public on the customer site too. Win % is suppressed under 50 graded picks.</p>
+      <div class="record-grid">${recordCard('algorithm', r.algorithm)}${recordCard('published', r.published)}</div>`;
+  } catch (err) {
+    host.innerHTML = emptyState('Record unavailable', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// USERS
+function sparkline(points) {
+  if (!points?.length) return '';
+  const max = Math.max(1, ...points.map((p) => p.signups));
+  const bars = points.map((p) => `<span class="spark-bar" style="height:${Math.round((p.signups / max) * 100)}%" title="${esc(p.day)}: ${p.signups}"></span>`).join('');
+  return `<div class="spark">${bars}</div>`;
+}
+async function renderUsers() {
+  const host = $('#admin-view');
+  host.innerHTML = '<div class="section-head"><h2 class="section-title">Users</h2></div><p class="section-sub">Loading…</p>';
+  try {
+    const u = await api('/api/admin/users');
+    host.innerHTML = `
+      <div class="section-head"><h2 class="section-title">Users</h2></div>
+      <div class="admin-stat-row">
+        <div class="admin-stat"><div class="admin-stat-num">${u.totalUsers}</div><div class="admin-stat-lbl">Registered</div></div>
+        <div class="admin-stat"><div class="admin-stat-num">${u.activeUsers7d}</div><div class="admin-stat-lbl">Active (7 days)</div></div>
+      </div>
+      <h2 class="board-title">Signups, last 30 days</h2>
+      ${sparkline(u.signupsLast30Days)}`;
+  } catch (err) {
+    host.innerHTML = emptyState('Users unavailable', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EMAIL
+async function renderEmail() {
+  const host = $('#admin-view');
+  host.innerHTML = '<div class="section-head"><h2 class="section-title">Email</h2></div><p class="section-sub">Loading…</p>';
+  try {
+    const [stats, slate] = await Promise.all([
+      api('/api/admin/email/stats'),
+      api(`/api/admin/slate?date=${todayIso()}`),
+    ]);
+    // Only PUBLISHED picks are selectable, unpublished ones aren't real yet.
+    const published = [
+      ...(slate.picks.moneyline || []),
+      ...(slate.picks.hit_streak || []),
+      ...(slate.picks.strikeout || []),
+    ].filter((p) => p.published);
+
+    const options = published.length
+      ? published.map((p) => `<label class="admin-pick-check"><input type="checkbox" value="${p.id}"><span>${esc(p.headline || p.description)}</span></label>`).join('')
+      : '<p class="section-sub">No published picks today. Publish on the Slate review tab first, only published picks can be emailed.</p>';
+
+    const sends = (stats.recentSends || []).map((s) =>
+      `<tr><td class="mono">${esc(fmtDateTime(s.sent_at))}</td><td class="mono">#${s.admin_user_id ?? '-'}</td><td class="mono">${s.recipient_count}</td><td>${esc((s.pick_ids || []).join(', '))}</td></tr>`
+    ).join('');
+
+    host.innerHTML = `
+      <div class="section-head"><h2 class="section-title">Email</h2></div>
+      <div class="admin-stat-row">
+        <div class="admin-stat"><div class="admin-stat-num">${stats.eligibleRecipients}</div><div class="admin-stat-lbl">Verified &amp; opted in</div></div>
+        <div class="admin-stat"><button class="btn ghost" id="csvBtn">Export CSV</button><div class="admin-stat-lbl">Marketing list</div></div>
+      </div>
+
+      <h2 class="board-title">Compose</h2>
+      <p class="section-sub">Pick from today's published picks, write a short intro, preview, then send. Every email carries the unsubscribe link, postal address, and required disclaimers, the server refuses to send without them.</p>
+      <label class="field"><span>Subject</span><input type="text" id="emSubject" placeholder="Today's published picks"></label>
+      <label class="field"><span>Intro</span><textarea id="emIntro" rows="3" placeholder="A short note to go above the picks."></textarea></label>
+      <div class="admin-pick-checks">${options}</div>
+      <div class="admin-modal-actions" style="justify-content:flex-start">
+        <button class="btn ghost" id="emPreview" ${published.length ? '' : 'disabled'}>Preview</button>
+        <button class="btn primary" id="emSend" ${published.length ? '' : 'disabled'}>Send</button>
+      </div>
+      <div class="modal-error" id="emError" hidden></div>
+      <div id="emPreviewWrap"></div>
+
+      <h2 class="board-title">Recent sends</h2>
+      ${sends ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>Admin</th><th>Recipients</th><th>Pick ids</th></tr></thead><tbody>${sends}</tbody></table></div>` : '<p class="section-sub">No sends yet.</p>'}`;
+
+    $('#csvBtn').addEventListener('click', downloadCsv);
+    $('#emPreview').addEventListener('click', previewEmail);
+    $('#emSend').addEventListener('click', sendEmail);
+  } catch (err) {
+    host.innerHTML = emptyState('Email panel unavailable', err.message);
+  }
+}
+
+function selectedPickIds() {
+  return [...document.querySelectorAll('.admin-pick-check input:checked')].map((c) => Number(c.value));
+}
+
+// CSV export via POST + file download: addresses never touch a URL or a
+// GET response.
+async function downloadCsv() {
+  const res = await fetch('/api/admin/email/export', { method: 'POST' });
+  if (!res.ok) { alert('Export failed.'); return; }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'slatefinder-marketing-list.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+async function previewEmail() {
+  const err = $('#emError'); err.hidden = true;
+  try {
+    const r = await apiSend('/api/admin/email/preview', 'POST', {
+      intro: $('#emIntro').value, subject: $('#emSubject').value, pickIds: selectedPickIds(),
+    });
+    $('#emPreviewWrap').innerHTML = `<h2 class="board-title">Preview</h2><div class="admin-email-preview"><iframe title="email preview"></iframe></div>`;
+    const iframe = $('#emPreviewWrap iframe');
+    iframe.srcdoc = r.html;
+  } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+}
+
+async function sendEmail() {
+  const err = $('#emError'); err.hidden = true;
+  if (!confirm('Send this email to every verified, opted-in recipient?')) return;
+  $('#emSend').disabled = true;
+  try {
+    const r = await apiSend('/api/admin/email/send', 'POST', {
+      intro: $('#emIntro').value, subject: $('#emSubject').value, pickIds: selectedPickIds(),
+    });
+    alert(`Sent to ${r.sent} of ${r.total} recipients.`);
+    renderEmail();
+  } catch (ex) {
+    err.textContent = ex.message; err.hidden = false;
+    $('#emSend').disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+function emptyState(title, msg) {
+  return `<div class="empty-state"><div class="es-title">${esc(title)}</div>${esc(msg)}</div>`;
+}
+
+function showView(name) {
+  state.view = name;
+  document.querySelectorAll('#adminTabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
+  if (name === 'slate') { renderSlate(); startSlateAutoRefresh(); } else { stopSlateAutoRefresh(); }
+  if (name === 'record') renderRecord();
+  if (name === 'users') renderUsers();
+  if (name === 'email') renderEmail();
+}
+
+async function init() {
+  $('#adminTabs').addEventListener('click', (e) => {
+    const tab = e.target.closest('.tab');
+    if (tab) showView(tab.dataset.view);
+  });
+  try {
+    const me = await api('/api/auth/me');
+    $('#adminWho').textContent = me.user ? `${me.user.username} · admin` : '';
+  } catch { /* the page wouldn't have loaded for a non-admin anyway */ }
+  showView('slate');
+}
+
+init();

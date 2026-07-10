@@ -10,7 +10,7 @@ import { runHitStreakFilter } from './filters/hitStreak.js';
 import { runWindHrFilter } from './filters/windHr.js';
 import { runStrikeoutFilter } from './filters/strikeouts.js';
 import { saveDigest } from './digest.js';
-import { buildTopPicks, moneylineCandidates } from './topPicks.js';
+import { buildTopPicks, moneylineCandidates, hitPropCandidates, koCandidates } from './topPicks.js';
 import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
@@ -60,12 +60,20 @@ async function upsertGame(g, gameDate) {
 // The full daily pipeline: fetch, upsert, compute, filter, save digest.
 // Shared by the CLI (job.js) and the web dashboard's boot/refresh/daily
 // timer (server.js) so there's exactly one implementation.
-export async function runPipeline(gameDate = todayIsoDate()) {
+//
+// fetchOdds: The Odds API free tier is 500 requests/month, so odds are
+// pulled exactly twice per day: the morning job (fetchOdds: true) and
+// the closing-line pull near first pitch (scripts/closing.js /
+// server.js). Every other run - the hourly lineup/starter refresh, the
+// manual Refresh button - passes fetchOdds: false and reuses the prices
+// already stored on the games rows. The MLB Stats API is free and
+// unmetered; everything else in here polls it freely.
+export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true } = {}) {
   const season = gameDate.slice(0, 4);
   const warnings = [];
   const log = (msg) => console.log(`  ${msg}`);
 
-  console.log(`Running MLB daily pipeline for ${gameDate}...`);
+  console.log(`Running MLB daily pipeline for ${gameDate}${fetchOdds ? '' : ' (MLB data only, odds reused from the morning pull)'}...`);
 
   // 1. Schedule + probable starters
   let scheduleGames = [];
@@ -94,7 +102,10 @@ export async function runPipeline(gameDate = todayIsoDate()) {
 
   // 2. Odds, matched against the in-memory schedule by team name. A
   // single unmatched/missing game is logged and skipped, not fatal.
-  if (!process.env.ODDS_API_KEY) {
+  // Skipped entirely on MLB-only refresh runs (see fetchOdds above).
+  if (!fetchOdds) {
+    log('Odds: skipped on this run (rate-limited API, morning prices reused).');
+  } else if (!process.env.ODDS_API_KEY) {
     warnings.push('Odds data unavailable, ODDS_API_KEY not set. Check manually.');
   } else {
     try {
@@ -468,16 +479,24 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   // run's in-memory warnings.
   await saveDigest(pool, gameDate, 'warnings', { warnings });
 
-  // The permanent ledger (the "All-time" record on Daily Slate) tracks
-  // every qualifying moneyline call, that's the board the Daily Slate
-  // publishes and stands behind, graded by a clean final score. Player
-  // props stay out of the ledger. Skipped entirely once the board is
-  // locked for the day, that's the whole point of the freeze.
+  // The permanent ledger: EVERY qualifying pick the pipeline generated -
+  // moneyline calls, the surfaced hit props, the surfaced K props - is
+  // written with published = false, automatically, never filtered by
+  // admin choice. This is the algorithm's untouched dataset (the
+  // ALGORITHM record on /record); an admin publishing a subset of it
+  // later doesn't change what got recorded here. Skipped entirely once
+  // the board is locked for the day, that's the whole point of the
+  // freeze.
   if (boardLocked) {
     log('Tracked picks: skipped, moneyline board is locked for the day.');
   } else {
-    const trackedCount = await recordTrackedPicks(pool, gameDate, liveMlCandidates);
-    log(`Tracked picks: ${trackedCount} new row(s) added to the ledger.`);
+    const allCandidates = [
+      ...liveMlCandidates,
+      ...hitPropCandidates(hitStreak),
+      ...koCandidates(strikeouts),
+    ];
+    const trackedCount = await recordTrackedPicks(pool, gameDate, allCandidates);
+    log(`Tracked picks: ${trackedCount} new row(s) added to the ledger (all signal types, published = false).`);
 
     // Lock the board once this run happens at or after go-live, so every
     // later run today (hourly refreshes, manual "Refresh") stops adding

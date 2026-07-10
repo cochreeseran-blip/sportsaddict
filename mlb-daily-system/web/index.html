@@ -33,6 +33,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab active" data-view="signals">Daily Slate</button>
     <button class="tab" data-view="slate">Research</button>
+    <button class="tab" data-view="record">Record</button>
     <button class="tab" data-view="chat">Live Chat</button>
   </nav>
 
@@ -57,6 +58,7 @@
 <main id="app">
   <section id="view-signals" class="view active"></section>
   <section id="view-slate" class="view"></section>
+  <section id="view-record" class="view"></section>
   <section id="view-chat" class="view"></section>
 </main>
 
@@ -93,6 +95,10 @@
         <label class="remember-row">
           <input type="checkbox" id="authRemember" checked>
           <span>Remember me on this device</span>
+        </label>
+        <label class="remember-row" id="authMarketingRow">
+          <input type="checkbox" id="authMarketing">
+          <span>Email me picks and product updates. You can unsubscribe anytime.</span>
         </label>
         <div class="modal-error" id="authError" hidden></div>
         <button type="submit" class="btn primary auth-submit" id="authSubmit">Create account</button>

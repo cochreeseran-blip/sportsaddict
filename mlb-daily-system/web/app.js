@@ -406,14 +406,51 @@ function strikeoutResearchTable(so) {
     </div>`;
 }
 
+// The full moneyline board for members: every qualifying moneyline pick
+// for the date, published or not, each with its trailing ERA (and start
+// count) and break-even %. Members see the picks the admin didn't publish
+// too - as research with the numbers visible, never sold as extra picks,
+// so they can judge them for themselves. Worst opposing arm first.
+function memberMoneylineBoard(ledger, date, statusByGamePk) {
+  const ml = (ledger || [])
+    .filter((p) => p.signalType === 'moneyline')
+    .sort((a, b) => (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0));
+  if (!ml.length) return sitStateHtml();
+  return `<div class="sig-cards">${ml.map((p) => {
+    const badge = p.published
+      ? '<span class="pill ok" style="margin-left:8px"><span class="pill-dot"></span>Published</span>'
+      : '<span class="pill dim" style="margin-left:8px">Research only, not on the record</span>';
+    return lockedMoneylineCard(p, statusByGamePk, badge);
+  }).join('')}</div>`;
+}
+
 async function renderResearch() {
   const host = $('#view-slate');
   host.innerHTML = skeletonCards(6);
   try {
     const date = state.researchDate || state.today;
-    const d = await api(`/api/digest?date=${date}`);
+    const [d, slate] = await Promise.all([
+      api(`/api/digest?date=${date}`),
+      api(`/api/slate?date=${date}`).catch(() => ({ date, games: [] })),
+    ]);
     state.researchDate = d.date;
     state.digestCache.set(d.date, d);
+    state.slateCache.set(d.date, slate);
+
+    // Paywall gate: when the paywall is on and this account isn't a
+    // member (or admin), research is locked. While PAYWALL_ENABLED is
+    // false the server sends full research to everyone and this never
+    // triggers.
+    if (d.access && !d.access.research) {
+      host.innerHTML = `
+        <div class="section-head"><h2 class="section-title">Research</h2></div>
+        <div class="golive-gate">
+          <div class="golive-emoji">🔒</div>
+          <div class="golive-title">Research is for members</div>
+          <p class="golive-sub">The full board, hot bats vs beatable arms, and strikeout floors, with every qualifying number, are part of the membership. The one free pick of the day is on the Daily Slate.</p>
+        </div>`;
+      return;
+    }
 
     if (isBeforeGoLive(d.date)) {
       host.innerHTML = `<div class="section-head"><h2 class="section-title">Research</h2></div>` +
@@ -430,6 +467,8 @@ async function renderResearch() {
 
     const hitCount = d.hitStreak?.watchList?.length || 0;
     const koCount = d.strikeouts?.watchList?.length || 0;
+    const mlCount = (d.ledger || []).filter((p) => p.signalType === 'moneyline').length;
+    const statusByGamePk = new Map((slate.games || []).map((g) => [String(g.gamePk), g]));
     const count = (n) => `<span class="board-count">${n}</span>`;
 
     host.innerHTML = `
@@ -438,6 +477,10 @@ async function renderResearch() {
       <div class="signals-toolbar">
         <select class="date-select" id="researchDate">${dateOptions}</select>
       </div>
+
+      <h2 class="board-title">Full moneyline board${count(mlCount)}</h2>
+      <p class="section-sub">Every game that clears the screen, worst opposing arm first. The one marked Published is the pick on the public record; the rest are research, shown with their numbers so you can judge them yourself.</p>
+      ${memberMoneylineBoard(d.ledger, d.date, statusByGamePk)}
 
       ${topHitPropsStrip(d.hitStreak, d.date)}
       ${topStrikeoutPropsStrip(d.strikeouts, d.date)}
@@ -456,6 +499,76 @@ async function renderResearch() {
     });
   } catch (err) {
     host.innerHTML = emptyHtml('Research unavailable', err.message);
+  }
+}
+
+// --- the dual public record (/record) ----------------------------------------
+// Two records side by side, both always visible: ALGORITHM (every pick
+// the pipeline generated) and PUBLISHED (only what the admin chose to
+// call). Both graded. The win % on either is suppressed until it has 50+
+// graded picks. This is the trust surface.
+function recordCardHtml(kind, record) {
+  const priced = record.pricedGraded > 0;
+  const wr = record.pricedWinRate;
+  const be = record.avgBreakeven;
+  const beat = priced && wr !== null && be !== null ? wr > be : null;
+  return `
+    <div class="record-card">
+      <div class="record-kind">${kind === 'algorithm' ? 'Algorithm' : 'Published'}</div>
+      <div class="record-label">${esc(record.label || '')}</div>
+      <div class="record-wl">${record.wins}<span class="record-dash">-</span>${record.losses}${record.pushes ? `<span class="record-push">-${record.pushes}</span>` : ''}</div>
+      <div class="record-rate">${
+        record.winRate !== null && record.winRate !== undefined
+          ? `${(record.winRate * 100).toFixed(1)}% win rate`
+          : (record.graded > 0 ? 'Sample too small for a rate' : 'No graded picks yet')
+      }</div>
+      ${record.pending ? `<div class="record-pending">${record.pending} still pending</div>` : ''}
+      ${priced && wr !== null && be !== null ? `
+        <div class="record-clv">
+          <span>Priced win rate ${(wr * 100).toFixed(1)}%</span>
+          <span>vs. break-even needed ${(be * 100).toFixed(1)}%</span>
+          <span class="${beat ? 'pos' : 'neg'}">${beat ? 'Beating the number' : 'Below the number'}</span>
+        </div>` : ''}
+    </div>`;
+}
+
+async function renderRecord() {
+  const host = $('#view-record');
+  host.innerHTML = skeletonCards(2);
+  try {
+    const r = await api('/api/record');
+    const rows = (r.published?.picks || []).map((p) => {
+      const res = p.result === 'win' ? '<span class="pill ok"><span class="pill-dot"></span>Won</span>'
+        : p.result === 'loss' ? '<span class="pill hot"><span class="pill-dot"></span>Lost</span>'
+        : p.result === 'push' ? '<span class="pill warn"><span class="pill-dot"></span>Push</span>'
+        : '<span class="pill dim">Pending</span>';
+      const clv = p.clvPct !== null && p.clvPct !== undefined
+        ? `<span class="mono ${p.clvPct >= 0 ? 'pos' : 'neg'}">${p.clvPct >= 0 ? '+' : ''}${(p.clvPct * 100).toFixed(1)}</span>`
+        : '<span class="faint">-</span>';
+      return `<tr>
+        <td class="mono">${esc(p.gameDate)}</td>
+        <td>${esc(p.description)}</td>
+        <td class="mono">${p.lockedPrice !== null && p.lockedPrice !== undefined ? fmtOdds(p.lockedPrice) : '-'}</td>
+        <td>${res}</td>
+        <td>${clv}</td>
+      </tr>`;
+    }).join('');
+
+    host.innerHTML = `
+      <div class="section-head"><h2 class="section-title">Track record</h2></div>
+      <p class="section-sub">Two records, both public, both graded the same way. Neither is a guarantee or an edge. Research signals only, not betting advice.</p>
+      <div class="record-grid">
+        ${recordCardHtml('algorithm', r.algorithm)}
+        ${recordCardHtml('published', r.published)}
+      </div>
+
+      <h2 class="board-title">Every published pick<span class="board-count">${r.published?.picks?.length || 0}</span></h2>
+      <p class="section-sub">The complete published record, wins and losses, graded and pending, all-time. Nothing is ever removed.</p>
+      ${rows
+        ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Pick</th><th>Price</th><th>Result</th><th>CLV pts</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : emptyHtml('Nothing published yet', 'Published picks will appear here, and once they do they never disappear.')}`;
+  } catch (err) {
+    host.innerHTML = emptyHtml('Record unavailable', err.message);
   }
 }
 
@@ -587,10 +700,12 @@ async function moneylineVerdictBlock(gamePk, date) {
     } catch { return ''; }
   }
   const idStr = String(gamePk);
-  // The locked ledger, not the live re-screen: once a game's on today's
-  // board it stays there (and keeps its result) even if a later run's
-  // numbers would no longer qualify it.
-  const pick = (d.lockedMoneyline || []).find((p) => String(p.mlbGameId) === idStr);
+  // The board for this date, from whatever the digest carried for this
+  // viewer: the full ledger for members, the published picks for free
+  // users, or at least the one free pick. Moneyline rows only.
+  const board = (d.ledger || d.publishedToday || (d.freeMoneyline ? [d.freeMoneyline] : []))
+    .filter((p) => !p.signalType || p.signalType === 'moneyline');
+  const pick = board.find((p) => String(p.mlbGameId) === idStr);
   if (pick) {
     return `
       <div class="gp-block">
@@ -814,7 +929,9 @@ function bigResultBadge(result, liveGame) {
 // (Preview/Live/Final) is looked up from the already-fetched slate so a
 // pending pick flips to a LIVE badge the moment its game's first pitch is
 // thrown, no extra fetch needed, the card stays clickable either way.
-function lockedMoneylineCard(p, statusByGamePk) {
+// extraBadge is optional trailing HTML for the card head (e.g. the
+// Published / Research-only marker on the member board).
+function lockedMoneylineCard(p, statusByGamePk, extraBadge = '') {
   const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : null;
   const isPending = !p.result || p.result === 'pending';
   const g = isPending && p.mlbGameId ? statusByGamePk?.get(String(p.mlbGameId)) : null;
@@ -831,7 +948,7 @@ function lockedMoneylineCard(p, statusByGamePk) {
   return `
     <div class="sig-card locked-${stateCls}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
       <div class="sig-head">
-        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}</span>
+        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}${extraBadge}</span>
         ${bigResultBadge(p.result, isLive ? g : null)}
       </div>
       <div class="sig-sub">${esc(p.detail || `To beat ${p.awayTeam || 'the visitor'}.`)}</div>
@@ -875,30 +992,36 @@ function formKsHtml(ks, floor) {
   return `<span class="form-ks">${ks.map((k) => `<i class="${k >= floor ? 'over' : ''}">${k}</i>`).join('')}</span>`;
 }
 
-// --- yesterday strip -----------------------------------------------------------
-// Public accountability: yesterday's graded picks as W/L chips plus the
-// all-time record, straight from the tracked ledger.
-//
+// --- record rendering ---------------------------------------------------------
 // The win rate is suppressed below MIN_GRADED_FOR_RATE graded picks: a
 // 6-1 record isn't a real win rate, it's seven data points, and showing
 // "86%" next to that invites reading far more confidence into it than
 // the sample supports. The raw W-L always shows either way, that's not
-// hidden, only the derived percentage is gated. "Graded" here means
-// win+loss (pushes don't move a win rate either direction, so they don't
-// count toward the sample size for one).
+// hidden, only the derived percentage is gated. The server is the source
+// of truth for suppression (record.winRate is null when suppressed); the
+// client just renders what it's told. MIN_GRADED_FOR_RATE mirrors the
+// server constant for the copy only.
 const MIN_GRADED_FOR_RATE = 50;
+
+// "W-L" plus a rate, or "(sample too small for a rate)" when the server
+// suppressed it. record is the shapeRecord() object from the API.
+function recordLineText(record) {
+  if (!record) return '';
+  const wl = `${record.wins}-${record.losses}${record.pushes ? `-${record.pushes}` : ''}`;
+  const rate = record.winRate !== null && record.winRate !== undefined
+    ? ` (${(record.winRate * 100).toFixed(0)}%)`
+    : (record.graded > 0 ? ' (sample too small for a rate)' : '');
+  return `${wl}${rate}`;
+}
+
+// Public accountability strip on the Daily Slate: the PUBLISHED all-time
+// record ("picks I actually called") plus yesterday's graded chips.
 function yesterdayStrip(perf, today) {
-  if (!perf) return '';
+  if (!perf || !perf.record) return '';
   const y = new Date(`${today}T00:00:00Z`);
   y.setUTCDate(y.getUTCDate() - 1);
   const yd = y.toISOString().slice(0, 10);
   const graded = (perf.recent || []).filter((r) => r.gameDate === yd && (r.result === 'win' || r.result === 'loss' || r.result === 'push'));
-  let wins = 0, losses = 0, pushes = 0;
-  for (const s of perf.summary || []) { wins += s.wins; losses += s.losses; pushes += s.pushes; }
-  const gradedCount = wins + losses;
-  const rateText = gradedCount >= MIN_GRADED_FOR_RATE
-    ? ` (${((wins / gradedCount) * 100).toFixed(0)}%)`
-    : ' (sample too small for a rate)';
   const chips = graded.slice(0, 8).map((r) => {
     const short = r.description.split(', ')[0].split(' to ')[0];
     return `<span class="yd-chip ${r.result}"><b>${r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}</b>${esc(short)}</span>`;
@@ -907,7 +1030,7 @@ function yesterdayStrip(perf, today) {
     <div class="yesterday-strip">
       <span class="yd-title">Yesterday</span>
       ${chips || '<span class="faint" style="font-size:12px">Nothing graded yet</span>'}
-      <span class="yd-record">All-time <b>${wins}-${losses}${pushes ? `-${pushes}` : ''}</b>${rateText}</span>
+      <span class="yd-record">Published record <b>${recordLineText(perf.record)}</b></span>
     </div>`;
 }
 
@@ -964,37 +1087,34 @@ async function renderSignals(silent = false) {
       ? `<div class="game-grid">${games.map((g) => gameCardHtml(g, d.date)).join('')}</div>`
       : emptyHtml('No games scheduled', 'Nothing on the MLB schedule for this date.');
 
-    // The schedule is public information and always shows; the moneyline
-    // board itself is published by the 9 AM ET run and gated before then.
+    // FREE surface: exactly ONE published moneyline pick per day, the one
+    // with the worst opposing arm (server-selected d.freeMoneyline). The
+    // full board - every qualifying pick, published or not - is a member
+    // research surface, not here. Before the 9 AM ET go-live nothing is
+    // published yet, so the section is gated.
     const gated = isBeforeGoLive(d.date);
-    const lockedPicks = d.lockedMoneyline || [];
-    const mlCount = gated ? null : lockedPicks.length;
     const statusByGamePk = new Map(games.map((g) => [String(g.gamePk), g]));
-    // Today so far, straight off the locked ledger for this date.
-    let dayW = 0, dayL = 0, dayPend = 0;
-    for (const p of lockedPicks) {
-      if (p.result === 'win') dayW++;
-      else if (p.result === 'loss') dayL++;
-      else if (p.result === 'pending') dayPend++;
-    }
-    const dayRecord = !gated && (dayW + dayL + dayPend) > 0
-      ? `<span class="ml-day-record${dayW > dayL ? ' up' : dayL > dayW ? ' down' : ''}">${dayW}–${dayL}${dayPend ? ` · ${dayPend} pending` : ''}</span>`
-      : '';
+    const free = d.freeMoneyline || null;
     const mlBody = gated
-      ? goLiveGate('gateSeeYesterday', 'The moneyline board is published with the 9 AM ET run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
-      : (lockedMoneylineCards(lockedPicks, statusByGamePk) || sitStateHtml());
+      ? goLiveGate('gateSeeYesterday', 'The pick is published after the morning run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
+      : (free ? lockedMoneylineCards([free], statusByGamePk) : sitStateHtml());
+    const researchTeaser = (!gated && d.access && !d.access.research)
+      ? `<p class="section-sub">This is the free pick of the day. The full board, hot bats, and strikeout floors live on the Research tab.</p>`
+      : '';
 
     host.innerHTML = `
       ${yesterdayStrip(perf, d.date)}
 
       <div class="signals-toolbar">
         <select class="date-select" id="signalsDate">${dateOptions}</select>
+        <a class="date-select" style="text-decoration:none;display:inline-flex;align-items:center" href="/record" data-nav="record">Track record</a>
       </div>
 
       <h2 class="board-title">Games<span class="board-count">${games.length}</span></h2>
       ${gamesHtml}
 
-      <h2 class="board-title">Moneyline Board${mlCount !== null ? `<span class="board-count">${mlCount}</span>` : ''}${dayRecord}</h2>
+      <h2 class="board-title">Today's pick</h2>
+      ${researchTeaser}
       ${mlBody}`;
 
     $('#signalsDate').addEventListener('change', (e) => {
@@ -1199,9 +1319,14 @@ function showView(name, force = false) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'slate') renderResearch();
   if (name === 'signals') renderSignals();
+  if (name === 'record') renderRecord();
   if (name === 'chat') renderChat();
   if (name !== 'chat') stopChatPolling();
   if (name === 'signals') startSignalsAutoRefresh(); else stopSignalsAutoRefresh();
+  // Keep the URL honest for the two surfaces that have their own path, so
+  // a refresh or a shared link lands where expected. Others collapse to /.
+  const wantPath = name === 'record' ? '/record' : '/';
+  if (location.pathname !== wantPath) history.replaceState(null, '', wantPath);
 }
 
 async function init() {
@@ -1219,6 +1344,15 @@ async function init() {
     const link = e.target.closest('[data-open-game]');
     if (!link) return;
     openGamePanel(link.dataset.openGame, link.dataset.openDate || state.today);
+  });
+
+  // In-app links (e.g. the Track record link on the Daily Slate) switch
+  // views without a full navigation.
+  document.addEventListener('click', (e) => {
+    const nav = e.target.closest('[data-nav]');
+    if (!nav) return;
+    e.preventDefault();
+    showView(nav.dataset.nav);
   });
 
   // Account gate + topbar chip.
@@ -1287,8 +1421,14 @@ async function init() {
     img.replaceWith(span);
   }, true);
 
-  renderSignals(); // Daily Picks is home
-  startSignalsAutoRefresh();
+  // Deep-link support: a fresh load of /record opens the record view;
+  // everything else is the Daily Slate home.
+  if (location.pathname === '/record') {
+    showView('record');
+  } else {
+    renderSignals(); // Daily Slate is home
+    startSignalsAutoRefresh();
+  }
   pollStatus();
 }
 
@@ -1341,6 +1481,10 @@ function setAuthMode(mode) {
   $('#authToggleLabel').textContent = signup ? 'Already have an account?' : 'New here?';
   $('#authToggle').textContent = signup ? 'Log in' : 'Create an account';
   $('#authPassword').setAttribute('autocomplete', signup ? 'new-password' : 'current-password');
+  // The marketing opt-in is only meaningful at signup (explicit consent,
+  // unchecked by default); it's hidden on the login form.
+  const mkt = $('#authMarketingRow');
+  if (mkt) mkt.hidden = !signup;
   $('#authError').hidden = true;
 }
 
@@ -1378,6 +1522,9 @@ function wireAuth() {
         email: $('#authEmail').value.trim(),
         password: $('#authPassword').value,
         rememberMe: remember,
+        // Explicit opt-in, only sent on signup; the server ignores it on
+        // login. Unchecked by default (never opt anyone in silently).
+        marketingOptIn: authMode === 'signup' && $('#authMarketing')?.checked === true,
       };
       const path = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
       const { user } = await apiSend(path, 'POST', body);

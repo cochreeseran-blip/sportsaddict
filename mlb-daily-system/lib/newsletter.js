@@ -4,12 +4,28 @@
 // step. Each account carries a newsletter_token for the one-click
 // unsubscribe link; unsubscribing sets newsletter_unsubscribed_at.
 //
+// The daily digest is a PRODUCT email (research the account signed up
+// for), distinct from the admin-composed marketing sends in
+// lib/adminEmail.js, and it has its own consent switch
+// (newsletter_unsubscribed_at, flipped by /unsubscribe). It still
+// carries all four compliance elements and refuses to send without
+// them, same bar as every other outbound email.
+//
+// Content tier: the daily digest is a MEMBER surface. While
+// PAYWALL_ENABLED is false every account holder gets it; once the
+// paywall flips on, only tier = 'member' accounts do.
+//
 // Env:
 //   RESEND_API_KEY     - Resend secret key (starts with "re_")
 //   NEWSLETTER_FROM    - verified sender, e.g. "Slatefinder <picks@yourdomain.com>"
 //   APP_BASE_URL       - public URL of this app, used for unsubscribe links,
 //                        e.g. "https://slatefinder.up.railway.app"
 //   OWNER_EMAIL        - always emailed, whether or not it has an account
+//   POSTAL_ADDRESS     - physical mailing address rendered into every email
+//                        (CAN-SPAM). Sends hard-refuse when unset.
+//   PAYWALL_ENABLED    - 'true' gates the digest to member-tier accounts
+
+import { verifyEmailCompliance, REQUIRED_DISCLAIMER, REQUIRED_GAMBLING_LINE } from './emailCompliance.js';
 
 // A recipient's unsubscribe click, keyed by the per-account token.
 export async function unsubscribeAccount(pool, token) {
@@ -22,11 +38,14 @@ export async function unsubscribeAccount(pool, token) {
   return rowCount > 0;
 }
 
-// Everyone with an account who hasn't opted out. { email, newsletter_token }.
+// Everyone who should get the digest: account holders who haven't opted
+// out, narrowed to member tier once the paywall is live.
 async function accountRecipients(pool) {
+  const paywalled = String(process.env.PAYWALL_ENABLED || '').toLowerCase() === 'true';
   const { rows } = await pool.query(
     `SELECT email, newsletter_token FROM users
-     WHERE email IS NOT NULL AND newsletter_unsubscribed_at IS NULL`
+     WHERE email IS NOT NULL AND newsletter_unsubscribed_at IS NULL
+       ${paywalled ? `AND tier = 'member'` : ''}`
   );
   return rows;
 }
@@ -59,7 +78,16 @@ function pickBlock(p) {
   return `<p style="${S.pick}"><span style="${S.pickHead}">${p.headline}</span><br><span style="${S.detail}">${p.detail}</span></p>`;
 }
 
-export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
+// The shared compliance footer every outbound Slatefinder email carries.
+// Exported so the admin compose path (lib/adminEmail.js) renders the
+// exact same block instead of a divergent copy.
+export function complianceFooter({ unsubscribeUrl, unsubscribeLabel, postalAddress }) {
+  return `<p style="${S.footer}">${REQUIRED_DISCLAIMER}<br>${REQUIRED_GAMBLING_LINE}<br>
+  <a href="${unsubscribeUrl}" style="color:#9aa1ad;">${unsubscribeLabel}</a><br>
+  Slatefinder &middot; ${postalAddress || ''}</p>`;
+}
+
+export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl, postalAddress }) {
   const dateLabel = new Date(`${gameDate}T12:00:00Z`).toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC',
   });
@@ -75,7 +103,7 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
         .map((p) =>
           pickBlock({
             headline: `${p.homeTeam}${fmtOdds(p.homeMl) ? ` (${fmtOdds(p.homeMl)})` : ''} over ${p.awayTeam}`,
-            detail: `${p.homeStarterName ?? 'The home starter'} (${(p.homeStarterTrailingEra ?? p.homeStarterSeasonEra)?.toFixed(2) ?? '-'} ERA) is ${p.eraEdge?.toFixed(1) ?? '-'} runs better than ${p.awayStarterName ?? 'the visitor'} (${(p.awayStarterTrailingEra ?? p.awayStarterSeasonEra)?.toFixed(2) ?? '-'}).`,
+            detail: `${p.awayStarterName ?? 'The away starter'} is at ${(p.awayStarterTrailingEra ?? 0).toFixed?.(2) ?? '-'} trailing ERA over his last ${p.awayStarterTrailingStarts ?? 0} start(s) (season ${(p.awayStarterSeasonEra ?? 0).toFixed?.(2) ?? '-'}).`,
           })
         )
         .join('')
@@ -86,7 +114,7 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
         .map((b, i) =>
           pickBlock({
             headline: `${i + 1}. ${b.batterName} (${b.team}) to get a hit`,
-            detail: `${b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `batting ${b.trailing15Avg?.toFixed(3) ?? '-'} L15`}, vs ${b.opposingStarterName ?? 'TBD'} (${b.opposingStarterTrailingEra?.toFixed(2) ?? '-'} ERA).`,
+            detail: `${b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `batting ${b.trailing15Avg?.toFixed(3) ?? '-'} L15 (${b.trailing15Ab ?? 0} AB)`}, vs ${b.opposingStarterName ?? 'TBD'} (${b.opposingStarterTrailingEra?.toFixed(2) ?? '-'} ERA).`,
           })
         )
         .join('')
@@ -132,13 +160,13 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl }) {
     <p style="${S.h2}">Top 10 K/O picks</p>
     ${kos}
 
-    <p style="${S.muted}" >Lineups usually post 1&ndash;3 hours before first pitch &mdash; check the site for confirmed lineups before betting a hitter. Research signals only, not betting advice.</p>
+    <p style="${S.muted}">Lineups usually post 1&ndash;3 hours before first pitch &mdash; check the site for confirmed lineups before betting a hitter.</p>
   </div>
-  <p style="${S.footer}">You get this because you have a Slatefinder account.<br><a href="${unsubscribeUrl}" style="color:#9aa1ad;">Unsubscribe from the daily email</a></p>
+  ${complianceFooter({ unsubscribeUrl, unsubscribeLabel: 'Unsubscribe from the daily email', postalAddress })}
 </body></html>`;
 }
 
-async function resendSend({ apiKey, from, to, subject, html }) {
+export async function resendSend({ apiKey, from, to, subject, html }) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -181,17 +209,18 @@ export async function sendDailyNewsletter(pool, gameDate) {
   const from = process.env.NEWSLETTER_FROM;
   const baseUrl = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
   const ownerEmail = (process.env.OWNER_EMAIL || '').trim().toLowerCase();
+  const postalAddress = (process.env.POSTAL_ADDRESS || '').trim();
 
   const accounts = await accountRecipients(pool);
-  // Every account holder who hasn't opted out, plus OWNER_EMAIL (always,
-  // whether or not it has an account), deduped so no address is sent twice.
+  // Every eligible account holder, plus OWNER_EMAIL (always, whether or
+  // not it has an account), deduped so no address is sent twice.
   const recipients = [...accounts];
   if (ownerEmail && !accounts.some((a) => (a.email || '').toLowerCase() === ownerEmail)) {
     recipients.push({ email: ownerEmail, newsletter_token: null, owner: true });
   }
 
   if (!recipients.length) {
-    console.log('Newsletter: no account holders and no OWNER_EMAIL, skipping.');
+    console.log('Newsletter: no eligible recipients, skipping.');
     return { sent: 0, skipped: 'no recipients' };
   }
   if (!apiKey || !from) {
@@ -213,13 +242,20 @@ export async function sendDailyNewsletter(pool, gameDate) {
   let sent = 0;
   for (const sub of recipients) {
     try {
-      const html = renderDigestEmail({
-        gameDate,
-        digest,
-        recap,
-        // Owner-only rows have no account token, point their link at home.
-        unsubscribeUrl: sub.newsletter_token ? `${baseUrl}/unsubscribe?token=${sub.newsletter_token}` : (baseUrl || '#'),
-      });
+      const unsubscribeUrl = sub.newsletter_token
+        ? `${baseUrl}/unsubscribe?token=${sub.newsletter_token}`
+        : `${baseUrl}/unsubscribe`; // owner rows have no account token
+      const html = renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl, postalAddress });
+
+      // Compliance gate: the digest never leaves without all four
+      // required elements in the RENDERED output. Not bypassable; a
+      // missing POSTAL_ADDRESS env var stops the whole send.
+      const check = verifyEmailCompliance(html, { unsubscribePath: '/unsubscribe', postalAddress });
+      if (!check.ok) {
+        console.error(`Newsletter: send blocked, rendered email is missing: ${check.missing.join('; ')}.`);
+        return { sent, blocked: check.missing };
+      }
+
       await resendSend({ apiKey, from, to: sub.email, subject, html });
       sent++;
     } catch (err) {

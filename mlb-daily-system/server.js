@@ -7,13 +7,17 @@ import { pool } from './lib/db.js';
 import { runMigrations } from './lib/migrate.js';
 import { runPipeline, todayIsoDate } from './lib/pipeline.js';
 import * as mlb from './lib/sources/mlbStats.js';
+import { fetchMoneylines, normalizeTeam } from './lib/sources/odds.js';
+import { breakevenPct } from './lib/breakeven.js';
 import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
 import { unsubscribeAccount, sendDailyNewsletter } from './lib/newsletter.js';
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
 import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
-import { gradePendingPicks } from './lib/trackedPicks.js';
+import { gradePendingPicks, publishPick } from './lib/trackedPicks.js';
 import { GO_LIVE_HOUR_UTC } from './lib/goLive.js';
+import { renderAdminEmail, sendAdminEmail, marketingRecipients, loadPublishedPicks, marketingUnsubscribe } from './lib/adminEmail.js';
+import { verifyUnsubscribeToken, makeUnsubscribeToken } from './lib/emailTokens.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,15 +29,62 @@ const PORT = process.env.PORT || 3000;
 // deploy actually land?" is answerable at a glance.
 const BUILD = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.BUILD_SHA || 'dev').slice(0, 7);
 
-// MLB teams usually don't post the actual starting lineup until 1-3 hours
-// before that specific game's first pitch, and games are staggered all
-// day, so no single fixed time catches everyone. The pipeline (schedule,
-// odds, pitcher/batter form, lineups, the moneyline screen) runs at the
-// top of EVERY hour so lineups get picked up within the hour they post
-// and the research keeps moving all day. The daily email still goes out
-// once, after the morning run, at GO_LIVE_HOUR_UTC (see lib/goLive.js);
-// the same hour is also when the pipeline freezes the moneyline board for
-// the day.
+// Content tiers: structured now, gated later. While false, every
+// authenticated user sees everything regardless of tier; flipping this
+// env var on is what makes users.tier ('free' | 'member') take effect.
+const PAYWALL_ENABLED = String(process.env.PAYWALL_ENABLED || '').toLowerCase() === 'true';
+
+// Two same-origin apps on two hosts, NOT cross-origin: no shared session,
+// no shared cookie, each host is its own app.
+//   ADMIN_HOST (slatefinder.lol) - the admin surface, my account only.
+//   APP_HOST   (slateaddict.com) - the customer app.
+// Gating is by the request's Host header. On the admin host, /admin* and
+// /api/admin/* are served (and still require an admin account). On the
+// customer host those routes return 404, not 403, so their existence
+// isn't even discoverable there. For local dev there's only one host, so
+// when neither env var is configured we fall back to "this one host is
+// both" and let the path decide - that's the only way to exercise both
+// surfaces on http://localhost. Set ADMIN_HOST / APP_HOST locally (e.g.
+// via /etc/hosts + these vars) to simulate the real split.
+const ADMIN_HOST = (process.env.ADMIN_HOST || '').trim().toLowerCase();
+const APP_HOST = (process.env.APP_HOST || '').trim().toLowerCase();
+const HOSTS_CONFIGURED = Boolean(ADMIN_HOST || APP_HOST);
+
+function hostname(req) {
+  return String(req.headers.host || '').split(':')[0].trim().toLowerCase();
+}
+
+// Is this request allowed to see the admin surface AT ALL (before any
+// account check)? On a configured deployment: only on ADMIN_HOST. In
+// single-host local dev (no ADMIN_HOST/APP_HOST set): yes, so both
+// surfaces are reachable for testing. When only APP_HOST is set, the
+// customer host is explicitly known and anything else is treated as the
+// admin host.
+function isAdminHost(req) {
+  if (!HOSTS_CONFIGURED) return true; // local dev, one host serves both
+  const h = hostname(req);
+  if (ADMIN_HOST) return h === ADMIN_HOST;
+  return h !== APP_HOST; // APP_HOST set alone: everything else is admin
+}
+
+// Is this the customer app host? Mirror image of isAdminHost. In local
+// dev both are true (one host is both apps).
+function isAppHost(req) {
+  if (!HOSTS_CONFIGURED) return true;
+  const h = hostname(req);
+  if (APP_HOST) return h === APP_HOST;
+  return h !== ADMIN_HOST;
+}
+
+// The morning job: full pipeline WITH the odds pull, run early enough
+// (default 10:00 UTC = 6 AM ET) that the board is fully populated well
+// before the 9 AM ET go-live, leaving real admin review time. Every
+// other hourly tick is an MLB-Stats-only refresh (lineups, probable
+// starter changes, grading) that reuses the morning's odds - The Odds
+// API free tier is 500 req/month and hourly polling would burn it in
+// days. The second and final odds call of the day is the closing-line
+// pull near first pitch (see maybePullClosingLines).
+const MORNING_JOB_HOUR_UTC = Number(process.env.MORNING_JOB_HOUR_UTC || 10);
 const NEWSLETTER_HOUR_UTC = GO_LIVE_HOUR_UTC;
 
 let isRefreshing = false;
@@ -43,12 +94,12 @@ let lastRunError = null;
 let lastRunWarnings = [];
 let lastRunDate = null;
 
-async function triggerPipelineRun(gameDate = todayIsoDate()) {
+async function triggerPipelineRun(gameDate = todayIsoDate(), { fetchOdds = false } = {}) {
   if (isRefreshing) return { skipped: true };
   isRefreshing = true;
   refreshStartedAt = new Date();
   try {
-    const result = await runPipeline(gameDate);
+    const result = await runPipeline(gameDate, { fetchOdds });
     lastRunAt = new Date();
     lastRunDate = gameDate;
     lastRunError = null;
@@ -64,9 +115,64 @@ async function triggerPipelineRun(gameDate = todayIsoDate()) {
   return { skipped: false };
 }
 
-// Top of every hour: the full sync (schedule, odds, pitcher/batter form,
-// lineups, the moneyline screen). The newsletter fires once a day, after
-// the NEWSLETTER_HOUR_UTC run.
+// --- closing line pull -------------------------------------------------------
+// Odds call #2 of the day: once, shortly before the day's first pitch,
+// stamp closing_price / clv_pct onto today's moneyline picks. Guarded by
+// an in-memory date latch AND a DB check so restarts can't double-spend
+// the quota in a way that matters (a restart re-pull only happens if
+// rows still lack a closing price).
+let closingPulledFor = null;
+
+async function maybePullClosingLines() {
+  const date = todayIsoDate();
+  if (closingPulledFor === date) return;
+  if (!process.env.ODDS_API_KEY) return;
+
+  const { rows: pending } = await pool.query(
+    `SELECT tp.id, tp.locked_price, tp.breakeven_pct, tp.qualifying_metrics
+     FROM tracked_picks tp
+     WHERE tp.game_date = $1 AND tp.signal_type = 'moneyline' AND tp.closing_price IS NULL`,
+    [date]
+  );
+  if (!pending.length) { closingPulledFor = date; return; }
+
+  // "Near first pitch": the day's earliest game starts within the next
+  // 65 minutes (one hourly tick of slack) or has already started.
+  const { rows: firstGame } = await pool.query(
+    `SELECT min(game_time_utc) AS first FROM games WHERE game_date = $1`,
+    [date]
+  );
+  const first = firstGame[0]?.first ? new Date(firstGame[0].first) : null;
+  if (!first || first.getTime() - Date.now() > 65 * 60 * 1000) return;
+
+  console.log('Closing-line pull: fetching odds once for CLV...');
+  closingPulledFor = date; // latch before the call, a failed pull shouldn't retry hourly and drain quota
+  try {
+    const moneylines = await fetchMoneylines(process.env.ODDS_API_KEY);
+    let updated = 0;
+    for (const pick of pending) {
+      const homeTeam = pick.qualifying_metrics?.homeTeam;
+      const awayTeam = pick.qualifying_metrics?.awayTeam;
+      const match = moneylines.find(
+        (o) => normalizeTeam(o.homeTeam) === normalizeTeam(homeTeam) && normalizeTeam(o.awayTeam) === normalizeTeam(awayTeam)
+      );
+      if (!match || match.homeMl === null) continue;
+      const locked = pick.breakeven_pct !== null ? Number(pick.breakeven_pct) : breakevenPct(pick.locked_price);
+      const closing = breakevenPct(match.homeMl);
+      const clv = locked !== null && closing !== null ? closing - locked : null;
+      await pool.query('UPDATE tracked_picks SET closing_price = $1, clv_pct = $2 WHERE id = $3', [match.homeMl, clv, pick.id]);
+      updated++;
+    }
+    console.log(`Closing-line pull: stamped ${updated}/${pending.length} pick(s).`);
+  } catch (err) {
+    console.warn(`Closing-line pull failed: ${err.message}`);
+  }
+}
+
+// Top of every hour. The MORNING_JOB_HOUR_UTC tick is the full job with
+// odds; every other tick is MLB-only (lineups, probable starters,
+// injuries/rosters, filter recompute against stored odds). The
+// newsletter fires once a day after the NEWSLETTER_HOUR_UTC run.
 function scheduleHourlyRuns() {
   const now = new Date();
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1, 0, 0));
@@ -74,7 +180,8 @@ function scheduleHourlyRuns() {
   console.log(`Next hourly pipeline run in ${(delay / 60000).toFixed(0)}m.`);
   setTimeout(async () => {
     const hourUtc = new Date().getUTCHours();
-    await triggerPipelineRun();
+    await triggerPipelineRun(todayIsoDate(), { fetchOdds: hourUtc === MORNING_JOB_HOUR_UTC });
+    await maybePullClosingLines();
     try {
       const { graded, checked } = await gradePendingBets(pool);
       if (checked) console.log(`Bets: auto-graded ${graded}/${checked} pending.`);
@@ -146,10 +253,6 @@ async function loadDigest(gameDate) {
     [gameDate]
   );
   const byType = Object.fromEntries(rows.map((r) => [r.signal_type, r.details]));
-  // Newest created_at across every signal for the date, lets the client
-  // show "as of HH:MM" next to a signal so it's obvious whether what's on
-  // screen is from the latest pipeline run or older/stale data, instead of
-  // silently trusting an empty section is correct.
   const updatedAt = rows.length ? new Date(Math.max(...rows.map((r) => new Date(r.created_at).getTime()))) : null;
   return {
     updatedAt,
@@ -223,9 +326,6 @@ async function buildSlate(dateStr) {
 async function buildGameDetail(gamePk, dateStr) {
   const [lineups, live] = await Promise.all([
     cached(`box:${gamePk}`, 2 * 60 * 1000, () => mlb.fetchBoxscoreLineups(gamePk)),
-    // At-bat marker data. Short cache so the baseball moves batter to
-    // batter; best-effort because a Preview game has no linescore worth
-    // showing and the panel must never fail over a marker.
     cached(`line:${gamePk}`, 25 * 1000, () => mlb.fetchLinescore(gamePk)).catch(() => null),
   ]);
 
@@ -253,8 +353,6 @@ async function buildGameDetail(gamePk, dateStr) {
       const f = formById.get(b.id);
       return {
         ...b,
-        // Prefer live boxscore jersey/position; fall back to what the
-        // pipeline stored from the roster earlier in the day.
         jerseyNumber: b.jerseyNumber ?? f?.jersey_number ?? null,
         position: b.position ?? f?.position ?? null,
         hitStreak: f?.hit_streak ?? null,
@@ -293,38 +391,119 @@ async function buildGameDetail(gamePk, dateStr) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The dual public record: the trust surface. Two records, both always
+// visible, both graded the same way:
+//   ALGORITHM - every pick the pipeline generated (published or not)
+//   PUBLISHED - only the picks an admin chose to put on the record
+// For each: W-L, and where a locked price exists, actual win rate
+// against average required break-even. The win PERCENTAGE is suppressed
+// until a record has 50+ graded (win/loss) picks; raw W-L always shows.
+const MIN_GRADED_FOR_RATE = 50;
+
+function shapeRecord(row) {
+  const wins = Number(row.wins);
+  const losses = Number(row.losses);
+  const graded = wins + losses;
+  return {
+    wins,
+    losses,
+    pushes: Number(row.pushes),
+    pending: Number(row.pending),
+    graded,
+    // null = suppressed. Every surface renders "(sample too small for a
+    // rate)" when null and graded > 0.
+    winRate: graded >= MIN_GRADED_FOR_RATE ? wins / graded : null,
+    rateSuppressed: graded > 0 && graded < MIN_GRADED_FOR_RATE,
+    minGradedForRate: MIN_GRADED_FOR_RATE,
+    // Priced subset only: you can't compare a win rate to a break-even
+    // requirement on picks that never had a price.
+    pricedGraded: Number(row.priced_graded),
+    pricedWins: Number(row.priced_wins),
+    pricedWinRate: Number(row.priced_graded) >= MIN_GRADED_FOR_RATE ? Number(row.priced_wins) / Number(row.priced_graded) : null,
+    avgBreakeven: row.avg_breakeven !== null ? Number(row.avg_breakeven) : null,
+  };
+}
+
+async function buildRecord() {
+  const recordQuery = (publishedOnly) => pool.query(`
+    SELECT
+      count(*) FILTER (WHERE result = 'win') AS wins,
+      count(*) FILTER (WHERE result = 'loss') AS losses,
+      count(*) FILTER (WHERE result = 'push') AS pushes,
+      count(*) FILTER (WHERE result = 'pending') AS pending,
+      count(*) FILTER (WHERE result IN ('win','loss') AND locked_price IS NOT NULL) AS priced_graded,
+      count(*) FILTER (WHERE result = 'win' AND locked_price IS NOT NULL) AS priced_wins,
+      avg(breakeven_pct) FILTER (WHERE result IN ('win','loss') AND locked_price IS NOT NULL) AS avg_breakeven
+    FROM tracked_picks
+    ${publishedOnly ? 'WHERE published = true' : ''}
+  `);
+
+  const [algo, pub, publishedPicks] = await Promise.all([
+    recordQuery(false),
+    recordQuery(true),
+    // The complete published record, every pick ever put on the public
+    // record: wins, losses, graded and pending, all-time. Deliberately
+    // NOT paginated or filtered - the whole point is that nothing on it
+    // can quietly disappear.
+    pool.query(`
+      SELECT id, game_date, signal_type, description, locked_price, breakeven_pct,
+             closing_price, clv_pct, result, published_at
+      FROM tracked_picks
+      WHERE published = true
+      ORDER BY game_date DESC, published_at DESC, id DESC
+    `),
+  ]);
+
+  return {
+    algorithm: {
+      label: 'Every pick the screener generated, including ones I passed on.',
+      ...shapeRecord(algo.rows[0]),
+    },
+    published: {
+      label: 'Picks I actually called.',
+      ...shapeRecord(pub.rows[0]),
+      picks: publishedPicks.rows.map((r) => ({
+        id: r.id,
+        gameDate: r.game_date.toISOString().slice(0, 10),
+        signalType: r.signal_type,
+        description: r.description,
+        lockedPrice: r.locked_price,
+        breakevenPct: r.breakeven_pct !== null ? Number(r.breakeven_pct) : null,
+        closingPrice: r.closing_price,
+        clvPct: r.clv_pct !== null ? Number(r.clv_pct) : null,
+        result: r.result,
+        publishedAt: r.published_at,
+      })),
+    },
+  };
+}
+
+// The Daily Slate strip: the PUBLISHED record only (that's the public
+// accountability number), same 50-graded suppression as everywhere else.
 async function buildPerformance() {
   const [summary, recent] = await Promise.all([
     pool.query(`
-      SELECT signal_type,
-             count(*) FILTER (WHERE result IN ('win', 'loss')) AS graded,
-             count(*) FILTER (WHERE result = 'win') AS wins,
-             count(*) FILTER (WHERE result = 'loss') AS losses,
-             count(*) FILTER (WHERE result = 'push') AS pushes,
-             count(*) FILTER (WHERE result = 'pending') AS pending,
-             avg(breakeven_pct) FILTER (WHERE result IN ('win', 'loss') AND breakeven_pct IS NOT NULL) AS avg_breakeven
-      FROM tracked_picks
-      GROUP BY signal_type
-      ORDER BY signal_type
+      SELECT
+        count(*) FILTER (WHERE result = 'win') AS wins,
+        count(*) FILTER (WHERE result = 'loss') AS losses,
+        count(*) FILTER (WHERE result = 'push') AS pushes,
+        count(*) FILTER (WHERE result = 'pending') AS pending,
+        count(*) FILTER (WHERE result IN ('win','loss') AND locked_price IS NOT NULL) AS priced_graded,
+        count(*) FILTER (WHERE result = 'win' AND locked_price IS NOT NULL) AS priced_wins,
+        avg(breakeven_pct) FILTER (WHERE result IN ('win','loss') AND locked_price IS NOT NULL) AS avg_breakeven
+      FROM tracked_picks WHERE published = true
     `),
     pool.query(`
       SELECT game_date, signal_type, mlb_game_id, description, locked_price, breakeven_pct, result
       FROM tracked_picks
+      WHERE published = true
       ORDER BY game_date DESC, id DESC
       LIMIT 100
     `),
   ]);
   return {
-    summary: summary.rows.map((r) => ({
-      signalType: r.signal_type,
-      graded: Number(r.graded),
-      wins: Number(r.wins),
-      losses: Number(r.losses),
-      pushes: Number(r.pushes),
-      pending: Number(r.pending),
-      winRate: Number(r.graded) > 0 ? Number(r.wins) / Number(r.graded) : null,
-      avgBreakeven: r.avg_breakeven !== null ? Number(r.avg_breakeven) : null,
-    })),
+    record: shapeRecord(summary.rows[0]),
     recent: recent.rows.map((r) => ({
       gameDate: r.game_date.toISOString().slice(0, 10),
       signalType: r.signal_type,
@@ -338,11 +517,72 @@ async function buildPerformance() {
 }
 
 // ---------------------------------------------------------------------------
+// Tracked-picks ledger reads for the public digest and the admin slate.
+
+function shapeLedgerPick(p) {
+  const m = p.qualifying_metrics || {};
+  return {
+    id: p.id,
+    signalType: p.signal_type,
+    mlbGameId: p.mlb_game_id,
+    homeTeam: m.homeTeam ?? null,
+    awayTeam: m.awayTeam ?? null,
+    homeMl: m.homeMl ?? p.locked_price,
+    breakevenPct: m.breakevenPct ?? (p.breakeven_pct !== null ? Number(p.breakeven_pct) : null),
+    headline: m.headline ?? null,
+    detail: m.detail ?? null,
+    batterName: m.batterName ?? null,
+    batterId: m.batterId ?? null,
+    pitcherName: m.pitcherName ?? null,
+    pitcherId: m.pitcherId ?? null,
+    team: m.team ?? null,
+    trailing15Avg: m.trailing15Avg ?? null,
+    trailing15Ab: m.trailing15Ab ?? null,
+    lineupConfirmed: m.lineupConfirmed ?? null,
+    suggestedLine: m.suggestedLine ?? null,
+    strictFloorKs: m.strictFloorKs ?? null,
+    kPerStart: m.kPerStart ?? null,
+    awayStarterName: m.awayStarterName ?? null,
+    awayStarterTrailingEra: m.awayStarterTrailingEra ?? null,
+    awayStarterTrailingStarts: m.awayStarterTrailingStarts ?? null,
+    awayStarterSeasonEra: m.awayStarterSeasonEra ?? null,
+    result: p.result,
+    published: p.published,
+    publishedAt: p.published_at,
+  };
+}
+
+async function ledgerForDate(date) {
+  const { rows } = await pool.query(
+    `SELECT id, signal_type, mlb_game_id, description, locked_price, breakeven_pct,
+            closing_price, clv_pct, qualifying_metrics, result, published, published_at, published_by, created_at
+     FROM tracked_picks WHERE game_date = $1 ORDER BY signal_type, id`,
+    [date]
+  );
+  return rows;
+}
+
+// The one free moneyline pick of the day: among PUBLISHED picks, the
+// qualifying game whose away starter has the highest trailing ERA - the
+// worst opposing arm, which is the thesis of the bet. Not a score, not a
+// grade.
+function pickFreeMoneyline(ledgerRows) {
+  const published = ledgerRows
+    .filter((p) => p.signal_type === 'moneyline' && p.published)
+    .map(shapeLedgerPick)
+    .sort((a, b) => (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0));
+  return published[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Static assets: the SlateFinder single-page app. Whitelisted files only -
-// no directory traversal surface.
+// no directory traversal surface. /record serves the same SPA (the app
+// reads location.pathname and opens the Record view); the admin bundle
+// is served separately and only to admins.
 const STATIC_FILES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/record': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
 };
@@ -355,9 +595,6 @@ function sendJson(res, status, body) {
 // ---------------------------------------------------------------------------
 // Security helpers.
 
-// Per-IP sliding-window rate limiter for the abuse-prone endpoints (login
-// brute force, signup/subscribe spam). In-memory is fine for a single
-// Railway instance; entries expire as they age out of the window.
 const rateBuckets = new Map();
 function rateLimited(req, key, maxHits, windowMs) {
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
@@ -367,7 +604,6 @@ function rateLimited(req, key, maxHits, windowMs) {
   hits.push(now);
   rateBuckets.set(bucketKey, hits);
   if (rateBuckets.size > 10000) {
-    // Cheap global cleanup so the map can't grow unbounded.
     for (const [k, v] of rateBuckets) {
       if (!v.length || now - v[v.length - 1] > windowMs) rateBuckets.delete(k);
     }
@@ -375,9 +611,8 @@ function rateLimited(req, key, maxHits, windowMs) {
   return hits.length > maxHits;
 }
 
-// Mutating endpoints (bets, manual picks, refresh) require a logged-in
-// session, without this, anyone on the internet could delete bets or
-// publish picks onto the site. Read-only research data stays public.
+// Mutating endpoints require a logged-in session. Read-only research
+// data stays public.
 async function requireUser(req, res) {
   const user = await userForSession(pool, parseCookies(req).sf_session);
   if (!user) {
@@ -385,6 +620,35 @@ async function requireUser(req, res) {
     return null;
   }
   return user;
+}
+
+// Admin gate for every /admin page and /api/admin/* endpoint. The role
+// is re-read from the users table on THIS request (session -> users join
+// in userForSession, then an explicit fresh SELECT here), never taken
+// from a client flag or a token claim minted earlier - a demotion takes
+// effect on the very next request. A logged-in non-admin gets a plain
+// 403, not a redirect; so does an anonymous request, which also avoids
+// confirming the route exists to people probing for it.
+async function requireAdmin(req, res) {
+  const user = await userForSession(pool, parseCookies(req).sf_session);
+  if (!user) {
+    sendJson(res, 403, { error: 'Forbidden.' });
+    return null;
+  }
+  const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', [user.id]);
+  if (rows[0]?.role !== 'admin') {
+    sendJson(res, 403, { error: 'Forbidden.' });
+    return null;
+  }
+  return user;
+}
+
+// Tier access. While PAYWALL_ENABLED is false everything is open to any
+// authenticated (or anonymous) reader; when it flips on, research
+// surfaces require member tier (admins always see everything).
+function researchAccess(user) {
+  if (!PAYWALL_ENABLED) return true;
+  return user?.role === 'admin' || user?.tier === 'member';
 }
 
 function readJsonBody(req, limit = 64 * 1024) {
@@ -408,14 +672,124 @@ function readJsonBody(req, limit = 64 * 1024) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Admin endpoint implementations.
+
+// The admin slate review: every pick the pipeline generated for the
+// date, published and unpublished, with the qualifying metrics that
+// produced each one, game start times, lineup state, and change flags
+// (starter swapped since the pick locked, batter no longer in a
+// confirmed lineup). Moneyline picks come back sorted worst-away-arm
+// first; the first row is the one the free slate gets if published.
+async function buildAdminSlate(date) {
+  const [ledger, gamesRes, battersRes] = await Promise.all([
+    ledgerForDate(date),
+    pool.query(
+      `SELECT mlb_game_id, home_team, away_team, game_time_utc,
+              home_starter_name, away_starter_name
+       FROM games WHERE game_date = $1`,
+      [date]
+    ),
+    pool.query(
+      `SELECT batter_id, batter_name, team, lineup_confirmed FROM batter_form WHERE game_date = $1`,
+      [date]
+    ),
+  ]);
+
+  const gameById = new Map(gamesRes.rows.map((g) => [g.mlb_game_id, g]));
+  const batterById = new Map(battersRes.rows.map((b) => [b.batter_id, b]));
+  const lineupByTeam = await lineupStatusByTeam(date);
+
+  const picks = ledger.map((row) => {
+    const p = shapeLedgerPick(row);
+    const game = gameById.get(row.mlb_game_id);
+    const m = row.qualifying_metrics || {};
+
+    const warnings = [];
+    let lineupConfirmed = null;
+    if (p.signalType === 'hit_streak') {
+      const team = m.team;
+      lineupConfirmed = lineupByTeam[team]?.confirmed === true;
+      if (!lineupConfirmed) {
+        warnings.push('Lineup not posted yet. Batter props are unreliable until the lineup is out.');
+      } else {
+        const nowRow = m.batterId ? batterById.get(m.batterId) : null;
+        if (nowRow && nowRow.lineup_confirmed !== true) {
+          warnings.push(`OUT OF LINEUP: ${m.batterName} is not in the confirmed ${team} lineup.`);
+        }
+      }
+    }
+    if (p.signalType === 'moneyline' && game) {
+      if (m.awayStarterName && game.away_starter_name && m.awayStarterName !== game.away_starter_name) {
+        warnings.push(`STARTER CHANGED: pick locked against ${m.awayStarterName}, current away probable is ${game.away_starter_name}.`);
+      }
+      if (m.homeStarterName && game.home_starter_name && m.homeStarterName !== game.home_starter_name) {
+        warnings.push(`STARTER CHANGED: home probable was ${m.homeStarterName}, now ${game.home_starter_name}.`);
+      }
+    }
+    if (p.signalType === 'strikeout' && game) {
+      const current = [game.home_starter_name, game.away_starter_name];
+      if (m.pitcherName && !current.includes(m.pitcherName)) {
+        warnings.push(`STARTER CHANGED: ${m.pitcherName} is no longer a probable starter in this game.`);
+      }
+    }
+
+    const gameTime = game?.game_time_utc ?? null;
+    return {
+      ...p,
+      lockedPrice: row.locked_price,
+      closingPrice: row.closing_price,
+      clvPct: row.clv_pct !== null ? Number(row.clv_pct) : null,
+      description: row.description,
+      createdAt: row.created_at,
+      gameTimeUtc: gameTime,
+      gameStarted: gameTime ? Date.now() >= new Date(gameTime).getTime() : null,
+      lineupConfirmed,
+      warnings,
+    };
+  });
+
+  const bySignal = { moneyline: [], hit_streak: [], strikeout: [], other: [] };
+  for (const p of picks) {
+    (bySignal[p.signalType] || bySignal.other).push(p);
+  }
+  // Worst away arm first - the top row is the free-slate pick.
+  bySignal.moneyline.sort((a, b) => (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0));
+
+  return {
+    date,
+    picks: bySignal,
+    freePickId: bySignal.moneyline.find((p) => p.published)?.id ?? null,
+    lineupsByTeam: lineupByTeam,
+  };
+}
+
+async function buildAdminUsers() {
+  const [totals, sparkline] = await Promise.all([
+    pool.query(`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (WHERE last_seen_at > now() - interval '7 days')::int AS active_7d
+      FROM users
+    `),
+    pool.query(`
+      SELECT to_char(d::date, 'YYYY-MM-DD') AS day,
+             count(u.id)::int AS signups
+      FROM generate_series(now()::date - 29, now()::date, '1 day') d
+      LEFT JOIN users u ON u.created_at::date = d::date
+      GROUP BY d::date ORDER BY d::date
+    `),
+  ]);
+  return {
+    totalUsers: totals.rows[0].total,
+    activeUsers7d: totals.rows[0].active_7d,
+    signupsLast30Days: sparkline.rows,
+  };
+}
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
-    // Baseline security headers on every response. The CSP allows exactly
-    // what the app uses: self-hosted assets, MLB's logo/headshot CDNs,
-    // Google Fonts, and same-origin fetches.
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -432,6 +806,49 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const onAdminHost = isAdminHost(req);
+
+    // --- admin surface (admin host only) -----------------------------------
+    // Every /admin* page, /admin.js, and /api/admin/* endpoint exists ONLY
+    // on the admin host. On the customer host these route patterns are not
+    // matched at all, so the request falls through to the final 404: the
+    // routes aren't just forbidden there, they're undiscoverable. On the
+    // admin host they additionally require an admin account (403 otherwise).
+    const isAdminRoute = /^\/admin(\/(slate|users|email))?$/.test(url.pathname)
+      || url.pathname === '/admin.js'
+      || url.pathname.startsWith('/api/admin/');
+
+    if (isAdminRoute && !onAdminHost) {
+      // Customer host: pretend the admin surface does not exist.
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+      return;
+    }
+
+    if (onAdminHost && /^\/admin(\/(slate|users|email))?$/.test(url.pathname) && req.method === 'GET') {
+      if (!(await requireAdmin(req, res))) return;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(fs.readFileSync(path.join(__dirname, 'web', 'admin.html')));
+      return;
+    }
+    if (onAdminHost && url.pathname === '/admin.js' && req.method === 'GET') {
+      if (!(await requireAdmin(req, res))) return;
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(fs.readFileSync(path.join(__dirname, 'web', 'admin.js')));
+      return;
+    }
+
+    // Root of a CONFIGURED admin host lands on the admin dashboard, not
+    // the customer app (slatefinder.lol is admin-only). In single-host
+    // local dev, '/' stays the customer app and /admin is used explicitly,
+    // so both surfaces are testable on http://localhost.
+    if (HOSTS_CONFIGURED && onAdminHost && url.pathname === '/' && req.method === 'GET') {
+      if (!(await requireAdmin(req, res))) return;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(fs.readFileSync(path.join(__dirname, 'web', 'admin.html')));
+      return;
+    }
+
     const staticEntry = STATIC_FILES[url.pathname];
     if (staticEntry && req.method === 'GET') {
       const filePath = path.join(__dirname, 'web', staticEntry.file);
@@ -440,25 +857,105 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // --- admin API (admin host only; guarded above) ------------------------
+    if (url.pathname.startsWith('/api/admin/')) {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+
+      if (url.pathname === '/api/admin/slate' && req.method === 'GET') {
+        const date = url.searchParams.get('date') || todayIsoDate();
+        if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+        // Review window: back through the ledger's history, ahead one
+        // day (tomorrow's board populates once the pipeline sees it).
+        if (date > shiftIso(todayIsoDate(), 1)) return sendJson(res, 400, { error: 'can only look ahead one day' });
+        sendJson(res, 200, await buildAdminSlate(date));
+        return;
+      }
+
+      if (url.pathname === '/api/admin/publish' && req.method === 'POST') {
+        const { pickId } = await readJsonBody(req);
+        if (!Number.isInteger(pickId)) return sendJson(res, 400, { error: 'pickId required' });
+        const result = await publishPick(pool, pickId, admin.id);
+        if (!result.ok) return sendJson(res, 409, { error: result.error });
+        sendJson(res, 200, result.pick);
+        return;
+      }
+
+      if (url.pathname === '/api/admin/users' && req.method === 'GET') {
+        sendJson(res, 200, await buildAdminUsers());
+        return;
+      }
+
+      if (url.pathname === '/api/admin/email/stats' && req.method === 'GET') {
+        const [{ rows: counts }, { rows: sends }] = await Promise.all([
+          pool.query(`SELECT count(*)::int AS eligible FROM users WHERE email_verified = true AND marketing_opt_in = true`),
+          pool.query(`SELECT id, sent_at, admin_user_id, recipient_count, pick_ids, subject FROM email_sends ORDER BY sent_at DESC LIMIT 20`),
+        ]);
+        sendJson(res, 200, { eligibleRecipients: counts[0].eligible, recentSends: sends });
+        return;
+      }
+
+      // CSV export of the verified + opted-in list. POST and a file
+      // download on purpose: email addresses never appear in a URL,
+      // query string, or GET response.
+      if (url.pathname === '/api/admin/email/export' && req.method === 'POST') {
+        const recipients = await marketingRecipients(pool);
+        const csv = ['email', ...recipients.map((r) => `"${String(r.email).replace(/"/g, '""')}"`)].join('\n');
+        res.writeHead(200, {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="slatefinder-marketing-list.csv"',
+          'Cache-Control': 'no-store',
+        });
+        res.end(csv);
+        return;
+      }
+
+      if (url.pathname === '/api/admin/email/preview' && req.method === 'POST') {
+        const { intro, pickIds, subject } = await readJsonBody(req);
+        const loaded = await loadPublishedPicks(pool, pickIds);
+        if (!loaded.ok) return sendJson(res, 400, { error: loaded.error });
+        // Preview renders with a placeholder token; the real send mints
+        // a fresh signed token per recipient.
+        const html = renderAdminEmail({
+          intro: String(intro || ''),
+          picks: loaded.picks,
+          unsubscribeUrl: `${(process.env.APP_BASE_URL || '').replace(/\/$/, '')}/email/unsubscribe?token=preview`,
+          postalAddress: (process.env.POSTAL_ADDRESS || '').trim(),
+        });
+        sendJson(res, 200, { html, subject: String(subject || '').trim() || "Today's published picks" });
+        return;
+      }
+
+      if (url.pathname === '/api/admin/email/send' && req.method === 'POST') {
+        const { intro, pickIds, subject } = await readJsonBody(req);
+        const result = await sendAdminEmail(pool, { adminUserId: admin.id, intro, pickIds, subject });
+        if (!result.ok) return sendJson(res, 422, { error: result.error });
+        sendJson(res, 200, { sent: result.sent, total: result.total });
+        return;
+      }
+
+      return sendJson(res, 404, { error: 'no such admin endpoint' });
+    }
+
     if ((url.pathname === '/api/refresh' || url.pathname === '/refresh') && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
       if (rateLimited(req, 'refresh', 6, 10 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down, refresh is already running on a schedule.' });
-      triggerPipelineRun(); // fire-and-forget; client polls /api/status
+      // Manual refresh is MLB-data-only: the metered odds pull happens
+      // exactly twice a day on the server's own schedule.
+      triggerPipelineRun(todayIsoDate(), { fetchOdds: false });
       sendJson(res, 202, { started: true });
       return;
     }
 
     // --- accounts ---------------------------------------------------------
-    // The account gate lives in the frontend; the data API stays open so a
-    // broken auth flow can never brick the research pages.
     if (url.pathname === '/api/auth/signup' && req.method === 'POST') {
       if (rateLimited(req, 'signup', 10, 60 * 60 * 1000)) return sendJson(res, 429, { error: 'Too many signups from this address, try again later.' });
-      const { email, password, rememberMe } = await readJsonBody(req);
+      const { email, password, rememberMe, marketingOptIn } = await readJsonBody(req);
       const cleanEmail = String(email || '').trim();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return sendJson(res, 400, { error: 'That email does not look right.' });
       if (typeof password !== 'string' || password.length < 8) return sendJson(res, 400, { error: 'Password needs at least 8 characters.' });
       try {
-        const user = await createUser(pool, cleanEmail, password);
+        const user = await createUser(pool, cleanEmail, password, { marketingOptIn: marketingOptIn === true });
         const token = await createSession(pool, user.id);
         res.setHeader('Set-Cookie', sessionCookie(token, req, { remember: rememberMe !== false }));
         sendJson(res, 201, { user });
@@ -525,55 +1022,68 @@ const server = http.createServer(async (req, res) => {
         lastRunWarnings,
         today: todayIsoDate(),
         build: BUILD,
+        paywallEnabled: PAYWALL_ENABLED,
       });
+      return;
+    }
+
+    // The dual public record: the trust surface, open to everyone.
+    if (url.pathname === '/api/record' && req.method === 'GET') {
+      sendJson(res, 200, await buildRecord());
       return;
     }
 
     if (url.pathname === '/api/digest') {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
-      const [digest, availableDates, lockedMoneyline] = await Promise.all([
+
+      const user = await userForSession(pool, parseCookies(req).sf_session);
+      const research = researchAccess(user);
+
+      const [digest, availableDates, ledger] = await Promise.all([
         loadDigest(date),
         listDigestDates(),
-        // The Moneyline Board renders from THIS, not digest.moneyline.picks.
-        // digest.moneyline is re-derived from live data on every pipeline
-        // run, so a game that qualified in the morning can fall back out
-        // once its own final score updates the starter's ERA (a bad final
-        // start can drop his trailing ERA edge below the 2-run bar). This
-        // is the permanent per-day ledger (see trackedPicks.js): once a
-        // game qualifies today it stays on today's board, W/L included,
-        // no matter what a later re-screen decides.
-        pool.query(
-          `SELECT mlb_game_id, locked_price, breakeven_pct, qualifying_metrics, result
-           FROM tracked_picks WHERE game_date = $1 AND signal_type = 'moneyline' ORDER BY id`,
-          [date]
-        ).then((r) => r.rows.map((p) => {
-          const m = p.qualifying_metrics || {};
-          return {
-            mlbGameId: p.mlb_game_id,
-            homeTeam: m.homeTeam ?? null,
-            awayTeam: m.awayTeam ?? null,
-            homeMl: m.homeMl ?? p.locked_price,
-            breakevenPct: m.breakevenPct ?? (p.breakeven_pct !== null ? Number(p.breakeven_pct) : null),
-            headline: m.headline ?? null,
-            detail: m.detail ?? null,
-            awayStarterName: m.awayStarterName ?? null,
-            awayStarterTrailingEra: m.awayStarterTrailingEra ?? null,
-            awayStarterTrailingStarts: m.awayStarterTrailingStarts ?? null,
-            awayStarterSeasonEra: m.awayStarterSeasonEra ?? null,
-            result: p.result,
-          };
-        })),
+        ledgerForDate(date),
       ]);
-      sendJson(res, 200, { date, availableDates, ...digest, lockedMoneyline });
+
+      // FREE surface: exactly one published moneyline pick (the worst
+      // opposing arm among what the admin put on the record), plus the
+      // day's published picks' W/L. MEMBER surface (or paywall off): the
+      // full ledger for the date - every qualifying pick with its
+      // metrics, published or not - plus the research tables from the
+      // digest.
+      const freeMoneyline = pickFreeMoneyline(ledger);
+      const publishedToday = ledger.filter((r) => r.published).map(shapeLedgerPick);
+
+      const base = {
+        date,
+        availableDates,
+        updatedAt: digest.updatedAt,
+        warnings: digest.warnings,
+        access: { research, paywallEnabled: PAYWALL_ENABLED },
+        freeMoneyline,
+        publishedToday,
+      };
+
+      if (!research) {
+        return sendJson(res, 200, base);
+      }
+
+      sendJson(res, 200, {
+        ...base,
+        topPicks: digest.topPicks,
+        moneyline: digest.moneyline,
+        hitStreak: digest.hitStreak,
+        windHr: digest.windHr,
+        strikeouts: digest.strikeouts,
+        ledger: ledger.map(shapeLedgerPick),
+      });
       return;
     }
 
     if (url.pathname === '/api/slate') {
       const date = url.searchParams.get('date') || todayIsoDate();
       if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
-      // Guardrail so the live proxy can't be used to crawl arbitrary
-      // history, the app itself only navigates a +/- 15 day window.
       const today = todayIsoDate();
       if (date < shiftIso(today, -15) || date > shiftIso(today, 15)) {
         return sendJson(res, 400, { error: 'date outside the supported slate window' });
@@ -597,9 +1107,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Grades Slatefinder's own tracked top picks against final MLB
-    // results, same idea as the periodic pipeline refresh but on demand
-    // from the Tracking tab's "Check results" button.
     if (url.pathname === '/api/tracked-picks/grade' && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
       if (rateLimited(req, 'tracked-picks-grade', 10, 10 * 60 * 1000)) {
@@ -668,7 +1175,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // --- newsletter unsubscribe (from the daily email's one-click link) --
+    // --- newsletter unsubscribe (from the daily digest's one-click link) --
     if (url.pathname === '/unsubscribe') {
       const ok = await unsubscribeAccount(pool, url.searchParams.get('token') || '');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -676,6 +1183,20 @@ const server = http.createServer(async (req, res) => {
         <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#101216;color:#e7e9ee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
         <div style="text-align:center;padding:24px"><p style="font-size:16px;font-weight:600">${ok ? "You're unsubscribed." : 'That link has already been used or is invalid.'}</p>
         <p style="color:#9ba3b0;font-size:13px">${ok ? "No more daily emails. Your account still works, this only turns off the morning digest." : ''}</p>
+        <p><a href="/" style="color:#5b9cff;font-size:13px">Back to Slatefinder</a></p></div></body>`);
+      return;
+    }
+
+    // --- marketing unsubscribe (signed, expiring token; no login) ---------
+    if (url.pathname === '/email/unsubscribe') {
+      const uid = await verifyUnsubscribeToken(pool, url.searchParams.get('token') || '');
+      const ok = uid !== null ? await marketingUnsubscribe(pool, uid) : false;
+      const already = uid !== null && !ok;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#101216;color:#e7e9ee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+        <div style="text-align:center;padding:24px"><p style="font-size:16px;font-weight:600">${uid !== null ? "You're unsubscribed from marketing emails." : 'That link is invalid or has expired.'}</p>
+        <p style="color:#9ba3b0;font-size:13px">${already ? 'You were already unsubscribed, nothing more to do.' : ''}</p>
         <p><a href="/" style="color:#5b9cff;font-size:13px">Back to Slatefinder</a></p></div></body>`);
       return;
     }
@@ -690,25 +1211,26 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   await runMigrations(pool);
-  // Never trust migration-file state for auth: re-assert the users/sessions
-  // schema (incl. avatar_seed) on every boot. Idempotent and fast.
   await ensureAuthSchema(pool);
-  // And guard every table we insert into against legacy NOT NULL columns
-  // left behind by older apps sharing this database (see lib/schemaGuard.js).
   await ensureInsertSafety(pool);
 
-  // Bind the port immediately so Railway's healthcheck passes right away -
-  // don't make first boot wait on a full pipeline run (batter form alone
-  // can take ~a minute against ~400 hitters).
   server.listen(PORT, () => {
     console.log(`SlateFinder listening on :${PORT}`);
   });
 
-  triggerPipelineRun(); // fire-and-forget initial populate
+  // Boot populate: fetch odds ONLY if today's games have none yet (first
+  // boot of the day / fresh database). A redeploy in the afternoon must
+  // not spend a metered odds request the morning job already made.
+  pool.query(`SELECT count(*)::int AS priced FROM games WHERE game_date = $1 AND home_ml IS NOT NULL`, [todayIsoDate()])
+    .then(({ rows }) => triggerPipelineRun(todayIsoDate(), { fetchOdds: rows[0].priced === 0 }))
+    .catch(() => triggerPipelineRun(todayIsoDate(), { fetchOdds: false }));
   scheduleHourlyRuns();
   startGradingLoop();
 }
 
+// Starts on import. The admin test suite imports this module (with a
+// cache-busting query) precisely to get a live server bound to a test
+// PORT, so importing == starting is intentional, not a footgun to guard.
 start().catch((err) => {
   console.error('Failed to start server:', err);
   process.exit(1);

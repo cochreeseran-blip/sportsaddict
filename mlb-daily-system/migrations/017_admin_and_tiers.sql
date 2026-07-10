@@ -32,15 +32,23 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAU
 ALTER TABLE users ADD COLUMN IF NOT EXISTS marketing_opt_in BOOLEAN NOT NULL DEFAULT false;
 
 -- The shared legacy table can contain role/tier values outside this app's
--- allow-lists. ADD CONSTRAINT validates against every existing row, so any
--- non-conforming legacy row makes the migration (and boot) fail with 23514.
--- Fold unknown legacy values into this app's safe defaults before re-adding
--- the constraints. Idempotent: on a clean table these updates match no rows.
-UPDATE users SET role = 'user' WHERE role IS NULL OR role NOT IN ('user', 'admin');
-UPDATE users SET tier = 'free' WHERE tier IS NULL OR tier NOT IN ('free', 'member');
-
+-- allow-lists. A plain ADD CONSTRAINT validates every existing row, so any
+-- non-conforming legacy row makes the migration -- and therefore boot,
+-- since migrate.js runs synchronously before the server binds $PORT --
+-- fail with 23514.
+--
+-- NOT VALID is the fix, not sanitizing/overwriting legacy rows: it skips
+-- the initial full-table validation scan, so pre-existing legacy values
+-- are left exactly as they are (this app never owns that data and must
+-- not silently rewrite it -- the other app sharing this table may depend
+-- on role/tier values we don't know about). Postgres still enforces the
+-- constraint on every INSERT and every UPDATE from this point forward,
+-- which is all this app actually needs: our own inserts/updates (signup,
+-- make-admin) always use an allowed value, so they're validated exactly
+-- as before. Only pre-existing rows this app never wrote are exempted
+-- from the one-time historical scan.
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
-ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin'));
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin')) NOT VALID;
 
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
-ALTER TABLE users ADD CONSTRAINT users_tier_check CHECK (tier IN ('free', 'member'));
+ALTER TABLE users ADD CONSTRAINT users_tier_check CHECK (tier IN ('free', 'member')) NOT VALID;

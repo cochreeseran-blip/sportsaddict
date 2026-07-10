@@ -1,3 +1,5 @@
+import { postedLineupTeams, benchedOut } from '../lineupStatus.js';
+
 const ERA_GATE = 6.0;
 const WEAK_ARM_FLOOR = 4.5;
 // Not a business cap, just a safety valve, see hitStreak.js for why.
@@ -12,7 +14,14 @@ export async function runWindHrFilter(pool, gameDate) {
   const warnings = [];
   const { rows: allBatters } = await pool.query('SELECT * FROM batter_form WHERE game_date = $1', [gameDate]);
 
-  const hrRates = allBatters
+  // Same lineup gate as the hit-streak filter: once a team's lineup is
+  // posted, a hitter who isn't in it has no HR prop — he isn't starting.
+  // Dropped here so it never reaches the HR-rate threshold math or the
+  // watch list. Before the lineup posts he stays a projected candidate.
+  const postedTeams = await postedLineupTeams(pool, gameDate);
+  const startingBatters = allBatters.filter((b) => !benchedOut(b, postedTeams));
+
+  const hrRates = startingBatters
     .map((b) => (b.trailing_15_hr_rate !== null ? Number(b.trailing_15_hr_rate) : null))
     .filter((v) => v !== null)
     .sort((a, b) => a - b);
@@ -53,7 +62,7 @@ export async function runWindHrFilter(pool, gameDate) {
   );
 
   const battersByTeam = new Map();
-  for (const b of allBatters) {
+  for (const b of startingBatters) {
     if (!battersByTeam.has(b.team)) battersByTeam.set(b.team, []);
     battersByTeam.get(b.team).push(b);
   }

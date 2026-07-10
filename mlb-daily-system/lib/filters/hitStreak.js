@@ -1,4 +1,5 @@
 import { gradeHitProp } from '../grading.js';
+import { postedLineupTeams, benchedOut } from '../lineupStatus.js';
 
 const HIT_STREAK_GATE = 5;
 const AVG_GATE = 0.32;
@@ -73,6 +74,13 @@ export async function runHitStreakFilter(pool, gameDate) {
     [gameDate, HIT_STREAK_GATE, AVG_GATE]
   );
 
+  // Once a team's lineup is posted, drop any hot hitter who isn't in it:
+  // there's no hit prop on a guy who isn't starting. This is the thing that
+  // makes a refresh clean itself up — a batter who looked good on projected
+  // form but gets left out of the confirmed lineup disappears from the
+  // board on the next run instead of sitting there as a phantom pick.
+  const postedTeams = await postedLineupTeams(pool, gameDate);
+
   // Eligibility: a batter needs MIN_TRAILING_AB real at-bats behind his
   // trailing average to be graded/ranked at all, UNLESS his hit streak
   // clears HIT_STREAK_GATE (5+ straight games with a hit) AND he still has
@@ -82,6 +90,7 @@ export async function runHitStreakFilter(pool, gameDate) {
   // a 5-game streak on five total at-bats, so the exemption carries its
   // own (lower) at-bat floor to shut that thin-sample case out.
   const eligible = batters.filter((b) => {
+    if (benchedOut(b, postedTeams)) return false; // lineup posted, not in it
     const ab = b.trailing_15_ab ?? 0;
     if (ab >= MIN_TRAILING_AB) return true;
     return (b.hit_streak ?? 0) >= HIT_STREAK_GATE && ab >= STREAK_EXEMPT_MIN_AB;

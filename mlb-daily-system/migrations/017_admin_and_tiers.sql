@@ -31,6 +31,14 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS marketing_opt_in BOOLEAN NOT NULL DEFAULT false;
 
+-- The shared legacy table can contain role/tier values outside this app's
+-- allow-lists. ADD CONSTRAINT validates against every existing row, so any
+-- non-conforming legacy row makes the migration (and boot) fail with 23514.
+-- Fold unknown legacy values into this app's safe defaults before re-adding
+-- the constraints. Idempotent: on a clean table these updates match no rows.
+UPDATE users SET role = 'user' WHERE role IS NULL OR role NOT IN ('user', 'admin');
+UPDATE users SET tier = 'free' WHERE tier IS NULL OR tier NOT IN ('free', 'member');
+
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin'));
 

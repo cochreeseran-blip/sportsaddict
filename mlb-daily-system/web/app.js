@@ -411,7 +411,6 @@ async function renderResearch() {
 
     host.innerHTML = `
       <div class="section-head"><h2 class="section-title">Research</h2></div>
-      <p class="section-sub">The matchup lab behind the board. Who's hot, who's facing a beatable arm, whose strikeout floor is real, with every number the screener weighed. Research, not picks; the bets live on the Daily Slate.</p>
 
       <div class="signals-toolbar">
         <select class="date-select" id="researchDate">${dateOptions}</select>

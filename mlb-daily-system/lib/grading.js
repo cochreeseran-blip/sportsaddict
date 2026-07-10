@@ -2,12 +2,12 @@ import { fmtNum } from './util/format.js';
 
 // One shared 0-100 score and letter grade for every pick type (moneyline,
 // hit prop, strikeout prop), so a user learns the scale once. Built
-// entirely from data already on file: season ERA, trailing ERA, K/hit
-// form, plus Baseball Savant's Statcast metrics (xERA, whiff%, hard-hit%,
-// K%, BB%) layered on top when we have them for that pitcher that day.
-// Savant is best-effort (see lib/sources/savant.js): every field here is
-// optional, and a pick with no Savant data on file still grades, just
-// off fewer inputs.
+// entirely from data already on file: trailing ERA, season ERA (context
+// only, see gradeMoneyline), K/hit form, plus Baseball Savant's Statcast
+// metrics (xERA, whiff%, hard-hit%, K%, BB%) layered on top when we have
+// them for that pitcher that day. Savant is best-effort (see
+// lib/sources/savant.js): every field here is optional, and a pick with
+// no Savant data on file still grades, just off fewer inputs.
 const THRESHOLDS = [
   [90, 'A+'],
   [80, 'A'],
@@ -46,9 +46,9 @@ function savantLuckNote(s, wantsBad) {
 }
 
 // wantsBad = true when a worse arm is the good outcome for this pick
-// (hit props, moneyline-against); false when a better arm is (moneyline,
-// strikeouts). Shared so the same Savant fields read the same direction
-// consistently across every pick type.
+// (hit props, moneyline-against); false when a better arm is (strikeouts).
+// Shared so the same Savant fields read the same direction consistently
+// across every pick type.
 function savantArmNotes(s, wantsBad) {
   const notes = [];
   let bonus = 0;
@@ -93,20 +93,43 @@ function savantArmNotes(s, wantsBad) {
   return { bonus: Math.min(25, bonus), notes };
 }
 
-// Moneyline: the home starter's season-ERA edge over the away starter is
-// the qualifying bar (2+ runs, see filters/moneyline.js); the grade turns
-// that single cutoff into a spectrum, and Savant on the away starter
-// either confirms he's really that bad or flags his ERA as better luck
-// than stuff.
-export function gradeMoneyline({ eraEdge, awaySavant }) {
-  let score = 50 + (eraEdge ?? 0) * 9;
-  const reasons = [`${fmtNum(eraEdge)}-run season ERA edge, home starter over the visitor`];
+// Moneyline: qualification is now gated purely on the AWAY starter's
+// TRAILING (last 3 starts) ERA clearing 6.00 within a -115/-180 home-
+// favorite price band (see filters/moneyline.js), there is no more
+// home-vs-away ERA "edge" to grade on. So the grade here is built from
+// how far past that 6.00 gate the away arm's trailing ERA sits (a 9.50
+// is a much worse arm than a 6.05, both qualify but they aren't the same
+// confidence) plus how cheap the break-even price is (a -120 needing
+// 54.5% to break even is a better bet than a -175 needing 63.6%, all
+// else equal). Savant on the away starter either confirms he's really
+// that bad or flags his ERA as better luck than stuff. Season ERA is
+// intentionally NOT an input here, it's display-only context per spec.
+export function gradeMoneyline({ awayTrailingEra, breakevenPct, awaySavant }) {
+  const eraOverGate = Math.max(0, (awayTrailingEra ?? 0) - 6.0);
+  const breakevenValue = breakevenPct !== null && breakevenPct !== undefined ? Math.max(0, 0.68 - breakevenPct) * 70 : 0;
+  let score = 52 + eraOverGate * 7 + breakevenValue;
+  const reasons = [`away starter's trailing ERA is ${fmtNum(awayTrailingEra)} over his last starts, clears the 6.00 gate`];
+  if (breakevenPct !== null && breakevenPct !== undefined) {
+    reasons.push(`needs to win ${(breakevenPct * 100).toFixed(1)}% of the time to break even at this price`);
+  }
   const { bonus, notes } = savantArmNotes(awaySavant, true);
   score += bonus;
   reasons.push(...notes);
   score = clampScore(score);
   return { score, grade: letterGrade(score), reasons };
 }
+
+// Hard floor for hit props: a batter who isn't actually hitting well
+// (below .280 trailing) cannot be graded above a B, no matter how hot
+// his streak is or how bad the arm he's facing is. A grade should never
+// imply "this is a great bat", only "this is a great matchup for a bat
+// that's actually hitting" - those are different claims, and blending
+// them is exactly how a .236 hitter on a lucky streak ends up graded A.
+// Applied AFTER the normal score so it can clamp a score that would
+// otherwise letter-grade above B back down, keeping the numeric score
+// and the displayed letter in agreement.
+const HIT_AVG_FLOOR = 0.28;
+const HIT_AVG_FLOOR_CAP_SCORE = 69; // top of the 'B' band in THRESHOLDS
 
 // Hit props: hot recent form (streak + trailing average) against a
 // beatable arm. Savant on the opposing starter sharpens "beatable" beyond
@@ -125,6 +148,12 @@ export function gradeHitProp({ hitStreak, trailing15Avg, opposingTrailingEra, op
   score += bonus;
   reasons.push(...notes);
   score = clampScore(score);
+
+  if ((trailing15Avg === null || trailing15Avg === undefined || trailing15Avg < HIT_AVG_FLOOR) && score > HIT_AVG_FLOOR_CAP_SCORE) {
+    score = HIT_AVG_FLOOR_CAP_SCORE;
+    reasons.push(`capped at B: trailing average is below the ${HIT_AVG_FLOOR.toFixed(3)} floor for a top grade`);
+  }
+
   return { score, grade: letterGrade(score), reasons };
 }
 

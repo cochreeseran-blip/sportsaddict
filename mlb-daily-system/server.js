@@ -231,7 +231,7 @@ async function buildGameDetail(gamePk, dateStr) {
 
   const [batterRows, pitcherRows, gameRow] = await Promise.all([
     pool.query(
-      `SELECT batter_id, hit_streak, trailing_15_avg, trailing_15_hr_rate, last5_results,
+      `SELECT batter_id, hit_streak, trailing_15_avg, trailing_15_ab, trailing_15_hr_rate, last5_results,
               lineup_confirmed, lineup_confirmed_at, position, jersey_number
        FROM batter_form WHERE game_date = $1`,
       [dateStr]
@@ -259,6 +259,7 @@ async function buildGameDetail(gamePk, dateStr) {
         position: b.position ?? f?.position ?? null,
         hitStreak: f?.hit_streak ?? null,
         trailing15Avg: f?.trailing_15_avg !== null && f?.trailing_15_avg !== undefined ? Number(f.trailing_15_avg) : null,
+        trailing15Ab: f?.trailing_15_ab ?? 0,
         trailing15HrRate: f?.trailing_15_hr_rate !== null && f?.trailing_15_hr_rate !== undefined ? Number(f.trailing_15_hr_rate) : null,
         last5Results: f?.last5_results ?? null,
       };
@@ -558,6 +559,10 @@ const server = http.createServer(async (req, res) => {
             detail: m.detail ?? null,
             grade: m.grade ?? null,
             gradeReasons: m.gradeReasons ?? [],
+            awayStarterName: m.awayStarterName ?? null,
+            awayStarterTrailingEra: m.awayStarterTrailingEra ?? null,
+            awayStarterTrailingStarts: m.awayStarterTrailingStarts ?? null,
+            awayStarterSeasonEra: m.awayStarterSeasonEra ?? null,
             result: p.result,
           };
         })),

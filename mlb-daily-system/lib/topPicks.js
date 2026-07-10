@@ -26,8 +26,18 @@ export function moneylineCandidates(moneyline) {
     awayTeam: p.awayTeam,
     homeMl: p.homeMl ?? null,
     breakevenPct: p.breakevenPct ?? null,
+    // Away starter's TRAILING ERA is the qualifying signal now (see
+    // lib/filters/moneyline.js), always carried with the start count it
+    // was computed from. Season ERA rides along too but is display-only
+    // context, never re-derived as a gate downstream.
+    awayStarterName: p.awayStarterName ?? null,
+    awayStarterTrailingEra: p.awayStarterTrailingEra ?? null,
+    awayStarterTrailingStarts: p.awayStarterTrailingStarts ?? null,
+    awayStarterSeasonEra: p.awayStarterSeasonEra ?? null,
+    homeStarterName: p.homeStarterName ?? null,
+    homeStarterSeasonEra: p.homeStarterSeasonEra ?? null,
     headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}`,
-    detail: `${p.homeStarterName ?? 'The home starter'} (${fmtNum(p.homeStarterSeasonEra)} season ERA) holds the pitching edge over ${p.awayStarterName ?? 'the visitor'} (${fmtNum(p.awayStarterSeasonEra)}).`,
+    detail: `${p.awayStarterName ?? 'The away starter'}'s trailing ERA is ${fmtNum(p.awayStarterTrailingEra)} over his last ${p.awayStarterTrailingStarts ?? 0} start(s) (season: ${fmtNum(p.awayStarterSeasonEra)}).`,
   }));
 }
 
@@ -47,8 +57,11 @@ function hitPropCandidates(hitStreak) {
     lineupConfirmed: b.lineupConfirmed,
     last5Results: b.last5Results,
     trailing15Avg: b.trailing15Avg ?? null,
+    // Always carried alongside the average, a .345 on 58 at-bats and a
+    // .345 on 12 at-bats are not the same claim, see lib/filters/hitStreak.js.
+    trailing15Ab: b.trailing15Ab ?? 0,
     headline: `${b.batterName} (${b.team}) to get a hit`,
-    detail: `${b.hitStreak >= 5 ? `On a ${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 games`}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
+    detail: `${b.hitStreak >= 5 ? `On a ${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 games (${b.trailing15Ab ?? 0} AB)`}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
   }));
 }
 

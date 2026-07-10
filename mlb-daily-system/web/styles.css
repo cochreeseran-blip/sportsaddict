@@ -452,6 +452,10 @@ tr.exp-detail:hover td { background: rgba(0, 0, 0, 0.22); }
   background: linear-gradient(180deg, rgba(255, 93, 108, 0.09), transparent 60%), var(--panel);
   box-shadow: 0 0 0 1px rgba(255, 93, 108, 0.2), 0 10px 26px rgba(255, 93, 108, 0.12), var(--shadow);
 }
+/* SIT: a real, displayed result (see MAX_PICKS_PER_DAY in
+   lib/filters/moneyline.js), styled plainly rather than as an error or
+   an empty state, sitting out some days is the system working. */
+.sig-card.sit-card { cursor: default; }
 
 .mlv-big {
   display: inline-flex; align-items: center; gap: 5px;
@@ -467,6 +471,15 @@ tr.exp-detail:hover td { background: rgba(0, 0, 0, 0.22); }
 .mlv-big.live { color: #fff; background: var(--red); box-shadow: 0 0 14px rgba(255, 93, 108, 0.5); }
 .mlv-big.live i.live-dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: blink 0.9s ease-in-out infinite; }
 .mlv-big.live b { font-weight: 800; margin-left: 2px; opacity: 0.85; }
+.mlv-big.sit { color: var(--text-2); background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border); }
+
+/* at-bat sample size, shown next to every trailing average, always
+   (see MIN_TRAILING_AB in lib/filters/hitStreak.js) */
+.ab-tag {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+  color: var(--text-3); background: rgba(255, 255, 255, 0.05);
+  border-radius: 5px; padding: 1px 5px; margin-left: 4px; white-space: nowrap;
+}
 
 /* --- jumbotron -------------------------------------------------------------------- */
 .jumbotron {

@@ -32,6 +32,11 @@ export function computeBatterStats(splits, trailingGames = 15) {
   return {
     hitStreak,
     trailing15Avg: abSum > 0 ? round3(hitsSum / abSum) : null,
+    // Total at-bats behind that average. A tiny denominator (a callup
+    // with 2 at-bats going 2-for-2) produces a real but meaningless
+    // 1.000, this is what lets a caller tell the two apart, see the
+    // MIN_TRAILING_AB gate in lib/filters/hitStreak.js.
+    trailing15Ab: abSum,
     trailing15HrRate: last15.length > 0 ? round3(hrSum / last15.length) : null,
     gamesConsidered: last15.length,
     last5Results,
@@ -41,15 +46,16 @@ export function computeBatterStats(splits, trailingGames = 15) {
 export async function upsertBatterForm(pool, record) {
   await pool.query(
     `INSERT INTO batter_form
-       (game_date, batter_id, batter_name, team, hit_streak, trailing_15_avg, trailing_15_hr_rate,
+       (game_date, batter_id, batter_name, team, hit_streak, trailing_15_avg, trailing_15_ab, trailing_15_hr_rate,
         lineup_confirmed, last5_results, position, jersey_number, lineup_confirmed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-             CASE WHEN $8 THEN now() ELSE NULL END)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+             CASE WHEN $9 THEN now() ELSE NULL END)
      ON CONFLICT (game_date, batter_id) DO UPDATE SET
        batter_name = EXCLUDED.batter_name,
        team = EXCLUDED.team,
        hit_streak = EXCLUDED.hit_streak,
        trailing_15_avg = EXCLUDED.trailing_15_avg,
+       trailing_15_ab = EXCLUDED.trailing_15_ab,
        trailing_15_hr_rate = EXCLUDED.trailing_15_hr_rate,
        lineup_confirmed = EXCLUDED.lineup_confirmed,
        last5_results = EXCLUDED.last5_results,
@@ -67,6 +73,7 @@ export async function upsertBatterForm(pool, record) {
       record.team,
       record.hitStreak,
       record.trailing15Avg,
+      record.trailing15Ab ?? 0,
       record.trailing15HrRate,
       record.lineupConfirmed,
       JSON.stringify(record.last5Results ?? []),

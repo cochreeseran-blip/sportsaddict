@@ -249,6 +249,13 @@ function skeletonPanel() {
 // the screener used. Every row expands: click it and the full breakdown
 // drops out underneath (form, streak, the arm he's facing, lineup state),
 // with a jump straight into that game's panel.
+// A .345 on 58 at-bats and a .345 on 12 at-bats are not the same claim,
+// see MIN_TRAILING_AB in lib/filters/hitStreak.js. Shown next to every
+// trailing average anywhere in the UI, always.
+function abTagHtml(ab) {
+  return `<span class="ab-tag">${ab ?? 0} AB</span>`;
+}
+
 function hitterDetailRow(b, date) {
   const stat = (k, v) => `<div class="exp-stat"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const era = b.opposingStarterTrailingEra;
@@ -258,7 +265,7 @@ function hitterDetailRow(b, date) {
   return `
     <tr class="exp-detail" hidden><td colspan="7">
       <div class="exp-grid">
-        ${stat('Batting form', b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<b class="mono">${fmtNum(b.trailing15Avg, 3)}</b> over his last 15 games` : 'No trailing average yet')}
+        ${stat('Batting form', b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<b class="mono">${fmtNum(b.trailing15Avg, 3)}</b> over his last 15 games (${b.trailing15Ab ?? 0} AB)` : 'No trailing average yet')}
         ${stat('Hit streak', b.hitStreak >= 2 ? `<b class="mono">${b.hitStreak}</b> straight games with a hit` : 'No active streak')}
         ${stat('Last 5 games', `${form5Html(b.last5Results)} <span class="faint">hit / no hit</span>`)}
         ${stat('The matchup', arm)}
@@ -270,6 +277,10 @@ function hitterDetailRow(b, date) {
     </td></tr>`;
 }
 
+// Every batter here already cleared the at-bat minimum (or is exempt on
+// a 5+ game hit streak, see lib/filters/hitStreak.js), so there's no
+// low-sample noise left to filter, the AB count next to the average is
+// shown for transparency, not as a warning.
 function hitterResearchTable(hs, date) {
   const list = hs?.watchList || [];
   if (!list.length) return '';
@@ -278,7 +289,7 @@ function hitterResearchTable(hs, date) {
       <td class="rank-col mono">${i + 1}</td>
       <td>${gradeBadgeHtml(b.grade)}</td>
       <td>${playerCell(b, b.highConfidence ? '<span class="pill info"><span class="pill-dot"></span>Prime matchup</span>' : '')}</td>
-      <td class="mono">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<strong>${fmtNum(b.trailing15Avg, 3)}</strong>` : '-'}</td>
+      <td class="mono">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<strong>${fmtNum(b.trailing15Avg, 3)}</strong> ${abTagHtml(b.trailing15Ab)}` : '-'}</td>
       <td class="mono">${b.hitStreak >= 2 ? `${b.hitStreak}` : '-'}</td>
       <td>${form5Html(b.last5Results)}</td>
       <td>${opposingStarterCell(b)}<span class="exp-caret" aria-hidden="true">▾</span></td>
@@ -297,12 +308,17 @@ function hitterResearchTable(hs, date) {
 
 // Strikeout floors: starters who cleared the same K bar in every recent
 // start, with the floor, the volume, and how the arm is actually throwing.
-// Best Bets: the highest-graded matchups across both buckets, pooled and
-// ranked on the shared A+ through C scale, reusing the market-style pick
-// card (see .pick-card in styles.css) so the top of a paid tab looks like
-// the headline product it is, not another data table. Falls back to the
-// best available grades if nothing cleared A- today, there's always
-// something to lead with.
+//
+// Top hit props / Top strikeout props: the highest-graded matchups
+// WITHIN each bucket, reusing the market-style pick card (see .pick-card
+// in styles.css) so the top of a paid tab looks like the headline
+// product it is, not another data table. Kept as two separately ranked
+// strips, not one blended "Best Bets" list: there's no validated way to
+// weigh a hit prop against a strikeout prop against each other, so a
+// single cross-category #1-through-#6 would imply a precision the data
+// doesn't support. Each strip falls back to the best available grades if
+// nothing in that category cleared A- today, there's always something to
+// lead with.
 function bestBetCardHtml(pick, idx, date) {
   const isKo = pick.kind === 'strikeout';
   const name = isKo ? pick.pitcherName : pick.batterName;
@@ -310,7 +326,7 @@ function bestBetCardHtml(pick, idx, date) {
   const sub = `${esc(TEAMS[pick.team]?.abbrev || pick.team || '')} · ${isKo ? 'Strikeouts' : 'Hit prop'}`;
   const headline = isKo
     ? `${pick.strictFloorKs}+ strikeouts`
-    : pick.hitStreak >= 2 ? `${pick.hitStreak}-game hit streak` : `${fmtNum(pick.trailing15Avg, 3)} avg, last 15`;
+    : pick.hitStreak >= 2 ? `${pick.hitStreak}-game hit streak` : `${fmtNum(pick.trailing15Avg, 3)} avg (${pick.trailing15Ab ?? 0} AB), last 15`;
   const reasons = pick.gradeReasons || [];
   return `
     <div class="pick-card ${gradeTier(pick.grade)}" data-expand tabindex="0">
@@ -332,19 +348,26 @@ function bestBetCardHtml(pick, idx, date) {
     </div>`;
 }
 
-function bestBetsStrip(hitStreak, strikeouts, date) {
-  const pool = [
-    ...(hitStreak?.watchList || []).map((b) => ({ ...b, kind: 'hit' })),
-    ...(strikeouts?.watchList || []).map((p) => ({ ...p, kind: 'strikeout' })),
-  ].filter((p) => p.grade);
-  pool.sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0));
-  const elite = pool.filter((p) => p.grade === 'A+' || p.grade === 'A').slice(0, 6);
-  const list = elite.length >= 3 ? elite : pool.slice(0, Math.max(elite.length, 3));
-  if (!list.length) return '';
+// Shared ranking/render for one category's strip: highest grades first,
+// elite (A/A+) preferred, falling back to the best available so the
+// section still leads with something on a thinner day.
+function categoryBetsStrip(title, list, date) {
+  const graded = (list || []).filter((p) => p.grade);
+  graded.sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0));
+  const elite = graded.filter((p) => p.grade === 'A+' || p.grade === 'A').slice(0, 6);
+  const top = elite.length >= 3 ? elite : graded.slice(0, Math.max(elite.length, 3));
+  if (!top.length) return '';
   return `
-    <h2 class="board-title">Best bets today<span class="board-count">${list.length}</span></h2>
-    <p class="section-sub">Every number the screener weighed, folded into one grade. Start here.</p>
-    <div class="pick-grid center">${list.map((p, i) => bestBetCardHtml(p, i, date)).join('')}</div>`;
+    <h2 class="board-title">${esc(title)}<span class="board-count">${top.length}</span></h2>
+    <div class="pick-grid center">${top.map((p, i) => bestBetCardHtml(p, i, date)).join('')}</div>`;
+}
+
+function topHitPropsStrip(hitStreak, date) {
+  return categoryBetsStrip('Top hit props', (hitStreak?.watchList || []).map((b) => ({ ...b, kind: 'hit' })), date);
+}
+
+function topStrikeoutPropsStrip(strikeouts, date) {
+  return categoryBetsStrip('Top strikeout props', (strikeouts?.watchList || []).map((p) => ({ ...p, kind: 'strikeout' })), date);
 }
 
 function strikeoutResearchTable(so) {
@@ -416,7 +439,8 @@ async function renderResearch() {
         <select class="date-select" id="researchDate">${dateOptions}</select>
       </div>
 
-      ${bestBetsStrip(d.hitStreak, d.strikeouts, d.date)}
+      ${topHitPropsStrip(d.hitStreak, d.date)}
+      ${topStrikeoutPropsStrip(d.strikeouts, d.date)}
 
       <h2 class="board-title">Hot bats vs beatable arms${count(hitCount)}</h2>
       <p class="section-sub">Ranked by recent batting form against how the opposing starter has actually been throwing. Confirm the lineup before reading anything into it.</p>
@@ -518,7 +542,7 @@ function lineupRows(side, live = null) {
       <div class="lu-stats">
         ${b.battingLine ? `<div class="lu-stat"><div class="v">${b.battingLine.hits}-${b.battingLine.atBats}</div><div class="k">Today</div></div>` : ''}
         <div class="lu-stat"><div class="v">${b.hitStreak ?? '-'}</div><div class="k">Streak</div></div>
-        <div class="lu-stat"><div class="v">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? fmtNum(b.trailing15Avg, 3) : '-'}</div><div class="k">L15 avg</div></div>
+        <div class="lu-stat"><div class="v">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? fmtNum(b.trailing15Avg, 3) : '-'}</div><div class="k">L15 avg${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? ` (${b.trailing15Ab ?? 0} AB)` : ''}</div></div>
         <div class="lu-stat">${form5Html(b.last5Results)}<div class="k">Last 5</div></div>
       </div>
     </div>`;
@@ -796,6 +820,13 @@ function lockedMoneylineCard(p, statusByGamePk) {
   const g = isPending && p.mlbGameId ? statusByGamePk?.get(String(p.mlbGameId)) : null;
   const isLive = g?.abstractState === 'Live';
   const stateCls = isLive ? 'live' : (p.result || 'pending');
+  // The away starter's TRAILING ERA is the actual qualifying signal (see
+  // lib/filters/moneyline.js), shown with the start count it's computed
+  // from; season ERA rides along right after it but is clearly labeled
+  // "season" context, never the reason this pick is on the board.
+  const eraLine = p.awayStarterTrailingEra !== null && p.awayStarterTrailingEra !== undefined
+    ? `${esc(p.awayStarterName || 'Away starter')} trailing ${fmtNum(p.awayStarterTrailingEra)} ERA (last ${p.awayStarterTrailingStarts ?? 0} starts)${p.awayStarterSeasonEra !== null && p.awayStarterSeasonEra !== undefined ? `, season ${fmtNum(p.awayStarterSeasonEra)}` : ''}`
+    : '';
   return `
     <div class="sig-card locked-${stateCls}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
       <div class="sig-head">
@@ -803,13 +834,29 @@ function lockedMoneylineCard(p, statusByGamePk) {
         ${bigResultBadge(p.result, isLive ? g : null)}
       </div>
       <div class="sig-sub">${esc(p.detail || `To beat ${p.awayTeam || 'the visitor'}.`)}</div>
-      ${breakeven ? `<div class="sig-note">Break-even ${breakeven}</div>` : ''}
+      ${breakeven ? `<div class="sig-note">Locked ${fmtOdds(p.homeMl)} · break-even ${breakeven}</div>` : ''}
+      ${eraLine ? `<div class="sig-note">${esc(eraLine)}</div>` : ''}
     </div>`;
 }
 
 function lockedMoneylineCards(picks, statusByGamePk) {
   if (!picks?.length) return '';
   return `<div class="sig-cards">${picks.map((p) => lockedMoneylineCard(p, statusByGamePk)).join('')}</div>`;
+}
+
+// SIT is a real, displayed result now (see MAX_PICKS_PER_DAY in
+// lib/filters/moneyline.js), not an absence of data: some days nothing
+// clears the -115/-180 favorite band with a 6.00+ trailing-ERA away
+// starter, and that's the system working, not a gap.
+function sitStateHtml() {
+  return `
+    <div class="sig-card sit-card">
+      <div class="sig-head">
+        <span>Today's call</span>
+        <span class="mlv-big sit">SIT</span>
+      </div>
+      <div class="sig-sub">No game clears the bar today: a home favorite priced -115 to -180 with the away starter's trailing ERA at 6.00 or worse over his last 3 starts. Sitting out is the system working, not a data gap.</div>
+    </div>`;
 }
 
 function opposingStarterCell(b) {
@@ -830,6 +877,15 @@ function formKsHtml(ks, floor) {
 // --- yesterday strip -----------------------------------------------------------
 // Public accountability: yesterday's graded picks as W/L chips plus the
 // all-time record, straight from the tracked ledger.
+//
+// The win rate is suppressed below MIN_GRADED_FOR_RATE graded picks: a
+// 6-1 record isn't a real win rate, it's seven data points, and showing
+// "86%" next to that invites reading far more confidence into it than
+// the sample supports. The raw W-L always shows either way, that's not
+// hidden, only the derived percentage is gated. "Graded" here means
+// win+loss (pushes don't move a win rate either direction, so they don't
+// count toward the sample size for one).
+const MIN_GRADED_FOR_RATE = 50;
 function yesterdayStrip(perf, today) {
   if (!perf) return '';
   const y = new Date(`${today}T00:00:00Z`);
@@ -838,7 +894,10 @@ function yesterdayStrip(perf, today) {
   const graded = (perf.recent || []).filter((r) => r.gameDate === yd && (r.result === 'win' || r.result === 'loss' || r.result === 'push'));
   let wins = 0, losses = 0, pushes = 0;
   for (const s of perf.summary || []) { wins += s.wins; losses += s.losses; pushes += s.pushes; }
-  const pct = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(0) : null;
+  const gradedCount = wins + losses;
+  const rateText = gradedCount >= MIN_GRADED_FOR_RATE
+    ? ` (${((wins / gradedCount) * 100).toFixed(0)}%)`
+    : ' (sample too small for a rate)';
   const chips = graded.slice(0, 8).map((r) => {
     const short = r.description.split(', ')[0].split(' to ')[0];
     return `<span class="yd-chip ${r.result}"><b>${r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}</b>${esc(short)}</span>`;
@@ -847,7 +906,7 @@ function yesterdayStrip(perf, today) {
     <div class="yesterday-strip">
       <span class="yd-title">Yesterday</span>
       ${chips || '<span class="faint" style="font-size:12px">Nothing graded yet</span>'}
-      <span class="yd-record">All-time <b>${wins}-${losses}${pushes ? `-${pushes}` : ''}</b>${pct !== null ? ` (${pct}%)` : ''}</span>
+      <span class="yd-record">All-time <b>${wins}-${losses}${pushes ? `-${pushes}` : ''}</b>${rateText}</span>
     </div>`;
 }
 
@@ -922,7 +981,7 @@ async function renderSignals(silent = false) {
       : '';
     const mlBody = gated
       ? goLiveGate('gateSeeYesterday', 'The moneyline board is published with the 9 AM ET run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
-      : (lockedMoneylineCards(lockedPicks, statusByGamePk) || emptyHtml('No qualifying moneyline today', 'No home team is priced +100 to -250 with a 2+ run starting-pitcher ERA edge. Sitting out is a position too.'));
+      : (lockedMoneylineCards(lockedPicks, statusByGamePk) || sitStateHtml());
 
     host.innerHTML = `
       ${yesterdayStrip(perf, d.date)}

@@ -6,6 +6,12 @@ const ERA_GATE = 6.0;
 // "Even a little bit weaker" arm: anything worse than a league-average-ish
 // trailing ERA counts toward the matchup score, not just full meltdowns.
 const WEAK_ARM_FLOOR = 4.5;
+// Sample-size floor: below this many trailing at-bats, trailing_15_avg is
+// too noisy to rank or grade on at all (a backup catcher going 2-for-2
+// shows as a 1.000 average, that's not a real signal). A batter under
+// this line is excluded entirely from the watch list, not shown with a
+// lower grade or greyed out, see runHitStreakFilter below.
+const MIN_TRAILING_AB = 30;
 // Not a business cap, just a safety valve. The Daily Slate/Tracking top 6
 // is picked from this whole pool (lib/topPicks.js), so it needs every
 // qualifying hitter on a busy slate (can legitimately be 50-100+), not
@@ -59,11 +65,22 @@ export async function runHitStreakFilter(pool, gameDate) {
     [gameDate, HIT_STREAK_GATE, AVG_GATE]
   );
 
-  const scored = batters.map((b) => {
+  // Eligibility: a batter needs MIN_TRAILING_AB real at-bats behind his
+  // trailing average to be graded/ranked at all, UNLESS his hit streak
+  // alone already clears HIT_STREAK_GATE (5+ straight games with a hit),
+  // exempted per spec since a streak that long is inherently evidence
+  // he's been playing regularly. Judgment call, noted here since it's a
+  // real loophole in theory (a run of thin pinch-hit appearances could
+  // still be light on total at-bats) but matches the explicit spec: hit
+  // streak qualifiers are exempt from the at-bat minimum.
+  const eligible = batters.filter((b) => (b.hit_streak ?? 0) >= HIT_STREAK_GATE || (b.trailing_15_ab ?? 0) >= MIN_TRAILING_AB);
+
+  const scored = eligible.map((b) => {
     const opp = opponentByTeam.get(b.team);
     const opponentTrailingEra =
       opp?.starterId != null ? trailingEraByPitcherId.get(opp.starterId) ?? null : null;
     const trailing15Avg = b.trailing_15_avg !== null ? Number(b.trailing_15_avg) : null;
+    const trailing15Ab = b.trailing_15_ab ?? 0;
 
     const opponentSavant = opp?.starterId != null ? savantByPitcherId.get(opp.starterId) ?? null : null;
     const graded = gradeHitProp({
@@ -82,6 +99,7 @@ export async function runHitStreakFilter(pool, gameDate) {
       jerseyNumber: b.jersey_number ?? null,
       hitStreak: b.hit_streak,
       trailing15Avg,
+      trailing15Ab,
       lineupConfirmed: b.lineup_confirmed,
       last5Results: b.last5_results ?? [],
       opposingStarterName: opp?.starterName ?? null,

@@ -256,7 +256,7 @@ function hitterDetailRow(b, date) {
     ? `${esc(b.opposingStarterName)}${era !== null && era !== undefined ? `, ${fmtNum(era)} ERA over his last starts` : ', no ERA data yet'}`
     : 'Starter not announced yet';
   return `
-    <tr class="exp-detail" hidden><td colspan="6">
+    <tr class="exp-detail" hidden><td colspan="7">
       <div class="exp-grid">
         ${stat('Batting form', b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<b class="mono">${fmtNum(b.trailing15Avg, 3)}</b> over his last 15 games` : 'No trailing average yet')}
         ${stat('Hit streak', b.hitStreak >= 2 ? `<b class="mono">${b.hitStreak}</b> straight games with a hit` : 'No active streak')}
@@ -265,6 +265,7 @@ function hitterDetailRow(b, date) {
         ${stat('Arm quality', era !== null && era !== undefined ? (b.weakerArm ? 'Beatable: this arm has been giving up runs' : 'Tough: this arm has been sharp lately') : 'Unknown until he has made a start')}
         ${stat('Lineup', b.lineupConfirmed ? 'Officially in today’s lineup' : 'Not posted yet, check back closer to first pitch')}
       </div>
+      ${b.gradeReasons?.length ? `<ul class="grade-reasons">${b.gradeReasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
       ${b.mlbGameId ? `<div class="exp-actions"><button class="btn small" data-open-game="${esc(b.mlbGameId)}" data-open-date="${esc(date)}">Open this game</button></div>` : ''}
     </td></tr>`;
 }
@@ -275,6 +276,7 @@ function hitterResearchTable(hs, date) {
   const rows = list.map((b, i) => `
     <tr class="exp-row ${b.highConfidence ? 'hc' : ''}" data-exp>
       <td class="rank-col mono">${i + 1}</td>
+      <td>${gradeBadgeHtml(b.grade)}</td>
       <td>${playerCell(b, b.highConfidence ? '<span class="pill info"><span class="pill-dot"></span>Prime matchup</span>' : '')}</td>
       <td class="mono">${b.trailing15Avg !== null && b.trailing15Avg !== undefined ? `<strong>${fmtNum(b.trailing15Avg, 3)}</strong>` : '-'}</td>
       <td class="mono">${b.hitStreak >= 2 ? `${b.hitStreak}` : '-'}</td>
@@ -286,7 +288,7 @@ function hitterResearchTable(hs, date) {
     <div class="table-wrap">
       <table class="data-table">
         <thead><tr>
-          <th class="rank-col">#</th><th>Batter</th><th>L15 avg</th><th>Hit streak</th><th>Last 5</th><th>Opposing starter</th>
+          <th class="rank-col">#</th><th>Grade</th><th>Batter</th><th>L15 avg</th><th>Hit streak</th><th>Last 5</th><th>Opposing starter</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -295,12 +297,63 @@ function hitterResearchTable(hs, date) {
 
 // Strikeout floors: starters who cleared the same K bar in every recent
 // start, with the floor, the volume, and how the arm is actually throwing.
+// Best Bets: the highest-graded matchups across both buckets, pooled and
+// ranked on the shared A+ through C scale, reusing the market-style pick
+// card (see .pick-card in styles.css) so the top of a paid tab looks like
+// the headline product it is, not another data table. Falls back to the
+// best available grades if nothing cleared A- today, there's always
+// something to lead with.
+function bestBetCardHtml(pick, idx, date) {
+  const isKo = pick.kind === 'strikeout';
+  const name = isKo ? pick.pitcherName : pick.batterName;
+  const headshotId = isKo ? pick.pitcherId : pick.batterId;
+  const sub = `${esc(TEAMS[pick.team]?.abbrev || pick.team || '')} · ${isKo ? 'Strikeouts' : 'Hit prop'}`;
+  const headline = isKo
+    ? `${pick.strictFloorKs}+ strikeouts`
+    : pick.hitStreak >= 2 ? `${pick.hitStreak}-game hit streak` : `${fmtNum(pick.trailing15Avg, 3)} avg, last 15`;
+  const reasons = pick.gradeReasons || [];
+  return `
+    <div class="pick-card ${gradeTier(pick.grade)}" data-expand tabindex="0">
+      <div class="pc-rank">#${idx + 1}</div>
+      <div class="pc-head">
+        ${headshotHtml(headshotId, name)}
+        <div class="pc-id">
+          <div class="pc-name">${esc(name || 'Unknown')}</div>
+          <div class="pc-sub">${sub}</div>
+        </div>
+      </div>
+      <div class="pc-prob">
+        <span class="pc-pct">${esc(pick.grade || '-')}</span>
+        <span class="pc-plabel">${esc(headline)}</span>
+      </div>
+      <div class="pc-meter"><i style="width:${Math.max(4, Math.min(100, pick.gradeScore ?? 0))}%"></i></div>
+      ${pick.mlbGameId ? `<div class="pc-mid"><button class="btn small" data-open-game="${esc(pick.mlbGameId)}" data-open-date="${esc(date)}">Open game</button></div>` : ''}
+      <div class="pc-why"><ul class="grade-reasons">${reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>
+    </div>`;
+}
+
+function bestBetsStrip(hitStreak, strikeouts, date) {
+  const pool = [
+    ...(hitStreak?.watchList || []).map((b) => ({ ...b, kind: 'hit' })),
+    ...(strikeouts?.watchList || []).map((p) => ({ ...p, kind: 'strikeout' })),
+  ].filter((p) => p.grade);
+  pool.sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0));
+  const elite = pool.filter((p) => p.grade === 'A+' || p.grade === 'A').slice(0, 6);
+  const list = elite.length >= 3 ? elite : pool.slice(0, Math.max(elite.length, 3));
+  if (!list.length) return '';
+  return `
+    <h2 class="board-title">Best bets today<span class="board-count">${list.length}</span></h2>
+    <p class="section-sub">Every number the screener weighed, folded into one grade. Start here.</p>
+    <div class="pick-grid center">${list.map((p, i) => bestBetCardHtml(p, i, date)).join('')}</div>`;
+}
+
 function strikeoutResearchTable(so) {
   const list = so?.watchList || [];
   if (!list.length) return '';
   const rows = list.map((p, i) => `
-    <tr>
+    <tr class="exp-row" data-exp>
       <td class="rank-col mono">${i + 1}</td>
+      <td>${gradeBadgeHtml(p.grade)}</td>
       <td>
         <div class="player-cell">
           ${headshotHtml(p.pitcherId, p.pitcherName)}
@@ -314,13 +367,16 @@ function strikeoutResearchTable(so) {
       <td class="mono">${fmtNum(p.kPerStart, 1)}</td>
       <td>${formKsHtml(p.last5StartKs, p.strictFloorKs)}</td>
       <td class="mono ${p.trailingEra !== null && p.trailingEra !== undefined ? (p.trailingEra <= 3.5 ? 'pos' : p.trailingEra >= 5 ? 'neg' : '') : ''}">${fmtNum(p.trailingEra)}</td>
-      <td>${p.isHome ? 'vs' : 'at'} ${esc(TEAMS[p.opponent]?.abbrev || p.opponent)}</td>
-    </tr>`).join('');
+      <td>${p.isHome ? 'vs' : 'at'} ${esc(TEAMS[p.opponent]?.abbrev || p.opponent)}<span class="exp-caret" aria-hidden="true">▾</span></td>
+    </tr>
+    <tr class="exp-detail" hidden><td colspan="8">
+      ${p.gradeReasons?.length ? `<ul class="grade-reasons">${p.gradeReasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : '<span class="faint" style="font-size:12px">No further breakdown available.</span>'}
+    </td></tr>`).join('');
   return `
     <div class="table-wrap">
       <table class="data-table">
         <thead><tr>
-          <th class="rank-col">#</th><th>Starter</th><th>K floor</th><th>K/start</th><th>Last 5 starts</th><th>ERA L5</th><th>Matchup</th>
+          <th class="rank-col">#</th><th>Grade</th><th>Starter</th><th>K floor</th><th>K/start</th><th>Last 5 starts</th><th>ERA L5</th><th>Matchup</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -360,6 +416,8 @@ async function renderResearch() {
       <div class="signals-toolbar">
         <select class="date-select" id="researchDate">${dateOptions}</select>
       </div>
+
+      ${bestBetsStrip(d.hitStreak, d.strikeouts, d.date)}
 
       <h2 class="board-title">Hot bats vs beatable arms${count(hitCount)}</h2>
       <p class="section-sub">Ranked by recent batting form against how the opposing starter has actually been throwing. Confirm the lineup before reading anything into it.</p>
@@ -685,6 +743,22 @@ function playerCell(b, extraPills = '') {
     </div>`;
 }
 
+// The shared A+ through C grade every pick carries (lib/grading.js): one
+// scale across moneyline, hit props, and strikeout props, color-coded so
+// the best matchups are visually obvious without reading a single number.
+function gradeClass(grade) {
+  return grade ? `g-${grade.toLowerCase().replace('+', 'plus')}` : '';
+}
+function gradeBadgeHtml(grade) {
+  if (!grade) return '';
+  return `<span class="grade-badge ${gradeClass(grade)}">${esc(grade)}</span>`;
+}
+function gradeTier(grade) {
+  if (grade === 'A+' || grade === 'A') return 'hot';
+  if (grade === 'B+' || grade === 'B') return 'warm';
+  return 'cool';
+}
+
 // W/L chip once a tracked pick has been graded against the final score.
 function resultChip(result) {
   if (result === 'win') return '<span class="pill ok"><span class="pill-dot"></span>Won</span>';
@@ -726,7 +800,7 @@ function lockedMoneylineCard(p, statusByGamePk) {
   return `
     <div class="sig-card locked-${stateCls}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
       <div class="sig-head">
-        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}</span>
+        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}${gradeBadgeHtml(p.grade)}</span>
         ${bigResultBadge(p.result, isLive ? g : null)}
       </div>
       <div class="sig-sub">${esc(p.detail || `To beat ${p.awayTeam || 'the visitor'}.`)}</div>

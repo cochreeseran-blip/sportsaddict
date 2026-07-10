@@ -1,3 +1,5 @@
+import { gradeStrikeout } from '../grading.js';
+
 const MIN_STARTS = 4;
 const MIN_FLOOR_KS = 4;
 const MAX_WATCH = 10;
@@ -36,10 +38,13 @@ export async function runStrikeoutFilter(pool, gameDate) {
   if (!starters.length) return { watchList: [] };
 
   const { rows: forms } = await pool.query(
-    'SELECT pitcher_id, pitcher_name, last5_start_ks, trailing_k_per_start, trailing_era FROM pitcher_form WHERE game_date = $1 AND pitcher_id = ANY($2)',
+    `SELECT pitcher_id, pitcher_name, last5_start_ks, trailing_k_per_start, trailing_era,
+            savant_era, savant_xera, savant_k_pct, savant_bb_pct, savant_whiff_pct, savant_hard_hit_pct
+     FROM pitcher_form WHERE game_date = $1 AND pitcher_id = ANY($2)`,
     [gameDate, starters.map((s) => s.pitcherId)]
   );
   const formById = new Map(forms.map((f) => [f.pitcher_id, f]));
+  const num = (v) => (v !== null && v !== undefined ? Number(v) : null);
 
   const watchList = [];
   for (const s of starters) {
@@ -55,6 +60,20 @@ export async function runStrikeoutFilter(pool, gameDate) {
     if (strictFloor === null || strictFloor < MIN_FLOOR_KS) continue;
 
     const suggestedLine = strictFloor - 0.5;
+    const kPerStart = form.trailing_k_per_start !== null ? Number(form.trailing_k_per_start) : null;
+    const trailingEra = form.trailing_era !== null && form.trailing_era !== undefined ? Number(form.trailing_era) : null;
+    const ownSavant = form.savant_era !== null && form.savant_era !== undefined
+      ? {
+          era: num(form.savant_era),
+          xera: num(form.savant_xera),
+          kPct: num(form.savant_k_pct),
+          bbPct: num(form.savant_bb_pct),
+          whiffPct: num(form.savant_whiff_pct),
+          hardHitPct: num(form.savant_hard_hit_pct),
+        }
+      : null;
+    const graded = gradeStrikeout({ strictFloorKs: strictFloor, kPerStart, trailingEra, ownSavant });
+
     watchList.push({
       mlbGameId: s.mlbGameId,
       pitcherId: s.pitcherId,
@@ -63,23 +82,25 @@ export async function runStrikeoutFilter(pool, gameDate) {
       opponent: s.opponent,
       isHome: s.isHome,
       last5StartKs: ks,
-      kPerStart: form.trailing_k_per_start !== null ? Number(form.trailing_k_per_start) : null,
-      trailingEra: form.trailing_era !== null && form.trailing_era !== undefined ? Number(form.trailing_era) : null,
+      kPerStart,
+      trailingEra,
       strictFloorKs: strictFloor,
       softFloorKs: softFloor,
       suggestedLine,
       clearedRate: ks.filter((k) => k >= strictFloor).length / ks.length,
+      grade: graded.grade,
+      gradeScore: graded.score,
+      gradeReasons: graded.reasons,
     });
   }
 
-  // Best K spots first: highest reliable floor, then most Ks per start,
-  // then the lower-ERA arm (the sketch's "home low era pitchers"). Home
-  // starters get a nudge on ties since they're the emphasis.
+  // Best K spots first: the fuller grade score (own K rate, ERA trend, and
+  // Savant's K%/whiff%/BB% when we have them), ties broken by the raw
+  // floor then Ks per start.
   watchList.sort((a, b) =>
+    b.gradeScore - a.gradeScore ||
     b.strictFloorKs - a.strictFloorKs ||
-    (b.kPerStart ?? 0) - (a.kPerStart ?? 0) ||
-    (a.trailingEra ?? 9) - (b.trailingEra ?? 9) ||
-    (b.isHome === a.isHome ? 0 : b.isHome ? 1 : -1)
+    (b.kPerStart ?? 0) - (a.kPerStart ?? 0)
   );
   return { watchList: watchList.slice(0, MAX_WATCH) };
 }

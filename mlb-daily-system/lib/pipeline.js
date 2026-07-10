@@ -15,6 +15,7 @@ import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
 import { GO_LIVE_HOUR_UTC } from './goLive.js';
+import { fetchSavantProbablePitchers, applySavantMetrics } from './sources/savant.js';
 
 // How many player stat lookups run in flight at once during the full-roster
 // pass. Sequential would mean ~1,000+ calls back to back on a full slate;
@@ -318,6 +319,33 @@ export async function runPipeline(gameDate = todayIsoDate()) {
   }
   if (bandGames.length) {
     log(`Pitcher re-confirmation: checked ${bandGames.length} moneyline-band game(s), ${pitcherSwaps} swap(s) found.`);
+  }
+
+  // 3c. Baseball Savant probable-pitchers metrics (xERA, K%, BB%, whiff%,
+  // hard-hit%), one page fetch for the whole day, best-effort (see
+  // lib/sources/savant.js: Savant has no documented API, this can come
+  // back empty and nothing downstream requires it). Run after the
+  // starter re-confirmation above so it targets the freshest starter list.
+  const { rows: starterRows } = await pool.query(
+    `SELECT DISTINCT pitcher_id, pitcher_name FROM (
+       SELECT home_starter_id AS pitcher_id, home_starter_name AS pitcher_name FROM games WHERE game_date = $1
+       UNION ALL
+       SELECT away_starter_id, away_starter_name FROM games WHERE game_date = $1
+     ) s WHERE pitcher_id IS NOT NULL`,
+    [gameDate]
+  );
+  if (starterRows.length) {
+    const savantData = await fetchSavantProbablePitchers(gameDate);
+    const savantMatched = await applySavantMetrics(
+      pool,
+      gameDate,
+      starterRows.map((r) => ({ pitcherId: r.pitcher_id, pitcherName: r.pitcher_name })),
+      savantData
+    );
+    log(`Baseball Savant: ${savantMatched}/${starterRows.length} probable starter(s) matched.`);
+    if (!savantData.byId.size && !savantData.byName.size) {
+      warnings.push('Baseball Savant probable-pitchers data unavailable today, grades are running on season/trailing ERA only.');
+    }
   }
 
   // 4b. Park bearings, sync every venue's field orientation from MLB's

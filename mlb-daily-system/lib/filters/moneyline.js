@@ -1,5 +1,6 @@
 import { fmtOdds, fmtNum } from '../util/format.js';
 import { breakevenPct } from '../breakeven.js';
+import { gradeMoneyline } from '../grading.js';
 
 export const BAND_LOW = -250;
 export const BAND_HIGH = 100;
@@ -46,7 +47,10 @@ export async function runMoneylineFilter(pool, gameDate) {
     `SELECT g.id AS game_id, g.mlb_game_id, g.home_team, g.away_team, g.home_ml,
             g.home_starter_id, g.home_starter_name, g.away_starter_id, g.away_starter_name,
             hpf.trailing_era AS home_trailing_era, hpf.season_era AS home_season_era,
-            apf.trailing_era AS away_trailing_era, apf.season_era AS away_season_era
+            apf.trailing_era AS away_trailing_era, apf.season_era AS away_season_era,
+            apf.savant_era AS away_savant_era, apf.savant_xera AS away_savant_xera,
+            apf.savant_k_pct AS away_savant_k_pct, apf.savant_bb_pct AS away_savant_bb_pct,
+            apf.savant_whiff_pct AS away_savant_whiff_pct, apf.savant_hard_hit_pct AS away_savant_hard_hit_pct
      FROM games g
      LEFT JOIN pitcher_form hpf
        ON hpf.game_date = g.game_date AND hpf.pitcher_id = g.home_starter_id
@@ -91,6 +95,18 @@ export async function runMoneylineFilter(pool, gameDate) {
 
     const qualifies = homeEdgeEnough && (inBand || (!hasLine));
 
+    const awaySavant = r.away_savant_era !== null && r.away_savant_era !== undefined
+      ? {
+          era: num(r.away_savant_era),
+          xera: num(r.away_savant_xera),
+          kPct: num(r.away_savant_k_pct),
+          bbPct: num(r.away_savant_bb_pct),
+          whiffPct: num(r.away_savant_whiff_pct),
+          hardHitPct: num(r.away_savant_hard_hit_pct),
+        }
+      : null;
+    const graded = eraEdge !== null ? gradeMoneyline({ eraEdge, awaySavant }) : null;
+
     const reasons = [];
     if (hasLine && !inBand) {
       reasons.push(
@@ -128,19 +144,24 @@ export async function runMoneylineFilter(pool, gameDate) {
       awayStarterName: r.away_starter_name,
       awayStarterTrailingEra: away.trailingEra,
       awayStarterSeasonEra: away.seasonEra,
+      grade: graded?.grade ?? null,
+      gradeScore: graded?.score ?? null,
+      gradeReasons: graded?.reasons ?? [],
       qualifies,
       closeness: (eraEdge !== null ? Math.max(0, -eraEdge) : 99) * 100 + bandDistance,
       reason: reasons.join('; '),
     };
   });
 
-  // Biggest home-pitcher ERA advantage first. A priced/in-band pick ranks
-  // above an equal-edge no-line one, so real lines lead when we have them.
+  // Biggest home-pitcher ERA advantage first, ties broken by the fuller
+  // grade score (which folds in Savant's read on the away arm). A
+  // priced/in-band pick ranks above an equal-edge no-line one, so real
+  // lines lead when we have them.
   const qualifying = evaluated
     .filter((g) => g.qualifies)
     .sort((a, b) => {
       if (a.lineStatus !== b.lineStatus) return a.lineStatus === 'priced' ? -1 : 1;
-      return b.eraEdge - a.eraEdge;
+      return (b.gradeScore ?? 0) - (a.gradeScore ?? 0) || b.eraEdge - a.eraEdge;
     });
 
   // Every qualifying home team is a pick, ranked, not just a top few.

@@ -1,3 +1,5 @@
+import { gradeHitProp } from '../grading.js';
+
 const HIT_STREAK_GATE = 5;
 const AVG_GATE = 0.32;
 const ERA_GATE = 6.0;
@@ -29,11 +31,27 @@ export async function runHitStreakFilter(pool, gameDate) {
   }
 
   const { rows: pitchers } = await pool.query(
-    'SELECT pitcher_id, trailing_era FROM pitcher_form WHERE game_date = $1',
+    `SELECT pitcher_id, trailing_era, savant_era, savant_xera, savant_k_pct, savant_bb_pct,
+            savant_whiff_pct, savant_hard_hit_pct
+     FROM pitcher_form WHERE game_date = $1`,
     [gameDate]
   );
-  const trailingEraByPitcherId = new Map(
-    pitchers.map((p) => [p.pitcher_id, p.trailing_era !== null ? Number(p.trailing_era) : null])
+  const num = (v) => (v !== null && v !== undefined ? Number(v) : null);
+  const trailingEraByPitcherId = new Map(pitchers.map((p) => [p.pitcher_id, num(p.trailing_era)]));
+  const savantByPitcherId = new Map(
+    pitchers
+      .filter((p) => p.savant_era !== null && p.savant_era !== undefined)
+      .map((p) => [
+        p.pitcher_id,
+        {
+          era: num(p.savant_era),
+          xera: num(p.savant_xera),
+          kPct: num(p.savant_k_pct),
+          bbPct: num(p.savant_bb_pct),
+          whiffPct: num(p.savant_whiff_pct),
+          hardHitPct: num(p.savant_hard_hit_pct),
+        },
+      ])
   );
 
   const { rows: batters } = await pool.query(
@@ -47,12 +65,13 @@ export async function runHitStreakFilter(pool, gameDate) {
       opp?.starterId != null ? trailingEraByPitcherId.get(opp.starterId) ?? null : null;
     const trailing15Avg = b.trailing_15_avg !== null ? Number(b.trailing_15_avg) : null;
 
-    // Form: streak length plus how far above .300 the trailing average
-    // sits. Matchup: every run of trailing ERA above the weak-arm floor
-    // adds to the score, so a hot bat facing a slightly weak arm outranks
-    // an equally hot bat facing an ace.
-    const formScore = (b.hit_streak ?? 0) * 0.4 + Math.max(0, (trailing15Avg ?? 0) - 0.3) * 30;
-    const armScore = opponentTrailingEra !== null ? Math.max(0, opponentTrailingEra - WEAK_ARM_FLOOR) : 0;
+    const opponentSavant = opp?.starterId != null ? savantByPitcherId.get(opp.starterId) ?? null : null;
+    const graded = gradeHitProp({
+      hitStreak: b.hit_streak ?? 0,
+      trailing15Avg,
+      opposingTrailingEra: opponentTrailingEra,
+      opposingSavant: opponentSavant,
+    });
 
     return {
       mlbGameId: gameIdByTeam.get(b.team) ?? null,
@@ -69,12 +88,14 @@ export async function runHitStreakFilter(pool, gameDate) {
       opposingStarterTrailingEra: opponentTrailingEra,
       weakerArm: opponentTrailingEra !== null && opponentTrailingEra >= WEAK_ARM_FLOOR,
       highConfidence: opponentTrailingEra !== null && opponentTrailingEra >= ERA_GATE,
-      score: formScore + armScore,
+      grade: graded.grade,
+      gradeScore: graded.score,
+      gradeReasons: graded.reasons,
     };
   });
 
-  scored.sort((a, b) => b.score - a.score);
-  const watchList = scored.slice(0, MAX_WATCH).map(({ score, ...b }) => b);
+  scored.sort((a, b) => b.gradeScore - a.gradeScore);
+  const watchList = scored.slice(0, MAX_WATCH);
 
   return {
     watchList,

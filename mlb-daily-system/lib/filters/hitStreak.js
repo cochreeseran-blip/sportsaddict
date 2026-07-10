@@ -12,6 +12,14 @@ const WEAK_ARM_FLOOR = 4.5;
 // this line is excluded entirely from the watch list, not shown with a
 // lower grade or greyed out, see runHitStreakFilter below.
 const MIN_TRAILING_AB = 30;
+// Lower floor for the hit-streak exemption. A 5+ game hit streak lets a
+// batter in below MIN_TRAILING_AB, but not on nothing: a pinch hitter
+// with one at-bat a game can run a 5-game streak on five total at-bats
+// and otherwise sail past the 30-AB gate. Requiring 15+ at-bats alongside
+// the streak keeps regulars (who clear it trivially) while shutting out
+// that thin-sample case. Sits between the two: enough to be real, low
+// enough that a genuine streaking regular is never wrongly dropped.
+const STREAK_EXEMPT_MIN_AB = 15;
 // Not a business cap, just a safety valve. The Daily Slate/Tracking top 6
 // is picked from this whole pool (lib/topPicks.js), so it needs every
 // qualifying hitter on a busy slate (can legitimately be 50-100+), not
@@ -67,13 +75,17 @@ export async function runHitStreakFilter(pool, gameDate) {
 
   // Eligibility: a batter needs MIN_TRAILING_AB real at-bats behind his
   // trailing average to be graded/ranked at all, UNLESS his hit streak
-  // alone already clears HIT_STREAK_GATE (5+ straight games with a hit),
-  // exempted per spec since a streak that long is inherently evidence
-  // he's been playing regularly. Judgment call, noted here since it's a
-  // real loophole in theory (a run of thin pinch-hit appearances could
-  // still be light on total at-bats) but matches the explicit spec: hit
-  // streak qualifiers are exempt from the at-bat minimum.
-  const eligible = batters.filter((b) => (b.hit_streak ?? 0) >= HIT_STREAK_GATE || (b.trailing_15_ab ?? 0) >= MIN_TRAILING_AB);
+  // clears HIT_STREAK_GATE (5+ straight games with a hit) AND he still has
+  // at least STREAK_EXEMPT_MIN_AB at-bats. The streak exemption exists
+  // because a long streak is evidence of playing time, but a bare streak
+  // isn't enough on its own: a pinch hitter with one at-bat a game can run
+  // a 5-game streak on five total at-bats, so the exemption carries its
+  // own (lower) at-bat floor to shut that thin-sample case out.
+  const eligible = batters.filter((b) => {
+    const ab = b.trailing_15_ab ?? 0;
+    if (ab >= MIN_TRAILING_AB) return true;
+    return (b.hit_streak ?? 0) >= HIT_STREAK_GATE && ab >= STREAK_EXEMPT_MIN_AB;
+  });
 
   const scored = eligible.map((b) => {
     const opp = opponentByTeam.get(b.team);

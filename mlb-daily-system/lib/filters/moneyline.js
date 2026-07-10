@@ -1,10 +1,12 @@
 import { fmtOdds, fmtNum } from '../util/format.js';
 import { breakevenPct } from '../breakeven.js';
-import { gradeMoneyline } from '../grading.js';
 
 // Qualifying price band for the home favorite: -115 to -180 inclusive.
 // Both bounds are negative by construction, "home team is the favorite"
-// is built into the band itself, not a separate check.
+// is built into the band itself, not a separate check. Price is a FILTER
+// only, never a ranking criterion (see the sort below): a game either
+// clears the band or it doesn't, and once it does the price stops
+// mattering to where it ranks.
 export const BAND_LOW = -180;
 export const BAND_HIGH = -115;
 
@@ -16,10 +18,10 @@ export const BAND_HIGH = -115;
 // the other direction, one bad month early that's long since corrected).
 const AWAY_TRAILING_ERA_MIN = 6.0;
 
-// Only the 2 best-value qualifying games make the board each day, cheapest
-// break-even price first. Zero qualifying games is a real, displayed SIT
-// result (see web/app.js sitStateHtml), not an empty state, sitting out
-// is the system working as designed on a day nothing clears the bar.
+// Only the 2 worst-away-arm qualifying games make the board each day.
+// Zero qualifying games is a real, displayed SIT result (see web/app.js
+// sitStateHtml), not an empty state, sitting out is the system working
+// as designed on a day nothing clears the bar.
 const MAX_PICKS_PER_DAY = 2;
 
 export async function runMoneylineFilter(pool, gameDate) {
@@ -28,10 +30,7 @@ export async function runMoneylineFilter(pool, gameDate) {
             g.home_starter_id, g.home_starter_name, g.away_starter_id, g.away_starter_name,
             hpf.trailing_era AS home_trailing_era, hpf.season_era AS home_season_era,
             apf.trailing_era AS away_trailing_era, apf.trailing_starts AS away_trailing_starts,
-            apf.season_era AS away_season_era,
-            apf.savant_era AS away_savant_era, apf.savant_xera AS away_savant_xera,
-            apf.savant_k_pct AS away_savant_k_pct, apf.savant_bb_pct AS away_savant_bb_pct,
-            apf.savant_whiff_pct AS away_savant_whiff_pct, apf.savant_hard_hit_pct AS away_savant_hard_hit_pct
+            apf.season_era AS away_season_era
      FROM games g
      LEFT JOIN pitcher_form hpf
        ON hpf.game_date = g.game_date AND hpf.pitcher_id = g.home_starter_id
@@ -77,18 +76,7 @@ export async function runMoneylineFilter(pool, gameDate) {
 
     const qualifies = inBand && awayEraGateMet;
 
-    const awaySavant = r.away_savant_era !== null && r.away_savant_era !== undefined
-      ? {
-          era: num(r.away_savant_era),
-          xera: num(r.away_savant_xera),
-          kPct: num(r.away_savant_k_pct),
-          bbPct: num(r.away_savant_bb_pct),
-          whiffPct: num(r.away_savant_whiff_pct),
-          hardHitPct: num(r.away_savant_hard_hit_pct),
-        }
-      : null;
     const breakeven = hasLine ? breakevenPct(homeMl) : null;
-    const graded = awayTrailingEra !== null ? gradeMoneyline({ awayTrailingEra, breakevenPct: breakeven, awaySavant }) : null;
 
     const reasons = [];
     if (!hasLine) {
@@ -126,20 +114,21 @@ export async function runMoneylineFilter(pool, gameDate) {
       awayStarterTrailingEra: awayTrailingEra,
       awayStarterTrailingStarts: awayTrailingStarts,
       awayStarterSeasonEra: awaySeasonEra,
-      grade: graded?.grade ?? null,
-      gradeScore: graded?.score ?? null,
-      gradeReasons: graded?.reasons ?? [],
       qualifies,
       bandDistance,
       reason: reasons.join('; '),
     };
   });
 
-  // Cheapest break-even first among everything that clears both gates
-  // (favorite price band + away trailing-ERA floor), then cap at 2/day.
+  // Rank by the REASON for the bet, not by ticket cost: worst away
+  // starter (highest trailing ERA) first, then cap at 2/day. Price is a
+  // filter (the band above), never a ranking key, sorting by cheapest
+  // break-even would systematically bury every -160/-175 game behind the
+  // -115s and silently delete the top half of the band. A rare exact ERA
+  // tie falls back to the cheaper price only to keep the order stable.
   const qualifying = evaluated
     .filter((g) => g.qualifies)
-    .sort((a, b) => (a.breakevenPct ?? 1) - (b.breakevenPct ?? 1));
+    .sort((a, b) => (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0) || (a.breakevenPct ?? 1) - (b.breakevenPct ?? 1));
 
   const picks = qualifying.slice(0, MAX_PICKS_PER_DAY);
   const pickIds = new Set(picks.map((p) => p.gameId));
@@ -151,11 +140,11 @@ export async function runMoneylineFilter(pool, gameDate) {
   const otherGames = evaluated
     .filter((g) => !pickIds.has(g.gameId))
     .map((g) => (g.qualifies
-      ? { ...g, reason: `Qualified today but only the top ${MAX_PICKS_PER_DAY} by cheapest break-even make the board.` }
+      ? { ...g, reason: `Qualified today but only the top ${MAX_PICKS_PER_DAY} by worst away-starter ERA make the board.` }
       : g))
     .sort((a, b) => {
       if (a.qualifies !== b.qualifies) return a.qualifies ? -1 : 1;
-      if (a.qualifies) return (a.breakevenPct ?? 1) - (b.breakevenPct ?? 1);
+      if (a.qualifies) return (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0);
       return a.bandDistance - b.bandDistance;
     })
     .map(({ gameId, qualifies, bandDistance, ...g }) => g);

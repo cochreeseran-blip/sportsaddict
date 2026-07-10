@@ -820,22 +820,23 @@ function lockedMoneylineCard(p, statusByGamePk) {
   const g = isPending && p.mlbGameId ? statusByGamePk?.get(String(p.mlbGameId)) : null;
   const isLive = g?.abstractState === 'Live';
   const stateCls = isLive ? 'live' : (p.result || 'pending');
-  // The away starter's TRAILING ERA is the actual qualifying signal (see
-  // lib/filters/moneyline.js), shown with the start count it's computed
-  // from; season ERA rides along right after it but is clearly labeled
-  // "season" context, never the reason this pick is on the board.
+  // A moneyline card shows ONLY the two facts that qualified it: the away
+  // starter's trailing ERA (with its start count) and the break-even % at
+  // the locked price. No letter grade, a moneyline pick is a pass/fail
+  // screen, not a graded one (see the note in lib/grading.js). Season ERA
+  // rides along as clearly labeled context, never the reason it's here.
   const eraLine = p.awayStarterTrailingEra !== null && p.awayStarterTrailingEra !== undefined
     ? `${esc(p.awayStarterName || 'Away starter')} trailing ${fmtNum(p.awayStarterTrailingEra)} ERA (last ${p.awayStarterTrailingStarts ?? 0} starts)${p.awayStarterSeasonEra !== null && p.awayStarterSeasonEra !== undefined ? `, season ${fmtNum(p.awayStarterSeasonEra)}` : ''}`
     : '';
   return `
     <div class="sig-card locked-${stateCls}" ${p.mlbGameId ? `data-open-game="${esc(p.mlbGameId)}" data-open-date="${esc(state.signalsDate || state.today)}" role="button" tabindex="0"` : ''}>
       <div class="sig-head">
-        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}${gradeBadgeHtml(p.grade)}</span>
+        <span style="display:flex;align-items:center;gap:10px">${logoHtml(null, p.homeTeam, 30)} ${esc(p.homeTeam || 'Unknown')}${p.homeMl !== null && p.homeMl !== undefined ? `<span class="sig-odds" style="margin-left:4px">${fmtOdds(p.homeMl)}</span>` : ''}</span>
         ${bigResultBadge(p.result, isLive ? g : null)}
       </div>
       <div class="sig-sub">${esc(p.detail || `To beat ${p.awayTeam || 'the visitor'}.`)}</div>
-      ${breakeven ? `<div class="sig-note">Locked ${fmtOdds(p.homeMl)} · break-even ${breakeven}</div>` : ''}
       ${eraLine ? `<div class="sig-note">${esc(eraLine)}</div>` : ''}
+      ${breakeven ? `<div class="sig-note">Locked ${fmtOdds(p.homeMl)} · break-even ${breakeven}</div>` : ''}
     </div>`;
 }
 

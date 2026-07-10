@@ -1,13 +1,14 @@
 import { fmtNum } from './util/format.js';
 
-// One shared 0-100 score and letter grade for every pick type (moneyline,
-// hit prop, strikeout prop), so a user learns the scale once. Built
-// entirely from data already on file: trailing ERA, season ERA (context
-// only, see gradeMoneyline), K/hit form, plus Baseball Savant's Statcast
-// metrics (xERA, whiff%, hard-hit%, K%, BB%) layered on top when we have
-// them for that pitcher that day. Savant is best-effort (see
-// lib/sources/savant.js): every field here is optional, and a pick with
-// no Savant data on file still grades, just off fewer inputs.
+// One shared 0-100 score and letter grade for the PROP pick types (hit
+// prop, strikeout prop), so a user learns the scale once. Moneyline is
+// deliberately not graded (see the note where gradeMoneyline used to be):
+// it's decided by two hard facts and a deterministic sort. Built entirely
+// from data already on file: trailing ERA, K/hit form, plus Baseball
+// Savant's Statcast metrics (xERA, whiff%, hard-hit%, K%, BB%) layered on
+// top when we have them for that pitcher that day. Savant is best-effort
+// (see lib/sources/savant.js): every field here is optional, and a pick
+// with no Savant data on file still grades, just off fewer inputs.
 const THRESHOLDS = [
   [90, 'A+'],
   [80, 'A'],
@@ -93,31 +94,14 @@ function savantArmNotes(s, wantsBad) {
   return { bonus: Math.min(25, bonus), notes };
 }
 
-// Moneyline: qualification is now gated purely on the AWAY starter's
-// TRAILING (last 3 starts) ERA clearing 6.00 within a -115/-180 home-
-// favorite price band (see filters/moneyline.js), there is no more
-// home-vs-away ERA "edge" to grade on. So the grade here is built from
-// how far past that 6.00 gate the away arm's trailing ERA sits (a 9.50
-// is a much worse arm than a 6.05, both qualify but they aren't the same
-// confidence) plus how cheap the break-even price is (a -120 needing
-// 54.5% to break even is a better bet than a -175 needing 63.6%, all
-// else equal). Savant on the away starter either confirms he's really
-// that bad or flags his ERA as better luck than stuff. Season ERA is
-// intentionally NOT an input here, it's display-only context per spec.
-export function gradeMoneyline({ awayTrailingEra, breakevenPct, awaySavant }) {
-  const eraOverGate = Math.max(0, (awayTrailingEra ?? 0) - 6.0);
-  const breakevenValue = breakevenPct !== null && breakevenPct !== undefined ? Math.max(0, 0.68 - breakevenPct) * 70 : 0;
-  let score = 52 + eraOverGate * 7 + breakevenValue;
-  const reasons = [`away starter's trailing ERA is ${fmtNum(awayTrailingEra)} over his last starts, clears the 6.00 gate`];
-  if (breakevenPct !== null && breakevenPct !== undefined) {
-    reasons.push(`needs to win ${(breakevenPct * 100).toFixed(1)}% of the time to break even at this price`);
-  }
-  const { bonus, notes } = savantArmNotes(awaySavant, true);
-  score += bonus;
-  reasons.push(...notes);
-  score = clampScore(score);
-  return { score, grade: letterGrade(score), reasons };
-}
+// NOTE: there is deliberately no gradeMoneyline. A moneyline pick is
+// defined by two hard facts, the -115/-180 favorite band and the away
+// starter's 6.00+ trailing ERA (see lib/filters/moneyline.js), and with a
+// 2-pick cap and a deterministic worst-ERA-first sort there is nothing
+// left for a grade to decide. Any score blending "distance past the ERA
+// gate" against "break-even price" would use coefficients never fit to
+// outcome data, the same unvalidated blending removed elsewhere. The
+// board shows the two qualifying facts and no letter.
 
 // Hard floor for hit props: a batter who isn't actually hitting well
 // (below .280 trailing) cannot be graded above a B, no matter how hot

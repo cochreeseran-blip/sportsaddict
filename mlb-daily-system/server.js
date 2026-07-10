@@ -557,8 +557,6 @@ const server = http.createServer(async (req, res) => {
             breakevenPct: m.breakevenPct ?? (p.breakeven_pct !== null ? Number(p.breakeven_pct) : null),
             headline: m.headline ?? null,
             detail: m.detail ?? null,
-            grade: m.grade ?? null,
-            gradeReasons: m.gradeReasons ?? [],
             awayStarterName: m.awayStarterName ?? null,
             awayStarterTrailingEra: m.awayStarterTrailingEra ?? null,
             awayStarterTrailingStarts: m.awayStarterTrailingStarts ?? null,

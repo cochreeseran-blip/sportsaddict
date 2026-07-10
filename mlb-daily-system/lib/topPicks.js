@@ -6,27 +6,30 @@ function lineupWarning(lineupConfirmed) {
     : '';
 }
 
-// Top 6 picks for the Tracking tab: moneyline calls and player props
-// (hit or HR) pooled into one ranked list. Every candidate's score/grade
-// comes straight from lib/grading.js (computed once, in the filter that
-// found it, see lib/filters/*), this just pools the three buckets and
-// ranks them on that shared scale, no separate scoring logic here.
-// Exported: the pipeline records every one of these in the tracked-picks
-// ledger (the moneyline board is the product now, all of it gets graded),
-// not just the ones that crack the cross-bucket top 6.
+// Top 6 pooled list for the daily email + console digest (NOT the site,
+// the web moneyline board renders straight from the ledger). Moneyline
+// calls and player props pooled into one ranked list. Prop candidates
+// carry a real graded score from lib/grading.js; a moneyline pick has no
+// grade (see the note in lib/grading.js), so its ordering key here is
+// simply the away starter's trailing ERA, the actual reason for the bet,
+// matching the board's own worst-arm-first sort. This is an internal
+// ordering key only, never surfaced as a "grade" or score to a reader.
+// Exported: the pipeline records every one of these moneyline calls in
+// the tracked-picks ledger, not just the ones that crack the top 6.
 export function moneylineCandidates(moneyline) {
   return (moneyline?.picks || []).map((p) => ({
     type: 'moneyline',
     key: `ml:${p.homeTeam}:${p.awayTeam}`,
-    score: p.gradeScore ?? 0,
-    grade: p.grade ?? null,
-    gradeReasons: p.gradeReasons ?? [],
+    // Ordering key for the pooled top-6 only (worst away arm ranks
+    // higher), not a displayed grade. The moneyline board never ranks on
+    // this, it uses the deterministic sort in lib/filters/moneyline.js.
+    score: p.awayStarterTrailingEra ?? 0,
     mlbGameId: p.mlbGameId ?? null,
     homeTeam: p.homeTeam,
     awayTeam: p.awayTeam,
     homeMl: p.homeMl ?? null,
     breakevenPct: p.breakevenPct ?? null,
-    // Away starter's TRAILING ERA is the qualifying signal now (see
+    // Away starter's TRAILING ERA is the qualifying signal (see
     // lib/filters/moneyline.js), always carried with the start count it
     // was computed from. Season ERA rides along too but is display-only
     // context, never re-derived as a gate downstream.

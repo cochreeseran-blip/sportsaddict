@@ -38,15 +38,6 @@
   </nav>
 
   <div class="topbar-right">
-    <button class="sys-status" id="sysStatus" type="button">
-      <span class="pulse-dot" id="statusDot"></span>
-      <span id="statusText">Connecting</span>
-    </button>
-    <div class="status-drop" id="statusDrop" hidden></div>
-    <button class="btn-refresh" id="refreshBtn">
-      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1v3.5H10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Refresh</span>
-    </button>
     <div class="account-chip" id="accountChip" hidden>
       <span class="account-avatar" id="accountAvatar"></span>
       <span class="account-name" id="accountName"></span>
@@ -61,11 +52,6 @@
   <section id="view-record" class="view"></section>
   <section id="view-chat" class="view"></section>
 </main>
-
-<aside id="gamePanel" class="game-panel" aria-hidden="true">
-  <div class="game-panel-inner" id="gamePanelInner"></div>
-</aside>
-<div id="panelOverlay" class="panel-overlay"></div>
 
 <div id="authGate" class="auth-gate" hidden>
   <div class="auth-card">
@@ -119,7 +105,7 @@
 </div>
 
 <footer class="footer">
-  <span class="footer-note">Slatefinder emails the daily board to your account every morning. Research signals only, not betting advice. Verify starters and lineups before first pitch. <span id="buildTag" class="faint"></span></span>
+  <span class="footer-note">Slatefinder. Research signals only, not betting advice.</span>
 </footer>
 
 <script src="/app.js"></script>

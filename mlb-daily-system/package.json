@@ -12,6 +12,8 @@
     "job": "node job.js",
     "serve": "node server.js",
     "start": "node server.js",
+    "start:web": "node server.js",
+    "start:worker": "node worker.js",
     "grade": "node scripts/grade.js",
     "report": "node scripts/report.js",
     "closing": "node scripts/closing.js",

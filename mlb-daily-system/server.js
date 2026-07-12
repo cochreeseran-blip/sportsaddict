@@ -5,19 +5,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pool } from './lib/db.js';
 import { runMigrations } from './lib/migrate.js';
-import { runPipeline, todayIsoDate } from './lib/pipeline.js';
+import { todayIsoDate } from './lib/pipeline.js';
 import * as mlb from './lib/sources/mlbStats.js';
-import { fetchMoneylines, normalizeTeam } from './lib/sources/odds.js';
-import { breakevenPct } from './lib/breakeven.js';
 import { createBet, listBets, settleBet, reopenBet, deleteBet, gradePendingBets } from './lib/bets.js';
-import { unsubscribeAccount, sendDailyNewsletter } from './lib/newsletter.js';
+import { unsubscribeAccount } from './lib/newsletter.js';
 import { createUser, authenticate, createSession, destroySession, userForSession, parseCookies, sessionCookie, ensureAuthSchema } from './lib/auth.js';
 import { listMessages, postMessage } from './lib/chat.js';
 import { ensureInsertSafety } from './lib/schemaGuard.js';
 import { gradePendingPicks, publishPick } from './lib/trackedPicks.js';
-import { GO_LIVE_HOUR_UTC } from './lib/goLive.js';
 import { renderAdminEmail, sendAdminEmail, marketingRecipients, loadPublishedPicks, marketingUnsubscribe } from './lib/adminEmail.js';
 import { verifyUnsubscribeToken, makeUnsubscribeToken } from './lib/emailTokens.js';
+import { readSystemStatus, requestRefresh } from './lib/systemStatus.js';
+
+// This is the WEB app only: it serves slatefinder.lol (admin/finder) and
+// slateaddict.com (customer), and the JSON API. It does NOT run the
+// research pipeline - that's the engine (worker.js), a separate service
+// sharing this same database. The web app reads what the engine writes
+// (system_status for /api/status; the ledger, digests, and slate for
+// everything else) and signals the engine for a manual refresh.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,145 +79,6 @@ function isAppHost(req) {
   const h = hostname(req);
   if (APP_HOST) return h === APP_HOST;
   return h !== ADMIN_HOST;
-}
-
-// The morning job: full pipeline WITH the odds pull, run early enough
-// (default 10:00 UTC = 6 AM ET) that the board is fully populated well
-// before the 9 AM ET go-live, leaving real admin review time. Every
-// other hourly tick is an MLB-Stats-only refresh (lineups, probable
-// starter changes, grading) that reuses the morning's odds - The Odds
-// API free tier is 500 req/month and hourly polling would burn it in
-// days. The second and final odds call of the day is the closing-line
-// pull near first pitch (see maybePullClosingLines).
-const MORNING_JOB_HOUR_UTC = Number(process.env.MORNING_JOB_HOUR_UTC || 10);
-const NEWSLETTER_HOUR_UTC = GO_LIVE_HOUR_UTC;
-
-let isRefreshing = false;
-let refreshStartedAt = null;
-let lastRunAt = null;
-let lastRunError = null;
-let lastRunWarnings = [];
-let lastRunDate = null;
-
-async function triggerPipelineRun(gameDate = todayIsoDate(), { fetchOdds = false } = {}) {
-  if (isRefreshing) return { skipped: true };
-  isRefreshing = true;
-  refreshStartedAt = new Date();
-  try {
-    const result = await runPipeline(gameDate, { fetchOdds });
-    lastRunAt = new Date();
-    lastRunDate = gameDate;
-    lastRunError = null;
-    lastRunWarnings = result?.warnings || [];
-  } catch (err) {
-    console.error('Pipeline run failed:', err);
-    lastRunError = err.message;
-    lastRunWarnings = [];
-  } finally {
-    isRefreshing = false;
-    refreshStartedAt = null;
-  }
-  return { skipped: false };
-}
-
-// --- closing line pull -------------------------------------------------------
-// Odds call #2 of the day: once, shortly before the day's first pitch,
-// stamp closing_price / clv_pct onto today's moneyline picks. Guarded by
-// an in-memory date latch AND a DB check so restarts can't double-spend
-// the quota in a way that matters (a restart re-pull only happens if
-// rows still lack a closing price).
-let closingPulledFor = null;
-
-async function maybePullClosingLines() {
-  const date = todayIsoDate();
-  if (closingPulledFor === date) return;
-  if (!process.env.ODDS_API_KEY) return;
-
-  const { rows: pending } = await pool.query(
-    `SELECT tp.id, tp.locked_price, tp.breakeven_pct, tp.qualifying_metrics
-     FROM tracked_picks tp
-     WHERE tp.game_date = $1 AND tp.signal_type = 'moneyline' AND tp.closing_price IS NULL`,
-    [date]
-  );
-  if (!pending.length) { closingPulledFor = date; return; }
-
-  // "Near first pitch": the day's earliest game starts within the next
-  // 65 minutes (one hourly tick of slack) or has already started.
-  const { rows: firstGame } = await pool.query(
-    `SELECT min(game_time_utc) AS first FROM games WHERE game_date = $1`,
-    [date]
-  );
-  const first = firstGame[0]?.first ? new Date(firstGame[0].first) : null;
-  if (!first || first.getTime() - Date.now() > 65 * 60 * 1000) return;
-
-  console.log('Closing-line pull: fetching odds once for CLV...');
-  closingPulledFor = date; // latch before the call, a failed pull shouldn't retry hourly and drain quota
-  try {
-    const moneylines = await fetchMoneylines(process.env.ODDS_API_KEY);
-    let updated = 0;
-    for (const pick of pending) {
-      const homeTeam = pick.qualifying_metrics?.homeTeam;
-      const awayTeam = pick.qualifying_metrics?.awayTeam;
-      const match = moneylines.find(
-        (o) => normalizeTeam(o.homeTeam) === normalizeTeam(homeTeam) && normalizeTeam(o.awayTeam) === normalizeTeam(awayTeam)
-      );
-      if (!match || match.homeMl === null) continue;
-      const locked = pick.breakeven_pct !== null ? Number(pick.breakeven_pct) : breakevenPct(pick.locked_price);
-      const closing = breakevenPct(match.homeMl);
-      const clv = locked !== null && closing !== null ? closing - locked : null;
-      await pool.query('UPDATE tracked_picks SET closing_price = $1, clv_pct = $2 WHERE id = $3', [match.homeMl, clv, pick.id]);
-      updated++;
-    }
-    console.log(`Closing-line pull: stamped ${updated}/${pending.length} pick(s).`);
-  } catch (err) {
-    console.warn(`Closing-line pull failed: ${err.message}`);
-  }
-}
-
-// Top of every hour. The MORNING_JOB_HOUR_UTC tick is the full job with
-// odds; every other tick is MLB-only (lineups, probable starters,
-// injuries/rosters, filter recompute against stored odds). The
-// newsletter fires once a day after the NEWSLETTER_HOUR_UTC run.
-function scheduleHourlyRuns() {
-  const now = new Date();
-  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1, 0, 0));
-  const delay = next - now;
-  console.log(`Next hourly pipeline run in ${(delay / 60000).toFixed(0)}m.`);
-  setTimeout(async () => {
-    const hourUtc = new Date().getUTCHours();
-    await triggerPipelineRun(todayIsoDate(), { fetchOdds: hourUtc === MORNING_JOB_HOUR_UTC });
-    await maybePullClosingLines();
-    try {
-      const { graded, checked } = await gradePendingBets(pool);
-      if (checked) console.log(`Bets: auto-graded ${graded}/${checked} pending.`);
-    } catch (err) {
-      console.warn(`Bet grading pass failed: ${err.message}`);
-    }
-    // No-op until RESEND_API_KEY / NEWSLETTER_FROM are configured.
-    if (hourUtc === NEWSLETTER_HOUR_UTC) {
-      try {
-        await sendDailyNewsletter(pool, todayIsoDate());
-      } catch (err) {
-        console.warn(`Newsletter send failed: ${err.message}`);
-      }
-    }
-    scheduleHourlyRuns();
-  }, delay);
-}
-
-// Between pipeline runs, keep the moneyline board's results moving: every
-// 10 minutes grade whatever tracked picks and bets have gone final, so a
-// call flips to W/L shortly after the game ends instead of at the next
-// hourly sync.
-function startGradingLoop() {
-  setInterval(async () => {
-    try {
-      await gradePendingPicks(pool);
-      await gradePendingBets(pool);
-    } catch (err) {
-      console.warn(`Grading loop: ${err.message}`);
-    }
-  }, 10 * 60 * 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -940,9 +806,10 @@ const server = http.createServer(async (req, res) => {
     if ((url.pathname === '/api/refresh' || url.pathname === '/refresh') && req.method === 'POST') {
       if (!(await requireUser(req, res))) return;
       if (rateLimited(req, 'refresh', 6, 10 * 60 * 1000)) return sendJson(res, 429, { error: 'Slow down, refresh is already running on a schedule.' });
-      // Manual refresh is MLB-data-only: the metered odds pull happens
-      // exactly twice a day on the server's own schedule.
-      triggerPipelineRun(todayIsoDate(), { fetchOdds: false });
+      // The web app doesn't run the pipeline; it signals the engine
+      // (worker.js), which picks up the request within ~20s and runs an
+      // MLB-only refresh (never a metered odds pull).
+      await requestRefresh(pool);
       sendJson(res, 202, { started: true });
       return;
     }
@@ -1013,13 +880,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/status' || url.pathname === '/status.json') {
+      // Run status comes from the engine via the shared system_status row.
+      const engine = await readSystemStatus(pool).catch(() => ({}));
       sendJson(res, 200, {
-        isRefreshing,
-        refreshStartedAt,
-        lastRunAt,
-        lastRunDate,
-        lastRunError,
-        lastRunWarnings,
+        ...engine,
         today: todayIsoDate(),
         build: BUILD,
         paywallEnabled: PAYWALL_ENABLED,
@@ -1210,22 +1074,18 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function start() {
+  // Migrations run idempotently on both services; the engine (worker.js)
+  // is the canonical writer, but the web app running them too is safe and
+  // means a web-only boot still self-heals the schema.
   await runMigrations(pool);
   await ensureAuthSchema(pool);
   await ensureInsertSafety(pool);
 
   server.listen(PORT, () => {
-    console.log(`SlateFinder listening on :${PORT}`);
+    console.log(`SlateFinder web listening on :${PORT} (engine runs separately in worker.js)`);
   });
-
-  // Boot populate: fetch odds ONLY if today's games have none yet (first
-  // boot of the day / fresh database). A redeploy in the afternoon must
-  // not spend a metered odds request the morning job already made.
-  pool.query(`SELECT count(*)::int AS priced FROM games WHERE game_date = $1 AND home_ml IS NOT NULL`, [todayIsoDate()])
-    .then(({ rows }) => triggerPipelineRun(todayIsoDate(), { fetchOdds: rows[0].priced === 0 }))
-    .catch(() => triggerPipelineRun(todayIsoDate(), { fetchOdds: false }));
-  scheduleHourlyRuns();
-  startGradingLoop();
+  // No pipeline, no schedulers here. The engine owns all of that and
+  // writes to the shared database; this process only serves and reads.
 }
 
 // Starts on import. The admin test suite imports this module (with a

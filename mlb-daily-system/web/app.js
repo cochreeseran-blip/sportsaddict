@@ -454,7 +454,7 @@ async function renderResearch() {
 
     if (isBeforeGoLive(d.date)) {
       host.innerHTML = `<div class="section-head"><h2 class="section-title">Research</h2></div>` +
-        goLiveGate('gateSeeYesterdayR', "The research board is finalized with the 9 AM ET run. Check back at 9, or look at yesterday.");
+        goLiveGate('gateSeeYesterdayR', "The research board is finalized with the 8 AM PT run. Check back at 8, or look at yesterday.");
       $('#gateSeeYesterdayR')?.addEventListener('click', () => {
         state.researchDate = addDays(state.today, -1);
         renderResearch();
@@ -691,7 +691,7 @@ function scorebugHtml(live) {
 // Reads the digest already cached by the board; falls back to a fetch
 // when the panel opens on a date the board hasn't loaded.
 async function moneylineVerdictBlock(gamePk, date) {
-  if (isBeforeGoLive(date)) return ''; // today's board isn't public before 9 AM ET
+  if (isBeforeGoLive(date)) return ''; // today's board isn't public before 8 AM PT
   let d = state.digestCache.get(date);
   if (!d) {
     try {
@@ -1036,19 +1036,20 @@ function yesterdayStrip(perf, today) {
 
 // --- 9 AM go-live gate -------------------------------------------------------
 // Today's picks are built off overnight probables and aren't finalized
-// until the 9 AM ET run has the confirmed lineups. Only *today* is gated,
-// and only before 9 AM ET, past dates are always viewable.
-function currentEtHour() {
-  return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' }).format(new Date()));
+// until the 8 AM Pacific generation run has the confirmed lineups. Only
+// *today* is gated, and only before 8 AM PT; past dates are always
+// viewable. Matches GENERATION_HOUR_PT on the engine (lib/schedule.js).
+function currentPtHour() {
+  return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/Los_Angeles' }).format(new Date()));
 }
 function isBeforeGoLive(dateStr) {
-  return dateStr === state.today && currentEtHour() < 9;
+  return dateStr === state.today && currentPtHour() < 8;
 }
 function goLiveGate(btnId, subText) {
   return `
     <div class="golive-gate">
       <div class="golive-emoji">☕️</div>
-      <div class="golive-title">Today's slate drops at 9:00 AM ET</div>
+      <div class="golive-title">Today's slate drops at 8:00 AM PT</div>
       <p class="golive-sub">${subText}</p>
       <button class="btn primary" id="${btnId}">See yesterday's picks</button>
     </div>`;
@@ -1090,13 +1091,13 @@ async function renderSignals(silent = false) {
     // FREE surface: exactly ONE published moneyline pick per day, the one
     // with the worst opposing arm (server-selected d.freeMoneyline). The
     // full board - every qualifying pick, published or not - is a member
-    // research surface, not here. Before the 9 AM ET go-live nothing is
+    // research surface, not here. Before the 8 AM PT go-live nothing is
     // published yet, so the section is gated.
     const gated = isBeforeGoLive(d.date);
     const statusByGamePk = new Map(games.map((g) => [String(g.gamePk), g]));
     const free = d.freeMoneyline || null;
     const mlBody = gated
-      ? goLiveGate('gateSeeYesterday', 'The pick is published after the morning run, once overnight pitching and prices are in. Check back at 9, or look at how yesterday went.')
+      ? goLiveGate('gateSeeYesterday', 'The pick is published after the morning run, once overnight pitching and prices are in. Check back at 8, or look at how yesterday went.')
       : (free ? lockedMoneylineCards([free], statusByGamePk) : sitStateHtml());
     const researchTeaser = (!gated && d.access && !d.access.research)
       ? `<p class="section-sub">This is the free pick of the day. The full board, hot bats, and strikeout floors live on the Research tab.</p>`

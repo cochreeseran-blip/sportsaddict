@@ -1,6 +1,7 @@
 import { pool } from './db.js';
 import * as mlb from './sources/mlbStats.js';
-import { fetchMoneylines, normalizeTeam } from './sources/odds.js';
+import { normalizeTeam } from './sources/odds.js';
+import { getOddsProvider, oddsApiKey } from './sources/oddsProvider.js';
 import { fetchWindAt } from './sources/weather.js';
 import { isWindBlowingOut } from './geo.js';
 import { computeTrailingPitcherStats, computeStrikeoutStats, upsertPitcherForm } from './pitcherForm.js';
@@ -14,7 +15,6 @@ import { buildTopPicks, moneylineCandidates, hitPropCandidates, koCandidates } f
 import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
-import { GO_LIVE_HOUR_UTC } from './goLive.js';
 import { fetchSavantProbablePitchers, applySavantMetrics } from './sources/savant.js';
 
 // How many player stat lookups run in flight at once during the full-roster
@@ -61,14 +61,21 @@ async function upsertGame(g, gameDate) {
 // Shared by the CLI (job.js) and the web dashboard's boot/refresh/daily
 // timer (server.js) so there's exactly one implementation.
 //
-// fetchOdds: The Odds API free tier is 500 requests/month, so odds are
-// pulled exactly twice per day: the morning job (fetchOdds: true) and
-// the closing-line pull near first pitch (scripts/closing.js /
-// server.js). Every other run - the hourly lineup/starter refresh, the
-// manual Refresh button - passes fetchOdds: false and reuses the prices
-// already stored on the games rows. The MLB Stats API is free and
-// unmetered; everything else in here polls it freely.
-export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true } = {}) {
+// Options:
+//   fetchOdds    - pull odds this run. The default (free) odds provider is
+//                  metered (500 req/month), so this is true only twice a
+//                  day: the 8 AM PT generation run and the closing-line
+//                  pull near first pitch. Every hourly MLB-only refresh
+//                  passes false and reuses the stored prices. Odds go
+//                  through the pluggable provider (lib/sources/oddsProvider),
+//                  so a paid live feed changes nothing here.
+//   isGeneration - this is THE daily generation run (8 AM Pacific). The
+//                  generation run is what records the day's picks into the
+//                  ledger and LOCKS the moneyline board; every later run
+//                  reuses the locked board and adds nothing. Defaults to
+//                  fetchOdds so `npm run job` (a one-shot full run) still
+//                  generates + locks exactly as before.
+export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true, isGeneration = fetchOdds } = {}) {
   const season = gameDate.slice(0, 4);
   const warnings = [];
   const log = (msg) => console.log(`  ${msg}`);
@@ -103,13 +110,15 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true 
   // 2. Odds, matched against the in-memory schedule by team name. A
   // single unmatched/missing game is logged and skipped, not fatal.
   // Skipped entirely on MLB-only refresh runs (see fetchOdds above).
+  const oddsProvider = getOddsProvider();
+  const oddsKey = oddsApiKey(oddsProvider);
   if (!fetchOdds) {
-    log('Odds: skipped on this run (rate-limited API, morning prices reused).');
-  } else if (!process.env.ODDS_API_KEY) {
-    warnings.push('Odds data unavailable, ODDS_API_KEY not set. Check manually.');
+    log('Odds: skipped on this run (metered provider, morning prices reused).');
+  } else if (oddsProvider.requiresKey && !oddsKey) {
+    warnings.push(`Odds data unavailable, ${oddsProvider.keyEnv} not set. Check manually.`);
   } else {
     try {
-      const moneylines = await fetchMoneylines(process.env.ODDS_API_KEY);
+      const moneylines = await oddsProvider.fetchMoneylines(oddsKey);
       let matched = 0;
       const unmatched = [];
       for (const g of scheduleGames) {
@@ -440,10 +449,10 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true 
   // and Daily Slate all agree on the same 15.
   hitStreak.watchList = (hitStreak.watchList || []).slice(0, 15);
 
-  // The moneyline board locks for the day once the go-live run has
+  // The moneyline board locks for the day once the generation run has
   // happened (see migrations/013_moneyline_lock.sql): after that, no new
-  // games get added even if odds or rosters keep shifting, the board that
-  // went live at 9am ET is the board for the rest of the day. Games
+  // games get added even if odds or rosters keep shifting, the board
+  // generated at 8 AM PT is the board for the rest of the day. Games
   // already on it keep grading normally via gradePendingPicks below.
   const { rows: lockRows } = await pool.query('SELECT 1 FROM moneyline_lock WHERE game_date = $1', [gameDate]);
   const boardLocked = lockRows.length > 0;
@@ -498,15 +507,17 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true 
     const trackedCount = await recordTrackedPicks(pool, gameDate, allCandidates);
     log(`Tracked picks: ${trackedCount} new row(s) added to the ledger (all signal types, published = false).`);
 
-    // Lock the board once this run happens at or after go-live, so every
-    // later run today (hourly refreshes, manual "Refresh") stops adding
-    // new moneyline picks. The board that just went live is final.
-    if (new Date().getUTCHours() >= GO_LIVE_HOUR_UTC) {
+    // Lock the board on the generation run, so every later run today
+    // (hourly MLB refreshes, manual "Refresh") stops adding new moneyline
+    // picks. The board just generated is final. Non-generation runs
+    // before the day's generation (e.g. an overnight MLB refresh) record
+    // picks but don't lock, so the 8 AM PT run is authoritative.
+    if (isGeneration) {
       await pool.query(
         'INSERT INTO moneyline_lock (game_date) VALUES ($1) ON CONFLICT (game_date) DO NOTHING',
         [gameDate]
       );
-      log(`Moneyline board locked for ${gameDate} at go-live.`);
+      log(`Moneyline board locked for ${gameDate} (generation run).`);
     }
   }
 

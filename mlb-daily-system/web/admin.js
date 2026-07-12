@@ -51,6 +51,18 @@ async function renderSlate() {
 }
 
 // ---------------------------------------------------------------------------
+// HOME RUNS
+// The filter itself (lib/filters/windHr.js) already runs every pipeline
+// cycle, it's just not wired to the ledger or surfaced anywhere yet.
+// Placeholder tab until that's built out.
+async function renderHomeRuns() {
+  const host = $('#admin-view');
+  host.innerHTML = `
+    <div class="section-head"><h2 class="section-title">Home runs</h2></div>
+    <div class="empty-state"><div class="es-title">Coming soon</div>Home run props aren't live yet.</div>`;
+}
+
+// ---------------------------------------------------------------------------
 // RECORD (admin view of the dual public record)
 function recordCard(kind, r) {
   return `
@@ -212,6 +224,7 @@ function showView(name) {
   state.view = name;
   document.querySelectorAll('#adminTabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   if (name === 'slate') renderSlate();
+  if (name === 'homeruns') renderHomeRuns();
   if (name === 'record') renderRecord();
   if (name === 'users') renderUsers();
   if (name === 'email') renderEmail();

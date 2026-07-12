@@ -53,7 +53,8 @@ function bucket(value, scale, fallback = 0) {
 // batting average. This function accepts none of those as inputs on
 // purpose -- there's no ERA parameter to be tempted to wire back in.
 export function scoreStrikeoutProp({
-  strictFloorKs,       // his own K floor across recent starts (qualification input)
+  strictFloorKs,       // the K count he's hit in EVERY recent start (qualification input)
+  softFloorKs,         // the K count he's hit in all but one recent start ("allows one dud")
   pitcherKPct,         // Savant, this pitcher's own K%
   opposingTeamKPct,    // team_batting_aggregates.team_k_pct for today's opponent -- THE key addition
   pitcherWhiffPct,     // Savant, this pitcher's own whiff%
@@ -64,9 +65,35 @@ export function scoreStrikeoutProp({
   let score = 0;
 
   // Primary factors.
-  const floorPts = bucket(strictFloorKs, [[8, 60], [7, 50], [6, 35], [5, 20], [4, 10]]);
+  //
+  // BUG FIX: this used to bucket on strictFloorKs alone, which is the
+  // count he's hit in EVERY recent start -- so a single bad night (5 Ks
+  // in an otherwise 7-14 K stretch) drags an elite arm's score down to
+  // whatever that one outlier says, even though softFloorKs (computed
+  // right next to it, "allows one dud") already correctly identifies his
+  // real level as 7+. The old code computed softFloorKs and only ever
+  // used it for DISPLAY, never for scoring -- the fix is to actually
+  // score off it. strictFloorKs still matters (see the reliability bonus
+  // below and the qualification gate in runStrikeoutFilter), it just
+  // isn't allowed to single-handedly crater an otherwise dominant stretch
+  // anymore.
+  const floorBasis = softFloorKs ?? strictFloorKs;
+  const floorPts = bucket(floorBasis, [[8, 60], [7, 50], [6, 35], [5, 20], [4, 10]]);
   score += floorPts;
-  reasons.push(`K floor of ${strictFloorKs} in every recent start (+${floorPts})`);
+  reasons.push(`K floor of ${floorBasis}+ in all but at most one recent start (+${floorPts})`);
+
+  // Reliability bonus: when the strict (every-start) floor is close to the
+  // soft (allows-one-dud) floor, that's a genuinely more consistent arm,
+  // worth a small bump on top. A wide gap between them isn't penalized --
+  // that's exactly the "one bad night shouldn't define him" case this fix
+  // exists for.
+  if (Number.isFinite(strictFloorKs) && Number.isFinite(softFloorKs)) {
+    const gap = softFloorKs - strictFloorKs;
+    if (gap <= 1) {
+      score += 5;
+      reasons.push(`strict floor ${strictFloorKs} is right behind the soft floor, very consistent (+5)`);
+    }
+  }
 
   const kPctPts = bucket(pitcherKPct, [[30, 25], [25, 15], [20, 5]]);
   score += kPctPts;

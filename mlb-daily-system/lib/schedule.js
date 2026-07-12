@@ -49,14 +49,39 @@ export function msUntilNextTopOfHour(now = new Date()) {
   return next.getTime() - now.getTime();
 }
 
-// Phase 1 research-dashboard data pulls are specified in ET (see
-// migrations/020 and the pull schedule in the build spec): game logs once
-// daily at 6am ET, Savant leaderboard snapshots twice daily at 7am + 2pm
-// ET. Same DST-correct Intl approach as pacificHour above.
+// Phase 1 research-dashboard data pulls are specified in ET. Same
+// DST-correct Intl approach as pacificHour above.
 export function easternHour(date = new Date()) {
   return Number(
     new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' }).format(date)
   );
 }
+export function easternMinute(date = new Date()) {
+  return Number(
+    new Intl.DateTimeFormat('en-US', { minute: 'numeric', timeZone: 'America/New_York' }).format(date)
+  );
+}
+
+// Game logs once daily at 6am ET (yesterday's completed games are final
+// and posted by then).
 export const GAME_LOG_PULL_HOUR_ET = Number(process.env.GAME_LOG_PULL_HOUR_ET || 6);
-export const SAVANT_PULL_HOURS_ET = (process.env.SAVANT_PULL_HOURS_ET || '7,14').split(',').map(Number);
+
+// Savant snapshot: TWO pulls a day, each with a purpose, not three on a
+// round-number schedule --
+//   8:00 AM ET - Savant updates overnight with the previous day's data, so
+//     this is the earliest a pull is both fresh AND complete; it needs to
+//     land before anyone's actually looking at the dashboard to make a call.
+//   1:30 PM ET - catches any corrections Savant makes to the morning data
+//     during the day, and refreshes before afternoon games get underway.
+// A third pull late in the day (4 PM) was cut: by then the day's picks are
+// already made, so a pull at that hour has no decision it actually feeds,
+// just extra load against an unmetered-but-not-infinite scrape target.
+// Each entry is {hour, minute} in ET; the half-hour slot needs real
+// minute-level scheduling, not just the top-of-hour tick the rest of the
+// engine runs on -- see startSavantPullPoll in worker.js.
+export const SAVANT_PULL_TIMES_ET = (process.env.SAVANT_PULL_TIMES_ET || '8:00,13:30')
+  .split(',')
+  .map((s) => {
+    const [h, m] = s.split(':').map(Number);
+    return { hour: h, minute: m || 0 };
+  });

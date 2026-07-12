@@ -13,7 +13,7 @@ import { getOddsProvider, oddsApiKey } from './lib/sources/oddsProvider.js';
 import { breakevenPct } from './lib/breakeven.js';
 import {
   pacificDateIso, isGenerationHour, msUntilNextTopOfHour, GENERATION_HOUR_PT,
-  easternHour, GAME_LOG_PULL_HOUR_ET, SAVANT_PULL_HOURS_ET,
+  easternHour, easternMinute, GAME_LOG_PULL_HOUR_ET, SAVANT_PULL_TIMES_ET,
 } from './lib/schedule.js';
 import { markRefreshStarted, markRefreshFinished, claimRefreshRequest } from './lib/systemStatus.js';
 import { pullTodaysRosterHistory } from './lib/data/game-logs-pull.js';
@@ -119,11 +119,11 @@ async function maybePullClosingLines() {
 // only, neither touches the metered odds budget. Latched per calendar day
 // so a slow tick that straddles the hour boundary can't double-run it.
 let gameLogPulledFor = null;
-async function maybeRunDailyGameLogPull() {
+async function maybeRunDailyGameLogPull(force = false) {
   const date = engineGameDate();
-  if (easternHour() !== GAME_LOG_PULL_HOUR_ET || gameLogPulledFor === date) return;
+  if (!force && (easternHour() !== GAME_LOG_PULL_HOUR_ET || gameLogPulledFor === date)) return;
   gameLogPulledFor = date;
-  console.log('Engine: daily game-log pull (6am ET)...');
+  console.log(`Engine: daily game-log pull (${force ? 'boot catch-up' : '6am ET'})...`);
   try {
     const { pitchersDone, battersDone } = await pullTodaysRosterHistory(pool, date);
     const season = Number(date.slice(0, 4));
@@ -135,24 +135,50 @@ async function maybeRunDailyGameLogPull() {
   }
 }
 
-// Savant leaderboard snapshot, twice a day per the spec (7am + 2pm ET).
-// Latched per (date, hour) pair so it fires once per scheduled hour, not
-// once total for the day.
-let savantPulledFor = null;
-async function maybeRunSavantSnapshot() {
+// Savant leaderboard snapshot: does the actual pull + write, logging
+// exactly what landed (row counts for both raw CSV rows and rows actually
+// parsed/upserted) so a diagnosis never has to guess whether the pull ran,
+// ran and returned nothing, or ran and failed to parse -- those are three
+// different problems and the log line now says which one happened.
+async function runSavantSnapshotNow(reason) {
   const date = engineGameDate();
-  const hour = easternHour();
-  const key = `${date}:${hour}`;
-  if (!SAVANT_PULL_HOURS_ET.includes(hour) || savantPulledFor === key) return;
-  savantPulledFor = key;
-  console.log(`Engine: Savant leaderboard snapshot (${hour}:00 ET)...`);
+  console.log(`Engine: Savant leaderboard snapshot starting (${reason})...`);
   try {
     const season = Number(date.slice(0, 4));
     const result = await runSavantSnapshotPull(pool, season, date);
-    console.log(`Engine: Savant snapshot - ${result.pitchers.written} pitchers, ${result.batters.written} batters.`);
+    console.log(
+      `Engine: Savant snapshot done - pitchers: ${result.pitchers.written} written / ${result.pitchers.rowCount} CSV rows` +
+      (result.pitchers.rowCount === 0 ? ' (EMPTY RESPONSE -- endpoint may be down or its shape changed)' : '') +
+      `; batters: ${result.batters.written} written / ${result.batters.rowCount} CSV rows` +
+      (result.batters.rowCount === 0 ? ' (EMPTY RESPONSE -- endpoint may be down or its shape changed)' : '')
+    );
+    return result;
   } catch (err) {
-    console.warn(`Engine: Savant snapshot pull failed: ${err.message}`);
+    console.warn(`Engine: Savant snapshot pull FAILED: ${err.message}`);
+    return null;
   }
+}
+
+// Savant snapshot: two scheduled times a day, each with a purpose (see
+// lib/schedule.js SAVANT_PULL_TIMES_ET) -- 8:00 AM ET and 1:30 PM ET need
+// half-hour precision the hourly tick can't give, so this polls every
+// minute and fires when the clock matches a scheduled slot, latched per
+// (date, slot) so it only fires once per slot per day even though the
+// poll checks every minute.
+const savantSlotsFiredToday = new Set();
+function startSavantPullPoll() {
+  setInterval(async () => {
+    const date = engineGameDate();
+    const hour = easternHour();
+    const minute = easternMinute();
+    for (const slot of SAVANT_PULL_TIMES_ET) {
+      const key = `${date}:${slot.hour}:${slot.minute}`;
+      if (hour === slot.hour && minute === slot.minute && !savantSlotsFiredToday.has(key)) {
+        savantSlotsFiredToday.add(key);
+        await runSavantSnapshotNow(`scheduled ${String(slot.hour).padStart(2, '0')}:${String(slot.minute).padStart(2, '0')} ET`);
+      }
+    }
+  }, 60 * 1000);
 }
 
 // Top-of-hour loop. Exactly one tick per hour; the 8 AM PT tick is the
@@ -170,7 +196,6 @@ function scheduleHourlyTicks() {
     });
     await maybePullClosingLines();
     await maybeRunDailyGameLogPull();
-    await maybeRunSavantSnapshot();
     try {
       const { graded, checked } = await gradePendingBets(pool);
       if (checked) console.log(`Engine: bets auto-graded ${graded}/${checked}.`);
@@ -267,9 +292,40 @@ export async function startEngine({ runMigrationsFirst = true, withHealthServer 
     label: needsFreshBoard ? 'boot generation (no board yet today)' : 'boot MLB-only refresh',
   });
 
+  // Boot catch-up for the Savant/game-log data, and this is the actual
+  // fix for "the dashboard shows no Savant data at all": the old code
+  // only ever pulled on a scheduled clock tick, so a service that
+  // deployed or restarted outside the 8:00/13:30 ET windows (or before
+  // 6am ET for game logs) would show a genuinely, correctly EMPTY
+  // savant_pitcher_metrics / team_batting_aggregates until the next
+  // scheduled slot arrived -- not a bug in the pull itself, just no pull
+  // had happened yet. Checking "is there anything on file for today" and
+  // pulling immediately if not means a fresh deploy always has real data
+  // within one boot, not up to several hours later.
+  const season = Number(gameDate.slice(0, 4));
+  const { rows: savantCheck } = await pool.query(
+    `SELECT count(*)::int AS n FROM savant_pitcher_metrics WHERE season = $1 AND pull_date = $2`,
+    [season, gameDate]
+  ).catch(() => ({ rows: [{ n: 0 }] }));
+  if (savantCheck[0].n === 0) {
+    await runSavantSnapshotNow('boot catch-up, nothing on file for today yet');
+  } else {
+    console.log(`Engine: Savant snapshot already on file for today (${savantCheck[0].n} pitcher rows), skipping boot catch-up.`);
+  }
+
+  const { rows: aggCheck } = await pool.query(
+    `SELECT count(*)::int AS n FROM team_batting_aggregates WHERE season = $1`,
+    [season]
+  ).catch(() => ({ rows: [{ n: 0 }] }));
+  if (aggCheck[0].n === 0) {
+    console.log('Engine: team_batting_aggregates empty for this season, running a boot catch-up game-log pull...');
+    await maybeRunDailyGameLogPull(true);
+  }
+
   scheduleHourlyTicks();
   startGradingLoop();
   startRefreshSignalPoll();
+  startSavantPullPoll();
   console.log(`Engine running. Generation at ${GENERATION_HOUR_PT}:00 Pacific; daily email at the same tick.`);
 }
 

@@ -88,6 +88,7 @@ export async function runStrikeoutFilter(pool, gameDate) {
 
     const graded = scoreStrikeoutProp({
       strictFloorKs: strictFloor,
+      softFloorKs: softFloor,
       pitcherKPct: num(form.savant_k_pct),
       opposingTeamKPct,
       pitcherWhiffPct: num(form.savant_whiff_pct),

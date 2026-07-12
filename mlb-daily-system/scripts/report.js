@@ -53,7 +53,7 @@ async function main() {
     }
 
     if (graded > 0 && graded < MIN_SAMPLE_FOR_SIGNAL) {
-      console.log(`  ⚠️  Only ${graded} graded — statistically meaningless below ~${MIN_SAMPLE_FOR_SIGNAL}+ per category. This is expected while the ledger is young, not a bug.`);
+      console.log(`  NOTE: Only ${graded} graded — statistically meaningless below ~${MIN_SAMPLE_FOR_SIGNAL}+ per category. This is expected while the ledger is young, not a bug.`);
     }
   }
   console.log('\n' + '='.repeat(60) + '\n');

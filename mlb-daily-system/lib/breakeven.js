@@ -1,4 +1,4 @@
-// Break-even win probability implied by an American odds price — the
+// Break-even win probability implied by an American odds price, the
 // rate a pick needs to hit just to come out flat, ignoring vig on the
 // other side. Standard formula, correct for both favorites and dogs:
 //   negative (favorite) odds: |odds| / (|odds| + 100)

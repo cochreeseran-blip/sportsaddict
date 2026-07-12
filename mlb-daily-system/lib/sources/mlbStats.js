@@ -1,4 +1,5 @@
-const BASE = 'https://statsapi.mlb.com/api/v1';
+// Overridable so tests/local dev can point at a fixture server.
+const BASE = process.env.MLB_STATS_API_BASE || 'https://statsapi.mlb.com/api/v1';
 
 async function fetchJson(url, timeoutMs = 15000) {
   const controller = new AbortController();
@@ -14,9 +15,13 @@ async function fetchJson(url, timeoutMs = 15000) {
   }
 }
 
-// Today's schedule with probable starters, hydrated per-team.
+// Today's schedule with probable starters. This is the same feed that
+// backs mlb.com/probable-pitchers, that page is just a render of
+// statsapi's schedule endpoint with probablePitcher hydration, so we use
+// the identical request (probablePitcher(note),venue) and read the same
+// fields. There is no separate probable-pitchers API to scrape.
 export async function fetchScheduleWithProbables(dateStr) {
-  const url = `${BASE}/schedule?sportId=1&hydrate=probablePitcher,venue&date=${dateStr}`;
+  const url = `${BASE}/schedule?sportId=1&hydrate=probablePitcher(note),venue&date=${dateStr}`;
   const data = await fetchJson(url);
   const dates = data.dates || [];
   const games = [];
@@ -41,6 +46,122 @@ export async function fetchScheduleWithProbables(dateStr) {
     }
   }
   return games;
+}
+
+// Multi-day schedule for the interactive slate view: statuses, scores
+// (linescore), venues, probable starters, and team ids/abbreviations in a
+// single request. `lineups` hydration is best-effort, when the API
+// returns it we can tell lineups are posted without a per-game boxscore
+// call; when it doesn't, callers fall back gracefully.
+export async function fetchScheduleRange(startDate, endDate) {
+  const hydrate = 'probablePitcher,venue,team,linescore,lineups';
+  const url = `${BASE}/schedule?sportId=1&startDate=${startDate}&endDate=${endDate}&hydrate=${hydrate}`;
+  const data = await fetchJson(url);
+  const byDate = {};
+  for (const d of data.dates || []) {
+    byDate[d.date] = (d.games || []).map((g) => {
+      const home = g.teams?.home;
+      const away = g.teams?.away;
+      return {
+        gamePk: g.gamePk,
+        gameDate: g.gameDate,
+        officialDate: g.officialDate || d.date,
+        status: g.status?.detailedState || g.status?.abstractGameState || 'Unknown',
+        abstractState: g.status?.abstractGameState || 'Unknown', // Preview | Live | Final
+        venue: g.venue?.name || null,
+        inning: g.linescore?.currentInning ?? null,
+        inningState: g.linescore?.inningState ?? null,
+        home: {
+          id: home?.team?.id ?? null,
+          name: home?.team?.name ?? null,
+          abbrev: home?.team?.abbreviation ?? null,
+          record: home?.leagueRecord ? `${home.leagueRecord.wins}-${home.leagueRecord.losses}` : null,
+          score: home?.score ?? null,
+          starterId: home?.probablePitcher?.id ?? null,
+          starterName: home?.probablePitcher?.fullName ?? null,
+        },
+        away: {
+          id: away?.team?.id ?? null,
+          name: away?.team?.name ?? null,
+          abbrev: away?.team?.abbreviation ?? null,
+          record: away?.leagueRecord ? `${away.leagueRecord.wins}-${away.leagueRecord.losses}` : null,
+          score: away?.score ?? null,
+          starterId: away?.probablePitcher?.id ?? null,
+          starterName: away?.probablePitcher?.fullName ?? null,
+        },
+        lineupsPosted: {
+          home: Boolean(g.lineups?.homePlayers?.length),
+          away: Boolean(g.lineups?.awayPlayers?.length),
+        },
+      };
+    });
+  }
+  return byDate;
+}
+
+// Full boxscore lineups for the game-detail view: batting order with
+// jersey numbers, positions, and (for Live/Final games) the day's line.
+export async function fetchBoxscoreLineups(gamePk) {
+  const url = `${BASE}/game/${gamePk}/boxscore`;
+  const data = await fetchJson(url);
+  const side = (key) => {
+    const team = data.teams?.[key];
+    const order = team?.battingOrder || [];
+    return {
+      teamId: team?.team?.id ?? null,
+      teamName: team?.team?.name ?? null,
+      posted: order.length > 0,
+      batters: order.map((id, i) => {
+        const p = team.players?.[`ID${id}`];
+        return {
+          id,
+          order: i + 1,
+          fullName: p?.person?.fullName || null,
+          jerseyNumber: p?.jerseyNumber || null,
+          position: p?.position?.abbreviation || null,
+          battingLine: p?.stats?.batting && Object.keys(p.stats.batting).length
+            ? {
+                hits: p.stats.batting.hits ?? null,
+                atBats: p.stats.batting.atBats ?? null,
+                homeRuns: p.stats.batting.homeRuns ?? null,
+                rbi: p.stats.batting.rbi ?? null,
+              }
+            : null,
+        };
+      }),
+    };
+  };
+  return { home: side('home'), away: side('away') };
+}
+
+// Live game state for the at-bat marker: who's at the plate, who's on
+// deck, and the count/outs. Only meaningful while a game is Live; for
+// Preview/Final games the offense block is absent or stale, callers gate
+// on the schedule's abstractGameState before showing any of this.
+export async function fetchLinescore(gamePk) {
+  const url = `${BASE}/game/${gamePk}/linescore`;
+  const data = await fetchJson(url);
+  return {
+    currentInning: data.currentInning ?? null,
+    inningState: data.inningState ?? null,
+    outs: data.outs ?? null,
+    balls: data.balls ?? null,
+    strikes: data.strikes ?? null,
+    // Live score, so an open game panel updates on its own refresh
+    // instead of waiting on the slate's schedule cache.
+    homeRuns: data.teams?.home?.runs ?? null,
+    awayRuns: data.teams?.away?.runs ?? null,
+    // Runners for the scorebug's bases diamond.
+    onFirst: Boolean(data.offense?.first),
+    onSecond: Boolean(data.offense?.second),
+    onThird: Boolean(data.offense?.third),
+    batterId: data.offense?.batter?.id ?? null,
+    batterName: data.offense?.batter?.fullName ?? null,
+    onDeckId: data.offense?.onDeck?.id ?? null,
+    onDeckName: data.offense?.onDeck?.fullName ?? null,
+    pitcherId: data.defense?.pitcher?.id ?? null,
+    pitcherName: data.defense?.pitcher?.fullName ?? null,
+  };
 }
 
 // Game-by-game pitching log for the season, most recent start first.
@@ -68,6 +189,25 @@ export async function fetchBatterGameLog(batterId, season) {
 }
 
 // Final score + status for a specific game, used by the grading script.
+// Targeted, single-game probable-pitcher check. Probable starters are
+// usually announced well before game day and are far more stable than
+// same-day lineups, but a late scratch, doubleheader shuffle, or bullpen
+// game can still swap one out. This is meant to be called only against
+// the small handful of games that already cleared the odds filter, right
+// before a pick locks in, rather than re-fetching the whole day's slate.
+export async function fetchGameProbables(gamePk) {
+  const url = `${BASE}/schedule?gamePk=${gamePk}&hydrate=probablePitcher`;
+  const data = await fetchJson(url);
+  const game = data.dates?.[0]?.games?.[0];
+  if (!game) return null;
+  return {
+    homeStarterId: game.teams?.home?.probablePitcher?.id ?? null,
+    homeStarterName: game.teams?.home?.probablePitcher?.fullName ?? null,
+    awayStarterId: game.teams?.away?.probablePitcher?.id ?? null,
+    awayStarterName: game.teams?.away?.probablePitcher?.fullName ?? null,
+  };
+}
+
 export async function fetchGameResult(gamePk) {
   const url = `${BASE}/schedule?gamePk=${gamePk}`;
   const data = await fetchJson(url);
@@ -94,16 +234,48 @@ export async function fetchConfirmedLineup(gamePk, side) {
   if (!order.length) return [];
   return order.map((id) => {
     const p = team.players?.[`ID${id}`];
-    return { id, fullName: p?.person?.fullName || null };
+    return {
+      id,
+      fullName: p?.person?.fullName || null,
+      jerseyNumber: p?.jerseyNumber || null,
+      position: p?.position?.abbreviation || null,
+    };
   });
 }
 
-// Fallback roster of position players ("regulars") when no lineup is out yet.
-export async function fetchActiveHitters(teamId) {
+// Every MLB venue with location hydration, one request for the league.
+// location.azimuthAngle is the park's field orientation straight from
+// MLB's own database, and defaultCoordinates carries lat/long. See
+// lib/parkBearings.js for how the angles are validated before being
+// trusted by the wind math.
+export async function fetchVenues(season) {
+  const url = `${BASE}/venues?sportId=1&hydrate=location&season=${season}`;
+  const data = await fetchJson(url);
+  return (data.venues || []).map((v) => ({
+    id: v.id,
+    name: v.name,
+    azimuthAngle: typeof v.location?.azimuthAngle === 'number' ? v.location.azimuthAngle : null,
+    latitude: v.location?.defaultCoordinates?.latitude ?? null,
+    longitude: v.location?.defaultCoordinates?.longitude ?? null,
+  }));
+}
+
+// Full active roster (both pitchers and position players) in one call, so
+// the pipeline can track every rostered player's form daily instead of
+// just today's probable starters and confirmed lineup. One roster fetch,
+// split by position, rather than a separate call per group.
+export async function fetchActiveRoster(teamId) {
   const url = `${BASE}/teams/${teamId}/roster?rosterType=active`;
   const data = await fetchJson(url);
   const roster = data.roster || [];
-  return roster
-    .filter((p) => p.position?.abbreviation && p.position.abbreviation !== 'P')
-    .map((p) => ({ id: p.person.id, fullName: p.person.fullName }));
+  const toPlayer = (p) => ({
+    id: p.person.id,
+    fullName: p.person.fullName,
+    jerseyNumber: p.jerseyNumber || null,
+    position: p.position?.abbreviation || null,
+  });
+  return {
+    pitchers: roster.filter((p) => p.position?.abbreviation === 'P').map(toPlayer),
+    hitters: roster.filter((p) => p.position?.abbreviation && p.position.abbreviation !== 'P').map(toPlayer),
+  };
 }

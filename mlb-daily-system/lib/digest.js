@@ -1,4 +1,4 @@
-import { fmtOdds } from './util/format.js';
+import { fmtOdds, fmtNum } from './util/format.js';
 
 function fmtLast5(results) {
   if (!results || !results.length) return 'no data';
@@ -13,15 +13,18 @@ function fmtLineup(confirmed) {
 
 export async function saveDigest(pool, gameDate, signalType, details) {
   await pool.query(
-    'INSERT INTO daily_digest (game_date, signal_type, details) VALUES ($1, $2, $3)',
+    `INSERT INTO daily_digest (game_date, signal_type, details) VALUES ($1, $2, $3)
+     ON CONFLICT (game_date, signal_type) DO UPDATE SET
+       details = EXCLUDED.details,
+       created_at = now()`,
     [gameDate, signalType, JSON.stringify(details)]
   );
 }
 
-export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }) {
+export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr, topPicks }) {
   const line = '='.repeat(60);
   console.log(`\n${line}`);
-  console.log(`MLB DAILY DIGEST — ${gameDate}`);
+  console.log(`SLATEFINDER DAILY DIGEST, ${gameDate}`);
   console.log(line);
 
   if (warnings.length) {
@@ -29,23 +32,34 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
     for (const w of warnings) console.log(`  - ${w}`);
   }
 
-  console.log('\n--- MONEYLINE (capped at 2, sorted by closeness to -155) ---');
+  console.log('\n--- TOP 3 PICKS (pooled across all signals) ---');
+  if (!topPicks?.length) {
+    console.log('  Nothing pooled to the top today.');
+  } else {
+    topPicks.forEach((p, i) => {
+      console.log(`  ${i + 1}. [${p.type}] ${p.headline}`);
+      console.log(`     ${p.detail}`);
+    });
+  }
+
+  console.log('\n--- MONEYLINE (home favorites, home starter holds the ERA edge) ---');
   if (moneyline.signal === 'SIT') {
-    console.log('  SIT — no qualifying games today.');
+    console.log('  SIT, no qualifying games today.');
   } else {
     for (const p of moneyline.picks) {
       const breakeven = p.breakevenPct !== null && p.breakevenPct !== undefined ? `${(p.breakevenPct * 100).toFixed(1)}%` : 'n/a';
       console.log(
-        `  ${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam} — ` +
-          `${p.awayStarterName ?? 'TBD'} trailing ERA ${p.awayStarterTrailingEra?.toFixed(2)} ` +
-          `(season ${p.awayStarterSeasonEra !== null ? p.awayStarterSeasonEra.toFixed(2) : 'n/a'}) — needs to hit ${breakeven} to break even`
+        `  ${p.homeTeam} (${fmtOdds(p.homeMl)}) over ${p.awayTeam}, ` +
+          `${p.homeStarterName ?? 'TBD'} (${fmtNum(p.homeStarterTrailingEra)} last 5 / ${fmtNum(p.homeStarterSeasonEra)} season) ` +
+          `vs ${p.awayStarterName ?? 'TBD'} (${fmtNum(p.awayStarterTrailingEra)} last 5 / ${fmtNum(p.awayStarterSeasonEra)} season), ` +
+          `needs to hit ${breakeven} to break even`
       );
     }
   }
   if (moneyline.otherGames?.length) {
     console.log('  Other home favorites considered:');
     for (const g of moneyline.otherGames) {
-      console.log(`    - ${g.awayTeam} @ ${g.homeTeam} (${fmtOdds(g.homeMl)}) — ${g.reason}`);
+      console.log(`    - ${g.awayTeam} @ ${g.homeTeam} (${fmtOdds(g.homeMl)}), ${g.reason}`);
     }
   }
 
@@ -56,7 +70,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
     for (const b of hitStreak.watchList) {
       const tag = b.highConfidence ? '[HIGH CONFIDENCE] ' : '';
       console.log(
-        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}] — streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} ` +
+        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}], streak ${b.hitStreak}, avg ${b.trailing15Avg?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} ` +
           `vs ${b.opposingStarterName ?? 'TBD'} (ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`
       );
     }
@@ -70,7 +84,7 @@ export function printDigest({ gameDate, warnings, moneyline, hitStreak, windHr }
     for (const b of windHr.watchList) {
       const tag = b.highConfidence ? '[HIGH CONFIDENCE] ' : '';
       console.log(
-        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}] — HR rate ${b.trailing15HrRate?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} @ ${b.venue} ` +
+        `  ${tag}${b.batterName} (${b.team}) [${fmtLineup(b.lineupConfirmed)}], HR rate ${b.trailing15HrRate?.toFixed(3)}, last 5: ${fmtLast5(b.last5Results)} @ ${b.venue} ` +
           `(wind ${b.windSpeedMph?.toFixed(1)} mph out) vs ${b.opposingStarterName ?? 'TBD'} ` +
           `(ERA ${b.opposingStarterTrailingEra?.toFixed(2) ?? 'n/a'})`
       );

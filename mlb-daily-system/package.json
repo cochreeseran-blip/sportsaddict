@@ -1,7 +1,7 @@
 {
-  "name": "mlb-daily-system",
-  "version": "1.0.0",
-  "description": "Standalone daily research pipeline for MLB betting research signals.",
+  "name": "slatefinder",
+  "version": "2.0.0",
+  "description": "SlateFinder — interactive MLB slate research console: daily signals, lineups, and a 10-day slate browser.",
   "type": "module",
   "private": true,
   "engines": {
@@ -15,7 +15,11 @@
     "grade": "node scripts/grade.js",
     "report": "node scripts/report.js",
     "closing": "node scripts/closing.js",
-    "parks": "node scripts/parks.js"
+    "parks": "node scripts/parks.js",
+    "newsletter": "node scripts/newsletter.js",
+    "reconcile-ml": "node scripts/reconcile-moneyline-picks.js",
+    "make-admin": "node scripts/make-admin.js",
+    "test": "node --test \"tests/**/*.test.js\""
   },
   "dependencies": {
     "dotenv": "^16.4.5",

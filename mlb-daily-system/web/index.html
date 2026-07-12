@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slatefinder</title>
+<meta name="description" content="Slatefinder, an MLB research tool: today's slate, confirmed lineups, and daily signals.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Ccircle cx='20' cy='20' r='19' fill='%23f2ede2'/%3E%3Cpath d='M7 6 Q14 20 7 34' fill='none' stroke='%23c9402e' stroke-width='2'/%3E%3Cpath d='M33 6 Q26 20 33 34' fill='none' stroke='%23c9402e' stroke-width='2'/%3E%3Ctext x='20' y='27' font-family='Georgia,serif' font-weight='bold' font-size='19' text-anchor='middle' fill='%231d3557'%3ESF%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-ball" viewBox="0 0 40 40" aria-hidden="true">
+      <circle cx="20" cy="20" r="19" class="ball-skin"/>
+      <path d="M7 6 Q14 20 7 34" fill="none" class="ball-seam"/>
+      <path d="M33 6 Q26 20 33 34" fill="none" class="ball-seam"/>
+      <g class="ball-stitch">
+        <path d="M8.6 10.5 l3 -1.2 M10.2 15 l3.2 -0.7 M10.9 20 l3.2 0 M10.2 25 l3.2 0.7 M8.6 29.5 l3 1.2"/>
+        <path d="M31.4 10.5 l-3 -1.2 M29.8 15 l-3.2 -0.7 M29.1 20 l-3.2 0 M29.8 25 l-3.2 0.7 M31.4 29.5 l-3 1.2"/>
+      </g>
+      <text x="20" y="26.5" class="ball-sf" text-anchor="middle">SF</text>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">Slatefinder<span class="brand-lol">.lol</span></span>
+    </div>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="signals">Daily Slate</button>
+    <button class="tab" data-view="slate">Research</button>
+    <button class="tab" data-view="chat">Live Chat</button>
+  </nav>
+
+  <div class="topbar-right">
+    <button class="sys-status" id="sysStatus" type="button">
+      <span class="pulse-dot" id="statusDot"></span>
+      <span id="statusText">Connecting</span>
+    </button>
+    <div class="status-drop" id="statusDrop" hidden></div>
+    <button class="btn-refresh" id="refreshBtn">
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1v3.5H10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Refresh</span>
+    </button>
+    <div class="account-chip" id="accountChip" hidden>
+      <span class="account-avatar" id="accountAvatar"></span>
+      <span class="account-name" id="accountName"></span>
+      <button class="btn ghost small" id="signOutBtn" title="Sign out">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<main id="app">
+  <section id="view-signals" class="view active"></section>
+  <section id="view-slate" class="view"></section>
+  <section id="view-chat" class="view"></section>
+</main>
+
+<aside id="gamePanel" class="game-panel" aria-hidden="true">
+  <div class="game-panel-inner" id="gamePanelInner"></div>
+</aside>
+<div id="panelOverlay" class="panel-overlay"></div>
+
+<div id="authGate" class="auth-gate" hidden>
+  <div class="auth-card">
+    <div class="auth-brand">
+      <svg class="brand-ball" viewBox="0 0 40 40" aria-hidden="true" style="width:34px;height:34px">
+        <circle cx="20" cy="20" r="19" class="ball-skin"/>
+        <path d="M7 6 Q14 20 7 34" fill="none" class="ball-seam"/>
+        <path d="M33 6 Q26 20 33 34" fill="none" class="ball-seam"/>
+        <text x="20" y="26.5" class="ball-sf" text-anchor="middle">SF</text>
+      </svg>
+      <span>Slatefinder<span class="brand-lol">.lol</span></span>
+    </div>
+
+    <div id="authFormWrap">
+      <div class="auth-title" id="authTitle">Create your account</div>
+      <p class="auth-sub" id="authSub">Your name and face get picked for you. All we need is an email and a password.</p>
+      <form id="authForm">
+        <label class="field"><span>Email</span>
+          <input type="email" id="authEmail" required autocomplete="email" placeholder="you@example.com">
+        </label>
+        <label class="field"><span>Password</span>
+          <span class="password-wrap">
+            <input type="password" id="authPassword" required minlength="8" autocomplete="new-password" placeholder="8+ characters">
+            <button type="button" class="password-toggle" id="authShowPw" aria-label="Show password">Show</button>
+          </span>
+        </label>
+        <label class="remember-row">
+          <input type="checkbox" id="authRemember" checked>
+          <span>Remember me on this device</span>
+        </label>
+        <label class="remember-row" id="authMarketingRow">
+          <input type="checkbox" id="authMarketing">
+          <span>Email me picks and offers (unchecked by default, unsubscribe any time)</span>
+        </label>
+        <div class="modal-error" id="authError" hidden></div>
+        <button type="submit" class="btn primary auth-submit" id="authSubmit">Create account</button>
+      </form>
+      <div class="auth-toggle-row">
+        <span id="authToggleLabel">Already have an account?</span>
+        <button type="button" class="auth-toggle" id="authToggle">Log in</button>
+      </div>
+    </div>
+
+    <div id="authReveal" hidden>
+      <p class="auth-sub" style="margin-bottom:14px">Say hello to yourself.</p>
+      <div class="auth-reveal-avatar" id="revealAvatar"></div>
+      <div class="auth-reveal-name" id="revealName"></div>
+      <button type="button" class="btn primary auth-submit" id="authEnter">Enter Slatefinder</button>
+    </div>
+  </div>
+</div>
+
+<footer class="footer">
+  <span class="footer-note">Slatefinder emails the daily board to your account every morning. Research signals only, not betting advice. Verify starters and lineups before first pitch. <a href="/record" style="color:var(--text-2)">Track record</a>. <span id="buildTag" class="faint"></span></span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

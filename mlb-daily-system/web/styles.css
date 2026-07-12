@@ -1,38 +1,35 @@
-/* Slatefinder, MLB research terminal.
-   Quiet, dense, utilitarian. One accent color, no decoration that doesn't
-   carry information. */
+/* Bare, unbranded scaffold. Neutral palette, system fonts, structural
+   layout only, no visual identity, this is being redesigned from
+   scratch. */
 
 :root {
-  --bg: #0b0d12;
-  --bg-2: #0f1219;
-  --panel: #14161d;
-  --panel-2: #1a1d26;
-  --border: #23262f;
-  --border-strong: #333844;
-  --text: #edeff4;
-  --text-2: #9aa2b1;
-  --text-3: #656d7c;
-  --accent: #5b8cff;
-  --green: #34d17f;
-  --green-bg: rgba(52, 209, 127, 0.12);
-  --red: #ff5d6c;
-  --red-bg: rgba(255, 93, 108, 0.12);
-  --amber: #f0b23e;
-  --amber-bg: rgba(240, 178, 62, 0.12);
+  --bg: #ffffff;
+  --bg-2: #f7f7f7;
+  --panel: #ffffff;
+  --panel-2: #fafafa;
+  --border: #e2e2e2;
+  --border-strong: #cccccc;
+  --text: #111111;
+  --text-2: #555555;
+  --text-3: #888888;
+  --accent: #4a4a4a;
+  --green: #2e7d4f;
+  --green-bg: rgba(46, 125, 79, 0.1);
+  --red: #b3392f;
+  --red-bg: rgba(179, 57, 47, 0.1);
+  --amber: #a67c1e;
+  --amber-bg: rgba(166, 124, 30, 0.1);
   --radius: 8px;
-  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-display: "Bricolage Grotesque", "Inter", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --shadow: 0 1px 0 rgba(255,255,255,0.02) inset, 0 8px 24px rgba(0,0,0,0.28);
+  --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: var(--font);
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  background:
-    radial-gradient(1100px 520px at 50% -8%, rgba(91, 140, 255, 0.08), transparent 60%),
-    var(--bg);
-  background-attachment: fixed;
+  background: var(--bg);
   color: var(--text);
   font-family: var(--font);
   font-size: 14px;
@@ -57,14 +54,8 @@ body {
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 9px; }
-.brand-ball { width: 26px; height: 26px; flex: 0 0 auto; }
-.ball-skin { fill: #f2ede2; }
-.ball-seam { stroke: #c9402e; stroke-width: 2; }
-.ball-stitch path { stroke: #c9402e; stroke-width: 1.1; stroke-linecap: round; }
-.ball-sf { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; font-size: 17px; fill: #1d3557; }
 .brand-text { display: flex; align-items: baseline; gap: 8px; }
-.brand-name { font-family: var(--font-display); font-weight: 800; font-size: 17px; letter-spacing: -0.02em; }
-.brand-lol { color: var(--accent); font-weight: 700; }
+.brand-name { font-family: var(--font-display); font-weight: 600; font-size: 15px; }
 .brand-tag { font-size: 11px; color: var(--text-3); }
 
 .tabs { display: flex; gap: 4px; height: 100%; align-items: center; }

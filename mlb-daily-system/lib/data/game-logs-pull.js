@@ -1,14 +1,24 @@
 import * as mlb from '../sources/mlbStats.js';
+import { teamAbbr } from '../util/teamAbbr.js';
 
 const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
 
 // MLB Stats API's gameLog split shape (same for pitching/hitting groups):
-// { date, team: {abbreviation}, opponent: {abbreviation}, game: {gamePk}, stat: {...} }.
-// Read defensively -- a field missing on an individual split (e.g. a
-// suspended/resumed game with an odd boxscore) should drop that one game,
-// not crash the whole pull.
+// { date, team: {id, name, ...}, opponent: {id, name, ...}, game: {gamePk},
+// stat: {...} }. Read defensively -- a field missing on an individual split
+// (e.g. a suspended/resumed game with an odd boxscore) should drop that one
+// game, not crash the whole pull.
 function splitGamePk(split) {
   return split.game?.gamePk ?? split.gamePk ?? null;
+}
+
+// The gameLog endpoint's team/opponent objects only carry {id, name, link}
+// by default -- NO abbreviation field. Relying on split.team.abbreviation
+// alone stored NULL for every row, which made the two derived recalcs
+// (team_batting_aggregates, batter_vs_team_history) see zero rows: their
+// queries filter on the abbr columns. Fall back to mapping the full name.
+function splitTeamAbbr(teamObj) {
+  return teamObj?.abbreviation ?? teamAbbr(teamObj?.name) ?? null;
 }
 
 async function upsertPitcherGameLogRow(pool, playerId, playerName, split) {
@@ -22,6 +32,8 @@ async function upsertPitcherGameLogRow(pool, playerId, playerName, split) {
         strikeouts, home_runs_allowed, pitches_thrown, era)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (player_id, game_pk) DO UPDATE SET
+       team_abbr = EXCLUDED.team_abbr,
+       opponent_abbr = EXCLUDED.opponent_abbr,
        innings_pitched = EXCLUDED.innings_pitched,
        hits_allowed = EXCLUDED.hits_allowed,
        runs_allowed = EXCLUDED.runs_allowed,
@@ -32,8 +44,8 @@ async function upsertPitcherGameLogRow(pool, playerId, playerName, split) {
        pitches_thrown = EXCLUDED.pitches_thrown,
        era = EXCLUDED.era`,
     [
-      playerId, playerName, split.team?.abbreviation ?? null, split.date, gamePk,
-      split.opponent?.abbreviation ?? null,
+      playerId, playerName, splitTeamAbbr(split.team), split.date, gamePk,
+      splitTeamAbbr(split.opponent),
       num(s.inningsPitched), num(s.hits), num(s.runs), num(s.earnedRuns), num(s.baseOnBalls),
       num(s.strikeOuts), num(s.homeRuns), num(s.numberOfPitches), num(s.era),
     ]
@@ -51,6 +63,8 @@ async function upsertBatterGameLogRow(pool, playerId, playerName, split) {
         at_bats, hits, doubles, triples, home_runs, rbi, walks, strikeouts, batting_avg)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (player_id, game_pk) DO UPDATE SET
+       team_abbr = EXCLUDED.team_abbr,
+       opponent_abbr = EXCLUDED.opponent_abbr,
        at_bats = EXCLUDED.at_bats,
        hits = EXCLUDED.hits,
        doubles = EXCLUDED.doubles,
@@ -61,8 +75,8 @@ async function upsertBatterGameLogRow(pool, playerId, playerName, split) {
        strikeouts = EXCLUDED.strikeouts,
        batting_avg = EXCLUDED.batting_avg`,
     [
-      playerId, playerName, split.team?.abbreviation ?? null, split.date, gamePk,
-      split.opponent?.abbreviation ?? null,
+      playerId, playerName, splitTeamAbbr(split.team), split.date, gamePk,
+      splitTeamAbbr(split.opponent),
       num(s.atBats), num(s.hits), num(s.doubles), num(s.triples), num(s.homeRuns),
       num(s.rbi), num(s.baseOnBalls), num(s.strikeOuts), num(s.avg),
     ]

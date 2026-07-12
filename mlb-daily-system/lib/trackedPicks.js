@@ -83,9 +83,12 @@ async function gradeOnePick(pick) {
   if (pick.signal_type === 'hit_streak' || pick.signal_type === 'wind_hr') {
     const batterId = pick.qualifying_metrics?.batterId;
     if (!batterId) return null; // picks recorded before batterId was tracked
-    const season = String(pick.game_date).slice(0, 4);
-    const log = await mlb.fetchBatterGameLog(batterId, season);
+    // pg returns DATE columns as JS Date objects, so String(game_date) is
+    // "Wed Jul 08 2026..." and slicing that produced season=Wed, a 400
+    // from the MLB API on every grading pass. Derive it from the ISO form.
     const pickDateStr = new Date(pick.game_date).toISOString().slice(0, 10);
+    const season = pickDateStr.slice(0, 4);
+    const log = await mlb.fetchBatterGameLog(batterId, season);
     const split = log.find((s) => (s.date || '').slice(0, 10) === pickDateStr);
     // Game is final and the batter has no logged plate appearance that day
     // (didn't play, or was subbed out before recording a stat), that's a
@@ -103,9 +106,9 @@ async function gradeOnePick(pick) {
     const pitcherId = pick.qualifying_metrics?.pitcherId;
     const line = Number(pick.qualifying_metrics?.suggestedLine);
     if (!pitcherId || !Number.isFinite(line)) return null;
-    const season = String(pick.game_date).slice(0, 4);
-    const log = await mlb.fetchPitcherGameLog(pitcherId, season);
     const pickDateStr = new Date(pick.game_date).toISOString().slice(0, 10);
+    const season = pickDateStr.slice(0, 4); // same Date-vs-string trap as above
+    const log = await mlb.fetchPitcherGameLog(pitcherId, season);
     const split = (log || []).find((s) => (s.date || '').slice(0, 10) === pickDateStr);
     const ks = Number(split?.stat?.strikeOuts ?? 0);
     return ks > line ? 'win' : 'loss';

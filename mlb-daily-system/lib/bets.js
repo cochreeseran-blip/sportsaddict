@@ -115,9 +115,11 @@ async function gradeOneBet(bet) {
 
   if (bet.bet_kind === 'batter_hit' || bet.bet_kind === 'batter_hr') {
     if (!bet.batter_id) return null;
-    const season = String(bet.game_date).slice(0, 4);
-    const log = await mlb.fetchBatterGameLog(bet.batter_id, season);
+    // pg returns DATE columns as JS Date objects; String() would yield
+    // "Wed Jul..." and break the season param. Derive from the ISO form.
     const dateStr = new Date(bet.game_date).toISOString().slice(0, 10);
+    const season = dateStr.slice(0, 4);
+    const log = await mlb.fetchBatterGameLog(bet.batter_id, season);
     const split = log.find((s) => (s.date || '').slice(0, 10) === dateStr);
     // Final game + no logged appearance counts as a loss for "to get a
     // hit"/"to homer", same convention as the signal ledger.

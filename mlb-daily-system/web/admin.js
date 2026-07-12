@@ -36,172 +36,18 @@ async function apiSend(path, method, body) {
   return data;
 }
 
-const state = { view: 'slate', slateDate: todayIso(), autoTimer: null };
+const state = { view: 'slate' };
 
 // ---------------------------------------------------------------------------
 // SLATE REVIEW
-// Every pick the pipeline generated for the date, published and not,
-// grouped by signal type, with the qualifying metrics that produced it.
-// Moneyline is ordered worst-away-arm first; the top row is flagged as
-// the one that goes to the free slate.
-
-function warningsHtml(warnings) {
-  if (!warnings?.length) return '';
-  return `<div class="admin-warn">${warnings.map((w) => `<div>${esc(w)}</div>`).join('')}</div>`;
-}
-
-function metricLine(label, value) {
-  return `<span class="admin-metric"><span class="k">${esc(label)}</span><span class="v">${value}</span></span>`;
-}
-
-function moneylineMetrics(p) {
-  return [
-    metricLine('Away starter', esc(p.awayStarterName || '-')),
-    metricLine('Trailing ERA', `${fmtNum(p.awayStarterTrailingEra)} (${p.awayStarterTrailingStarts ?? 0} starts)`),
-    metricLine('Season ERA', fmtNum(p.awayStarterSeasonEra)),
-    metricLine('Locked price', fmtOdds(p.homeMl ?? p.lockedPrice)),
-    metricLine('Break-even', fmtPct(p.breakevenPct)),
-  ].join('');
-}
-function hitMetrics(p) {
-  return [
-    metricLine('Batter', esc(p.batterName || '-')),
-    metricLine('Trailing avg', `${fmtNum(p.trailing15Avg, 3)} (${p.trailing15Ab ?? 0} AB)`),
-    metricLine('Lineup', p.lineupConfirmed === true ? 'confirmed' : 'not posted'),
-  ].join('');
-}
-function koMetrics(p) {
-  return [
-    metricLine('Pitcher', esc(p.pitcherName || '-')),
-    metricLine('Line', p.suggestedLine !== null && p.suggestedLine !== undefined ? `over ${Number(p.suggestedLine).toFixed(1)}` : '-'),
-    metricLine('Floor', `${p.strictFloorKs ?? '-'}+ Ks`),
-    metricLine('K/start', fmtNum(p.kPerStart, 1)),
-  ].join('');
-}
-
-function pickRow(p, { isFreeTop = false } = {}) {
-  const metrics = p.signalType === 'moneyline' ? moneylineMetrics(p)
-    : p.signalType === 'hit_streak' ? hitMetrics(p)
-    : p.signalType === 'strikeout' ? koMetrics(p) : '';
-
-  const startBadge = p.gameStarted === true
-    ? '<span class="pill hot"><span class="pill-dot"></span>Game started</span>'
-    : `<span class="pill dim">First pitch ${esc(fmtTime(p.gameTimeUtc))}</span>`;
-
-  const control = p.published
-    ? `<div class="admin-published">Published ${esc(fmtDateTime(p.publishedAt))} · locked on the record</div>`
-    : (p.gameStarted === true
-        ? '<div class="admin-locked-note">Cannot publish, game has started.</div>'
-        : `<button class="btn primary small" data-publish="${p.id}">Publish</button>`);
-
-  return `
-    <div class="admin-pick ${p.published ? 'is-published' : ''} ${isFreeTop ? 'is-free-top' : ''}">
-      <div class="admin-pick-head">
-        <div class="admin-pick-title">${isFreeTop ? '<span class="admin-free-tag">FREE SLATE</span> ' : ''}${esc(p.headline || p.description || '')}</div>
-        <div class="admin-pick-badges">${startBadge}</div>
-      </div>
-      <div class="admin-metrics">${metrics}</div>
-      ${warningsHtml(p.warnings)}
-      <div class="admin-pick-foot">${control}</div>
-    </div>`;
-}
-
-function signalSection(title, picks, opts = {}) {
-  if (!picks.length) return `<h2 class="board-title">${esc(title)}<span class="board-count">0</span></h2><p class="section-sub">Nothing generated for this date.</p>`;
-  const rows = picks.map((p, i) => pickRow(p, { isFreeTop: opts.markFreeTop && i === 0 && p.signalType === 'moneyline' })).join('');
-  return `<h2 class="board-title">${esc(title)}<span class="board-count">${picks.length}</span></h2>${rows}`;
-}
-
+// Being redesigned. The publish endpoint, the one-way trigger, and the
+// rest of the admin API are untouched underneath this; only the picks/
+// info display here has been cleared out to rebuild.
 async function renderSlate() {
   const host = $('#admin-view');
-  host.innerHTML = '<div class="section-head"><h2 class="section-title">Slate review</h2></div><p class="section-sub">Loading…</p>';
-  try {
-    const d = await api(`/api/admin/slate?date=${state.slateDate}`);
-    state.slateDate = d.date;
-    const ml = d.picks.moneyline || [];
-    const hits = d.picks.hit_streak || [];
-    const kos = d.picks.strikeout || [];
-
-    const anyUnconfirmedProps = hits.some((p) => p.lineupConfirmed !== true);
-
-    host.innerHTML = `
-      <div class="section-head"><h2 class="section-title">Slate review</h2></div>
-      <div class="signals-toolbar">
-        <input type="date" class="date-select" id="slateDate" value="${esc(d.date)}" max="${esc(tomorrowIso())}">
-        <span class="section-freshness">Publishing is permanent. There is no edit or delete.</span>
-      </div>
-      ${anyUnconfirmedProps ? '<div class="admin-warn admin-warn-top">Some batter props are on games without a confirmed lineup. Batter props are unreliable until the lineup is out.</div>' : ''}
-
-      ${signalSection('Moneyline', ml, { markFreeTop: true })}
-      ${signalSection('Hit props', hits)}
-      ${signalSection('Strikeout props', kos)}`;
-
-    $('#slateDate').addEventListener('change', (e) => {
-      const v = e.target.value;
-      if (v) { state.slateDate = v; renderSlate(); }
-    });
-
-    host.querySelectorAll('[data-publish]').forEach((btn) => {
-      btn.addEventListener('click', () => confirmPublish(Number(btn.dataset.publish)));
-    });
-  } catch (err) {
-    host.innerHTML = `<div class="section-head"><h2 class="section-title">Slate review</h2></div>${emptyState('Could not load the slate', err.message)}`;
-  }
-}
-
-function tomorrowIso() {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
-// Publishing is permanent, so it's behind an explicit confirm with the
-// exact language the requirement specifies. No edit/delete path exists
-// anywhere, because no such endpoint exists.
-function confirmPublish(pickId) {
-  const wrap = document.createElement('div');
-  wrap.className = 'admin-modal-overlay';
-  wrap.innerHTML = `
-    <div class="admin-modal">
-      <div class="admin-modal-title">Publish this pick?</div>
-      <p class="admin-modal-body">This is permanent. Once published, this pick is on the public record whether it wins or loses. It cannot be edited or removed.</p>
-      <div class="admin-modal-actions">
-        <button class="btn ghost" id="pubCancel">Cancel</button>
-        <button class="btn primary" id="pubConfirm">Publish permanently</button>
-      </div>
-      <div class="modal-error" id="pubError" hidden></div>
-    </div>`;
-  document.body.appendChild(wrap);
-  const close = () => wrap.remove();
-  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
-  $('#pubCancel', wrap).addEventListener('click', close);
-  $('#pubConfirm', wrap).addEventListener('click', async () => {
-    $('#pubConfirm', wrap).disabled = true;
-    try {
-      await apiSend('/api/admin/publish', 'POST', { pickId });
-      close();
-      renderSlate();
-    } catch (err) {
-      const e = $('#pubError', wrap);
-      e.textContent = err.message;
-      e.hidden = false;
-      $('#pubConfirm', wrap).disabled = false;
-    }
-  });
-}
-
-// Hourly auto-refresh of the slate view: re-fetches (the server side only
-// hits the free MLB Stats API on these refreshes, never The Odds API) so
-// lineup changes, starter swaps, and out-of-lineup flags surface without
-// a manual reload. Only runs while the slate tab is active.
-function startSlateAutoRefresh() {
-  stopSlateAutoRefresh();
-  state.autoTimer = setInterval(() => {
-    if (state.view === 'slate') renderSlate();
-  }, 60 * 60 * 1000);
-}
-function stopSlateAutoRefresh() {
-  if (state.autoTimer) { clearInterval(state.autoTimer); state.autoTimer = null; }
+  host.innerHTML = `
+    <div class="section-head"><h2 class="section-title">Slate review</h2></div>
+    <div class="empty-state"><div class="es-title">Redesigning</div>This view is being rebuilt.</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +211,7 @@ function emptyState(title, msg) {
 function showView(name) {
   state.view = name;
   document.querySelectorAll('#adminTabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
-  if (name === 'slate') { renderSlate(); startSlateAutoRefresh(); } else { stopSlateAutoRefresh(); }
+  if (name === 'slate') renderSlate();
   if (name === 'record') renderRecord();
   if (name === 'users') renderUsers();
   if (name === 'email') renderEmail();

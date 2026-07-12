@@ -12,30 +12,37 @@
 -- --- users: role / tier / activity / email consent ------------------------
 
 -- The production database once hosted a legacy users table with its own
--- "role" column (see ensureAuthSchema in lib/auth.js), so this can't
--- assume a clean slate: add if missing, normalize whatever values exist,
--- then pin the default + constraint.
+-- "role" column (see ensureAuthSchema in lib/auth.js), which may hold
+-- values outside this app's allow-list. Two rules for touching it:
+--   1. Only backfill NULLs (columns this app just added). NEVER rewrite an
+--      existing non-null legacy value to a default — the other app sharing
+--      this table may depend on 'owner'/'moderator'/etc. Overwriting them
+--      is silent data loss, and migrate.js re-runs this file every boot,
+--      so it would clobber them again on every restart.
+--   2. Add the CHECK constraint NOT VALID: it enforces the allow-list on
+--      every INSERT/UPDATE this app makes going forward (signup, make-admin
+--      are always in-list) without validating pre-existing legacy rows,
+--      which would otherwise fail the whole migration and brick boot (23514).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT;
-UPDATE users SET role = 'user' WHERE role IS NULL OR role NOT IN ('user', 'admin');
+UPDATE users SET role = 'user' WHERE role IS NULL;
 ALTER TABLE users ALTER COLUMN role SET DEFAULT 'user';
-ALTER TABLE users ALTER COLUMN role SET NOT NULL;
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_role_check') THEN
-    ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin'));
+    ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin')) NOT VALID;
   END IF;
 END $$;
 
 -- Content tier. Structured now, gated later: PAYWALL_ENABLED=false ships
 -- everything to everyone; the boundary only takes effect when it flips.
+-- Same legacy-safe rules as role above (backfill NULLs only, NOT VALID).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT;
-UPDATE users SET tier = 'free' WHERE tier IS NULL OR tier NOT IN ('free', 'member');
+UPDATE users SET tier = 'free' WHERE tier IS NULL;
 ALTER TABLE users ALTER COLUMN tier SET DEFAULT 'free';
-ALTER TABLE users ALTER COLUMN tier SET NOT NULL;
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_tier_check') THEN
-    ALTER TABLE users ADD CONSTRAINT users_tier_check CHECK (tier IN ('free', 'member'));
+    ALTER TABLE users ADD CONSTRAINT users_tier_check CHECK (tier IN ('free', 'member')) NOT VALID;
   END IF;
 END $$;
 

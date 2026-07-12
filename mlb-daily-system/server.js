@@ -345,8 +345,10 @@ async function buildRecord() {
   };
 }
 
-// The Daily Slate strip: the PUBLISHED record only (that's the public
-// accountability number), same 50-graded suppression as everywhere else.
+// The Daily Slate strip: the record over EVERY automated pick in the
+// ledger, published or not (that's the real all-time W-L — the screener's
+// full track record, e.g. 10-4 — not just the curated published subset,
+// which starts empty). Same 50-graded suppression as everywhere else.
 async function buildPerformance() {
   const [summary, recent] = await Promise.all([
     pool.query(`
@@ -358,12 +360,11 @@ async function buildPerformance() {
         count(*) FILTER (WHERE result IN ('win','loss') AND locked_price IS NOT NULL) AS priced_graded,
         count(*) FILTER (WHERE result = 'win' AND locked_price IS NOT NULL) AS priced_wins,
         avg(breakeven_pct) FILTER (WHERE result IN ('win','loss') AND locked_price IS NOT NULL) AS avg_breakeven
-      FROM tracked_picks WHERE published = true
+      FROM tracked_picks
     `),
     pool.query(`
       SELECT game_date, signal_type, mlb_game_id, description, locked_price, breakeven_pct, result
       FROM tracked_picks
-      WHERE published = true
       ORDER BY game_date DESC, id DESC
       LIMIT 100
     `),
@@ -1082,10 +1083,29 @@ async function start() {
   await ensureInsertSafety(pool);
 
   server.listen(PORT, () => {
-    console.log(`SlateFinder web listening on :${PORT} (engine runs separately in worker.js)`);
+    console.log(`SlateFinder web listening on :${PORT}`);
   });
-  // No pipeline, no schedulers here. The engine owns all of that and
-  // writes to the shared database; this process only serves and reads.
+
+  // Single-service default: run the engine (generation, grading, hourly
+  // refresh) IN THIS PROCESS. worker.js is still the canonical standalone
+  // engine for a two-service split, but most deploys (including the
+  // current Railway setup) run one service on `npm start` (server.js) — so
+  // unless a separate engine is explicitly configured, the web process
+  // hosts the engine too, otherwise nothing would ever generate the board.
+  // Set RUN_ENGINE_IN_WEB=false on the web service once a dedicated engine
+  // service (npm run start:worker) is running, so the loops don't run twice.
+  if (String(process.env.RUN_ENGINE_IN_WEB ?? 'true').toLowerCase() !== 'false') {
+    try {
+      const { startEngine } = await import('./worker.js');
+      // Migrations already ran above; don't bind a second health server
+      // (this process already owns PORT).
+      await startEngine({ runMigrationsFirst: false, withHealthServer: false });
+    } catch (err) {
+      console.error('In-process engine failed to start:', err);
+    }
+  } else {
+    console.log('RUN_ENGINE_IN_WEB=false: engine expected to run as a separate worker.js service.');
+  }
 }
 
 // Starts on import. The admin test suite imports this module (with a

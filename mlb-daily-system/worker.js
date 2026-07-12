@@ -179,14 +179,24 @@ function startHealthServer() {
   }).listen(PORT, () => console.log(`Engine health server on :${PORT}`));
 }
 
-async function start() {
-  // The engine owns migrations. The web app also runs them idempotently
-  // on boot, but the engine is the canonical writer.
-  await runMigrations(pool);
-  await ensureAuthSchema(pool);
-  await ensureInsertSafety(pool);
+// Start every engine loop. Exported so a single-service deploy can run the
+// engine in-process from the web app (server.js) without a second Railway
+// service; the standalone `node worker.js` path calls this too. Options:
+//   runMigrationsFirst - the standalone engine owns migrations; when the
+//     web app already ran them on its own boot, it passes false.
+//   withHealthServer   - the standalone engine binds /healthz on PORT; the
+//     web app already serves the port itself, so it passes false to avoid
+//     an EADDRINUSE collision.
+export async function startEngine({ runMigrationsFirst = true, withHealthServer = true } = {}) {
+  if (runMigrationsFirst) {
+    // The engine owns migrations. The web app also runs them idempotently
+    // on boot, but the engine is the canonical writer.
+    await runMigrations(pool);
+    await ensureAuthSchema(pool);
+    await ensureInsertSafety(pool);
+  }
 
-  startHealthServer();
+  if (withHealthServer) startHealthServer();
 
   // Boot populate. Only spend a metered odds pull if today's games have
   // no prices yet AND we're already past the generation hour (a restart
@@ -212,7 +222,13 @@ async function start() {
   console.log(`Engine running. Generation at ${GENERATION_HOUR_PT}:00 Pacific; daily email at the same tick.`);
 }
 
-start().catch((err) => {
-  console.error('Engine failed to start:', err);
-  process.exit(1);
-});
+// Auto-start ONLY when this file is the process entrypoint (`node
+// worker.js`). When server.js imports startEngine for single-service mode,
+// importing this module must not kick off a second standalone engine.
+const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+  startEngine({ runMigrationsFirst: true, withHealthServer: true }).catch((err) => {
+    console.error('Engine failed to start:', err);
+    process.exit(1);
+  });
+}

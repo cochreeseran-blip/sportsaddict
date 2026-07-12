@@ -36,18 +36,250 @@ async function apiSend(path, method, body) {
   return data;
 }
 
-const state = { view: 'slate' };
+const state = { view: 'slate', dashDate: todayIso(), signalTab: 'strikeouts', dashData: null, liveSource: null, autoTimer: null };
 
 // ---------------------------------------------------------------------------
-// SLATE REVIEW
-// Being redesigned. The publish endpoint, the one-way trigger, and the
-// rest of the admin API are untouched underneath this; only the picks/
-// info display here has been cleared out to rebuild.
+// RESEARCH DASHBOARD (Phase 1 private research dashboard, slatefinder.lol)
+// Bloomberg-terminal-not-ESPN: dense, functional, color-coded by whether a
+// number is good or bad FOR THE PICK, not decorative. Three panels: today's
+// slate overview, the three signal tabs (K props / hit props / moneyline),
+// and a live monitor that only matters once games are underway.
+
+// Simple 3-way color coder: value >= goodMin is favorable (green), value <=
+// badMax is unfavorable (red), everything between is neutral (yellow-ish,
+// left uncolored here since the base text color already reads as neutral).
+function colorClass(value, { goodMin, badMax, invert = false } = {}) {
+  if (value === null || value === undefined) return '';
+  const good = invert ? value <= goodMin : value >= goodMin;
+  const bad = invert ? value >= badMax : value <= badMax;
+  if (good) return 'pos';
+  if (bad) return 'neg';
+  return '';
+}
+
+function refreshCountdownLabel(nextAt) {
+  if (!nextAt) return '';
+  const secs = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
+  return `next refresh in ${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
+// --- Panel 1: slate overview -------------------------------------------------
+function pitcherProfileCell(name, profile) {
+  if (!name) return '<span class="faint">TBD</span>';
+  if (!profile) return `${esc(name)}<div class="faint" style="font-size:11px">no Savant data yet</div>`;
+  const era = profile.savantEra ?? profile.seasonEra;
+  return `
+    <div>${esc(name)}</div>
+    <div class="mono" style="font-size:11px;margin-top:2px;display:flex;gap:8px;flex-wrap:wrap">
+      <span class="${colorClass(era, { goodMin: 99, badMax: 4.5, invert: true })}">${fmtNum(era)} ERA</span>
+      <span class="${colorClass(profile.kPct, { goodMin: 25, badMax: 18 })}">${fmtPct(profile.kPct ? profile.kPct / 100 : null, 0)} K</span>
+      <span class="${colorClass(profile.whiffPct, { goodMin: 28, badMax: 22 })}">${fmtPct(profile.whiffPct ? profile.whiffPct / 100 : null, 0)} whiff</span>
+      <span class="${colorClass(profile.hardHitPct, { goodMin: 45, badMax: 33, invert: true })}">${fmtPct(profile.hardHitPct ? profile.hardHitPct / 100 : null, 0)} hard-hit</span>
+    </div>`;
+}
+
+function lineupStatusPill(confirmed, confirmedAt) {
+  if (confirmed) return `<span class="pill ok"><span class="pill-dot"></span>Confirmed${confirmedAt ? ` · ${fmtTime(confirmedAt)}` : ''}</span>`;
+  return '<span class="pill dim">Projected</span>';
+}
+
+function slateOverviewTable(games) {
+  if (!games.length) return emptyState('No games today', 'Nothing on the MLB schedule for this date.');
+  const rows = games.map((g) => `
+    <tr>
+      <td>${esc(g.awayTeam)} @ ${esc(g.homeTeam)}<div class="faint" style="font-size:11px">${esc(g.venue || '')}</div></td>
+      <td>${pitcherProfileCell(g.awayStarterName, g.awayStarterProfile)}</td>
+      <td>${pitcherProfileCell(g.homeStarterName, g.homeStarterProfile)}</td>
+      <td>${lineupStatusPill(g.awayLineupConfirmed, g.awayLineupConfirmedAt)} ${lineupStatusPill(g.homeLineupConfirmed, g.homeLineupConfirmedAt)}</td>
+      <td class="mono">${g.awayMl !== null && g.awayMl !== undefined ? fmtOdds(g.awayMl) : '-'} / ${g.homeMl !== null && g.homeMl !== undefined ? fmtOdds(g.homeMl) : '-'}</td>
+      <td class="mono live-cell" data-live-game="${esc(g.mlbGameId)}">-</td>
+    </tr>`).join('');
+  return `
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Game</th><th>Away starter</th><th>Home starter</th><th>Lineups</th><th>Away/Home ML</th><th>Live</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// --- Panel 2: signal cards ---------------------------------------------------
+function strikeoutCard(p) {
+  const highConf = p.strictFloorKs >= 6 && p.opposingTeamKPct !== null && p.opposingTeamKPct >= 24;
+  return `
+    <div class="sig-card">
+      <div class="sig-head">
+        <span>${esc(p.pitcherName)} <span class="faint">(${esc(p.team)} ${p.isHome ? 'vs' : '@'} ${esc(p.opponent)})</span></span>
+        <span style="display:flex;align-items:center;gap:8px">${gradeBadge(p.grade)}${highConf ? '<span class="pill hot">High confidence</span>' : ''}</span>
+      </div>
+      <div class="sig-sub">K floor <strong>${p.strictFloorKs}</strong> (soft floor ${p.softFloorKs ?? '-'}) over his last ${p.last5StartKs.length} starts: ${p.last5StartKs.join(', ')}</div>
+      <div class="sig-note">Suggested line: over ${fmtNum(p.suggestedLine, 1)}</div>
+      <div class="sig-note mono">${fmtNum(p.kPerStart, 1)} K/start · opponent K rate <span class="${colorClass(p.opposingTeamKPct, { goodMin: 24, badMax: 20 })}">${fmtPct(p.opposingTeamKPct ? p.opposingTeamKPct / 100 : null, 0)}</span></div>
+      <div class="faint" style="font-size:11px;margin-top:6px">${esc(p.gradeReasons.join(' · '))}</div>
+    </div>`;
+}
+
+function hitPropCard(p) {
+  const luck = p.xbaLuckFlag === 'buy' ? '<span class="pill ok">Buy signal</span>' : p.xbaLuckFlag === 'sell' ? '<span class="pill warn">Regression risk</span>' : '';
+  return `
+    <div class="sig-card">
+      <div class="sig-head">
+        <span>${esc(p.batterName)} <span class="faint">(${esc(p.team)}${p.battingOrderSlot ? `, batting ${p.battingOrderSlot}` : ''})</span></span>
+        <span style="display:flex;align-items:center;gap:8px">${gradeBadge(p.grade)}${luck}</span>
+      </div>
+      <div class="sig-sub">${p.hitStreak >= 5 ? `${p.hitStreak}-game hit streak, ` : ''}batting ${fmtNum(p.trailing15Avg, 3)} over his last 15 (${p.trailing15Ab} AB)${p.xba !== null ? `, xBA ${fmtNum(p.xba, 3)}` : ''}</div>
+      <div class="sig-note">vs ${esc(p.opposingStarterName || 'TBD')}${p.opposingHitsPer9 !== null ? `, allows <span class="mono ${colorClass(p.opposingHitsPer9, { goodMin: 9.5, badMax: 7.5 })}">${fmtNum(p.opposingHitsPer9, 1)}</span> H/9` : ''}</div>
+      ${p.vsTeamPa >= 20 ? `<div class="sig-note mono">${fmtNum(p.vsTeamAvg, 3)} career vs this team (${p.vsTeamPa} PA)</div>` : ''}
+      <div class="faint" style="font-size:11px;margin-top:6px">${esc(p.gradeReasons.join(' · '))}</div>
+    </div>`;
+}
+
+function moneylineCard(p) {
+  const blowout = p.awayStarterBlowoutInflated
+    ? '<div class="pill warn">Blowout-inflated: ex-worst-start ERA drops under 4.50</div>' : '';
+  return `
+    <div class="sig-card">
+      <div class="sig-head">
+        <span>${esc(p.homeTeam)} ${fmtOdds(p.homeMl)} <span class="faint">vs ${esc(p.awayTeam)}</span></span>
+      </div>
+      <div class="sig-sub">${esc(p.awayStarterName || 'TBD')} trailing ERA <strong class="mono">${fmtNum(p.awayStarterTrailingEra)}</strong> over his last ${p.awayStarterTrailingStarts ?? '-'} start(s)</div>
+      ${blowout}
+      <div class="sig-note mono">Home off. ${fmtNum(p.homeRunsPerGame, 1)} R/G · Away off. ${fmtNum(p.awayRunsPerGame, 1)} R/G</div>
+      <div class="faint" style="font-size:11px;margin-top:6px">
+        Home: ${p.homeStarterSavant ? `${fmtNum(p.homeStarterSavant.era)} ERA, ${fmtPct(p.homeStarterSavant.kPct ? p.homeStarterSavant.kPct / 100 : null, 0)} K` : 'no Savant data'}
+        &nbsp;|&nbsp; Away: ${p.awayStarterSavant ? `${fmtNum(p.awayStarterSavant.era)} ERA, ${fmtPct(p.awayStarterSavant.kPct ? p.awayStarterSavant.kPct / 100 : null, 0)} K` : 'no Savant data'}
+      </div>
+    </div>`;
+}
+
+function gradeBadge(grade) {
+  if (!grade) return '';
+  const cls = `g-${grade.toLowerCase().replace('+', 'plus')}`;
+  return `<span class="grade-badge ${cls}">${esc(grade)}</span>`;
+}
+
+function signalPanel(data) {
+  const tabs = [
+    ['strikeouts', `K Props (${data.strikeouts.length})`],
+    ['hitProps', `Hit Props (${data.hitProps.length})`],
+    ['moneyline', `Moneyline (${data.moneyline.picks.length})`],
+  ];
+  const tabBtns = tabs.map(([key, label]) =>
+    `<button class="tab ${state.signalTab === key ? 'active' : ''}" data-signal-tab="${key}">${label}</button>`).join('');
+
+  let body;
+  if (state.signalTab === 'strikeouts') {
+    body = data.strikeouts.length ? `<div class="sig-cards">${data.strikeouts.map(strikeoutCard).join('')}</div>` : emptyState('No K props today', 'Nothing clears the K-floor gate.');
+  } else if (state.signalTab === 'hitProps') {
+    body = data.hitProps.length ? `<div class="sig-cards">${data.hitProps.map(hitPropCard).join('')}</div>` : emptyState('No hit props today', 'Nothing clears the qualification gates.');
+  } else {
+    const picks = data.moneyline.picks.length ? `<div class="sig-cards">${data.moneyline.picks.map(moneylineCard).join('')}</div>` : emptyState('SIT', 'No home favorite clears both gates today.');
+    body = picks;
+  }
+  return `<nav class="tabs" style="margin:14px 0">${tabBtns}</nav>${body}`;
+}
+
+// --- Panel 3: live monitor (SSE) --------------------------------------------
+function stopLiveMonitor() {
+  if (state.liveSource) { state.liveSource.close(); state.liveSource = null; }
+}
+
+function applyLiveSnapshot(games) {
+  for (const g of games) {
+    const cell = document.querySelector(`[data-live-game="${g.mlbGameId}"]`);
+    if (!cell) continue;
+    if (g.error) { cell.textContent = '-'; continue; }
+    if (g.inning === null || g.inning === undefined) { cell.textContent = 'Preview'; continue; }
+    cell.innerHTML = `${g.awayScore ?? 0}-${g.homeScore ?? 0} <span class="faint">${esc(g.inningState || '')} ${g.inning}</span>`;
+    if (g.pitcherChanged) {
+      cell.innerHTML += `<div class="pill warn" style="margin-top:4px">Pitcher change: ${esc(g.newPitcherName || '')}</div>`;
+    }
+  }
+  const alertHost = $('#liveAlerts');
+  if (!alertHost) return;
+  const alerts = games.filter((g) => g.pitcherChanged && g.departedStarter);
+  alertHost.innerHTML = alerts.length ? alerts.map((g) => {
+    const lines = Object.entries(g.departedStarter || {}).map(([side, d]) =>
+      `${esc(d.pitcherId)} left with ${d.strikeouts ?? '?'} Ks${d.suggestedLine !== null ? ` (line ${d.suggestedLine}, prop ${d.kPropStatus === 'hit' ? 'HIT' : d.kPropStatus === 'dead' ? 'DEAD' : 'n/a'})` : ''}`
+    ).join(' · ');
+    return `<div class="sig-card" style="border-color:var(--amber)"><div class="sig-head"><span>${esc(g.awayTeam)} @ ${esc(g.homeTeam)}</span><span class="pill hot">Pitcher change</span></div><div class="sig-sub">${lines}</div></div>`;
+  }).join('') : '';
+}
+
+function startLiveMonitor(dateStr) {
+  stopLiveMonitor();
+  try {
+    const src = new EventSource(`/api/dashboard/live?date=${encodeURIComponent(dateStr)}`);
+    src.onmessage = (e) => {
+      try { applyLiveSnapshot(JSON.parse(e.data)); } catch { /* ignore malformed frame */ }
+    };
+    src.onerror = () => { /* browser auto-reconnects; nothing to do */ };
+    state.liveSource = src;
+  } catch { /* SSE unsupported or blocked, live panel just stays static */ }
+}
+
+// --- assembly -----------------------------------------------------------------
+function dashboardToolbar() {
+  return `
+    <div class="signals-toolbar">
+      <input type="date" id="dashDate" value="${state.dashDate}" class="date-select">
+      <button class="btn ghost small" id="dashRefresh">Refresh now</button>
+      <span class="faint" id="dashUpdated" style="font-size:11px"></span>
+    </div>`;
+}
+
 async function renderSlate() {
   const host = $('#admin-view');
+  host.innerHTML = `<div class="section-head"><h2 class="section-title">Research</h2></div>${dashboardToolbar()}<p class="section-sub">Loading…</p>`;
+  await loadDashboard(state.dashDate);
+}
+
+// Renders from already-fetched data (used both right after a fetch and on
+// a signal-tab switch, which must NOT refetch or restart the live SSE
+// connection just to change which card grid is visible).
+function renderDashboardBody(data) {
+  const host = $('#admin-view');
   host.innerHTML = `
-    <div class="section-head"><h2 class="section-title">Slate review</h2></div>
-    <div class="empty-state"><div class="es-title">Redesigning</div>This view is being rebuilt.</div>`;
+    <div class="section-head"><h2 class="section-title">Research</h2></div>
+    ${dashboardToolbar()}
+    <h2 class="board-title">Today's slate${count(data.slate.length)}</h2>
+    ${slateOverviewTable(data.slate)}
+    <div id="liveAlerts"></div>
+    <h2 class="board-title">Signals</h2>
+    ${signalPanel(data)}`;
+  wireDashboardControls();
+}
+
+async function loadDashboard(dateStr) {
+  const host = $('#admin-view');
+  try {
+    const data = await api(`/api/dashboard?date=${encodeURIComponent(dateStr)}`);
+    state.dashData = data;
+    renderDashboardBody(data);
+    startLiveMonitor(dateStr);
+  } catch (err) {
+    host.innerHTML = `<div class="section-head"><h2 class="section-title">Research</h2></div>${dashboardToolbar()}${emptyState('Dashboard unavailable', err.message)}`;
+    wireDashboardControls();
+  }
+}
+
+function count(n) { return `<span class="board-count">${n}</span>`; }
+
+function wireDashboardControls() {
+  $('#dashDate')?.addEventListener('change', (e) => {
+    state.dashDate = e.target.value;
+    stopLiveMonitor();
+    loadDashboard(state.dashDate);
+  });
+  $('#dashRefresh')?.addEventListener('click', () => loadDashboard(state.dashDate));
+  document.querySelectorAll('[data-signal-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.signalTab = btn.dataset.signalTab;
+      // Tab switch: re-render from the cache already in hand, no refetch,
+      // no live-monitor restart.
+      if (state.dashData) renderDashboardBody(state.dashData);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

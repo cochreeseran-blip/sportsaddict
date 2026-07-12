@@ -191,10 +191,14 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
   for (const [teamId, team] of teamNameById) {
     const gameSide = gameSideByTeam.get(teamId);
     let confirmedSet = null;
+    let orderSlotById = null;
     if (gameSide) {
       try {
         const confirmed = await mlb.fetchConfirmedLineup(gameSide.gamePk, gameSide.side);
-        if (confirmed.length) confirmedSet = new Set(confirmed.map((p) => p.id));
+        if (confirmed.length) {
+          confirmedSet = new Set(confirmed.map((p) => p.id));
+          orderSlotById = new Map(confirmed.map((p) => [p.id, p.battingOrderSlot]));
+        }
       } catch (err) {
         warnings.push(`Batter lineup unavailable for ${team}, check manually. (${err.message})`);
         console.warn(`  Lineup fetch failed for ${team}: ${err.message}`);
@@ -240,6 +244,7 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
           batterName: hitter.fullName,
           team,
           lineupConfirmed: confirmedSet ? confirmedSet.has(hitter.id) : false,
+          battingOrderSlot: orderSlotById?.get(hitter.id) ?? null,
           position: hitter.position,
           jerseyNumber: hitter.jerseyNumber,
           ...stats,

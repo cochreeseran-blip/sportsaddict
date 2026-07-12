@@ -1,12 +1,11 @@
-import { gradeHitProp } from '../grading.js';
+import { scoreHitProp } from '../grading.js';
 import { postedLineupTeams, benchedOut } from '../lineupStatus.js';
+import { trailingHitsPer9 } from '../data/game-logs-pull.js';
+import { teamAbbr } from '../util/teamAbbr.js';
 
 const HIT_STREAK_GATE = 5;
-const AVG_GATE = 0.32;
-const ERA_GATE = 6.0;
-// "Even a little bit weaker" arm: anything worse than a league-average-ish
-// trailing ERA counts toward the matchup score, not just full meltdowns.
-const WEAK_ARM_FLOOR = 4.5;
+const AVG_GATE = 0.30; // spec: trailing-15 avg qualification path raised to .300
+const XBA_GATE = 0.28; // spec: new "deserves hits" qualification path
 // Sample-size floor: below this many trailing at-bats, trailing_15_avg is
 // too noisy to rank or grade on at all (a backup catcher going 2-for-2
 // shows as a 1.000 average, that's not a real signal). A batter under
@@ -21,28 +20,64 @@ const MIN_TRAILING_AB = 30;
 // that thin-sample case. Sits between the two: enough to be real, low
 // enough that a genuine streaking regular is never wrongly dropped.
 const STREAK_EXEMPT_MIN_AB = 15;
-// Not a business cap, just a safety valve. The Daily Slate/Tracking top 6
-// is picked from this whole pool (lib/topPicks.js), so it needs every
-// qualifying hitter on a busy slate (can legitimately be 50-100+), not
-// just the first handful.
-const MAX_WATCH = 200;
+const MAX_WATCH = 15; // spec: "TOP 15 shown"
 
-// Every hitter with hot recent form (a 5+ game streak or .320+ over the
-// last 15), ranked by how hot they are and how weak the arm they're
-// facing is. The ERA_GATE still marks the prime matchups, but a merely
-// below-average starter now boosts a hitter's rank instead of being
-// ignored.
+// Hot recent form (streak, trailing average, OR Savant xBA) against a
+// beatable arm, scored per lib/grading.js scoreHitProp -- contact-quality
+// metrics (xBA, hard-hit%, opposing H/9) instead of opposing ERA, plus
+// lineup position and batter-vs-team history. See the Phase 1 spec for
+// why each of these replaced the old ERA-based scoring.
 export async function runHitStreakFilter(pool, gameDate) {
   const { rows: games } = await pool.query('SELECT * FROM games WHERE game_date = $1', [gameDate]);
+  const season = Number(String(gameDate).slice(0, 4));
 
   // Opponent starter for a given team's batters (the *other* team's starter).
   const opponentByTeam = new Map();
   const gameIdByTeam = new Map();
   for (const g of games) {
-    opponentByTeam.set(g.home_team, { starterId: g.away_starter_id, starterName: g.away_starter_name });
-    opponentByTeam.set(g.away_team, { starterId: g.home_starter_id, starterName: g.home_starter_name });
+    opponentByTeam.set(g.home_team, { starterId: g.away_starter_id, starterName: g.away_starter_name, opponentName: g.away_team });
+    opponentByTeam.set(g.away_team, { starterId: g.home_starter_id, starterName: g.home_starter_name, opponentName: g.home_team });
     gameIdByTeam.set(g.home_team, g.mlb_game_id);
     gameIdByTeam.set(g.away_team, g.mlb_game_id);
+  }
+
+  const { rows: batters } = await pool.query(
+    `SELECT * FROM batter_form WHERE game_date = $1
+       AND (hit_streak >= $2 OR trailing_15_avg >= $3)`,
+    [gameDate, HIT_STREAK_GATE, AVG_GATE]
+  );
+
+  // The xBA-only qualification path (a batter with a mediocre trailing
+  // average but strong expected contact quality -- "deserves hits") isn't
+  // reachable from the streak/average query above, so batters who missed
+  // both of those but clear XBA_GATE need pulling in separately.
+  const { rows: batterIdsForXba } = await pool.query(
+    `SELECT batter_id FROM batter_form WHERE game_date = $1`,
+    [gameDate]
+  );
+  const xbaByBatterId = new Map();
+  if (batterIdsForXba.length) {
+    const { rows: xbaRows } = await pool.query(
+      `SELECT DISTINCT ON (player_id) player_id, xba, hard_hit_pct
+         FROM savant_batter_metrics
+        WHERE player_id = ANY($1) AND season = $2
+        ORDER BY player_id, pull_date DESC`,
+      [batterIdsForXba.map((r) => r.batter_id), season]
+    );
+    for (const r of xbaRows) xbaByBatterId.set(r.player_id, { xba: r.xba !== null ? Number(r.xba) : null, hardHitPct: r.hard_hit_pct !== null ? Number(r.hard_hit_pct) : null });
+  }
+  const { rows: xbaQualifiers } = await pool.query(
+    `SELECT * FROM batter_form WHERE game_date = $1`,
+    [gameDate]
+  );
+  const alreadyIn = new Set(batters.map((b) => b.batter_id));
+  for (const b of xbaQualifiers) {
+    if (alreadyIn.has(b.batter_id)) continue;
+    const savant = xbaByBatterId.get(b.batter_id);
+    if (savant?.xba !== null && savant?.xba !== undefined && savant.xba >= XBA_GATE) {
+      batters.push(b);
+      alreadyIn.add(b.batter_id);
+    }
   }
 
   const { rows: pitchers } = await pool.query(
@@ -53,26 +88,6 @@ export async function runHitStreakFilter(pool, gameDate) {
   );
   const num = (v) => (v !== null && v !== undefined ? Number(v) : null);
   const trailingEraByPitcherId = new Map(pitchers.map((p) => [p.pitcher_id, num(p.trailing_era)]));
-  const savantByPitcherId = new Map(
-    pitchers
-      .filter((p) => p.savant_era !== null && p.savant_era !== undefined)
-      .map((p) => [
-        p.pitcher_id,
-        {
-          era: num(p.savant_era),
-          xera: num(p.savant_xera),
-          kPct: num(p.savant_k_pct),
-          bbPct: num(p.savant_bb_pct),
-          whiffPct: num(p.savant_whiff_pct),
-          hardHitPct: num(p.savant_hard_hit_pct),
-        },
-      ])
-  );
-
-  const { rows: batters } = await pool.query(
-    `SELECT * FROM batter_form WHERE game_date = $1 AND (hit_streak >= $2 OR trailing_15_avg >= $3)`,
-    [gameDate, HIT_STREAK_GATE, AVG_GATE]
-  );
 
   // Once a team's lineup is posted, drop any hot hitter who isn't in it:
   // there's no hit prop on a guy who isn't starting. This is what makes a
@@ -96,48 +111,78 @@ export async function runHitStreakFilter(pool, gameDate) {
     return (b.hit_streak ?? 0) >= HIT_STREAK_GATE && ab >= STREAK_EXEMPT_MIN_AB;
   });
 
-  const scored = eligible.map((b) => {
+  // Batter-vs-opponent history, only surfaced at 20+ career PA (see
+  // migrations/020 comment on batter_vs_team_history).
+  const opponentAbbrByBatterId = new Map();
+  for (const b of eligible) {
     const opp = opponentByTeam.get(b.team);
-    const opponentTrailingEra =
-      opp?.starterId != null ? trailingEraByPitcherId.get(opp.starterId) ?? null : null;
+    if (opp?.opponentName) opponentAbbrByBatterId.set(b.batter_id, teamAbbr(opp.opponentName));
+  }
+  const vsTeamByKey = new Map();
+  const pairs = [...opponentAbbrByBatterId.entries()].filter(([, abbr]) => abbr);
+  if (pairs.length) {
+    // Small result set (today's eligible batters only), so fetch by
+    // batter-id set and filter the (batter, opponent) pair in JS rather
+    // than a row-constructor subquery.
+    const { rows: vsRows } = await pool.query(
+      `SELECT batter_id, opponent_abbr, total_pa, batting_avg FROM batter_vs_team_history WHERE batter_id = ANY($1)`,
+      [pairs.map(([id]) => id)]
+    );
+    for (const r of vsRows) {
+      if (opponentAbbrByBatterId.get(r.batter_id) !== r.opponent_abbr) continue;
+      vsTeamByKey.set(`${r.batter_id}:${r.opponent_abbr}`, { pa: r.total_pa, avg: r.batting_avg !== null ? Number(r.batting_avg) : null });
+    }
+  }
+
+  const scored = [];
+  for (const b of eligible) {
+    const opp = opponentByTeam.get(b.team);
+    const opponentTrailingEra = opp?.starterId != null ? trailingEraByPitcherId.get(opp.starterId) ?? null : null;
     const trailing15Avg = b.trailing_15_avg !== null ? Number(b.trailing_15_avg) : null;
     const trailing15Ab = b.trailing_15_ab ?? 0;
 
-    const opponentSavant = opp?.starterId != null ? savantByPitcherId.get(opp.starterId) ?? null : null;
-    const graded = gradeHitProp({
-      hitStreak: b.hit_streak ?? 0,
-      trailing15Avg,
-      opposingTrailingEra: opponentTrailingEra,
-      opposingSavant: opponentSavant,
-    });
+    const savant = xbaByBatterId.get(b.batter_id) || {};
+    const opposingHitsPer9 = opp?.starterId != null ? await trailingHitsPer9(pool, opp.starterId).catch(() => null) : null;
+    const vsTeam = vsTeamByKey.get(`${b.batter_id}:${opponentAbbrByBatterId.get(b.batter_id)}`);
 
-    return {
+    const graded = scoreHitProp({
+      trailing15Avg,
+      xba: savant.xba ?? null,
+      opposingHitsPer9,
+      hitStreak: b.hit_streak ?? 0,
+      hardHitPct: savant.hardHitPct ?? null,
+      battingOrderSlot: b.batting_order_slot ?? null,
+      vsTeamPa: vsTeam?.pa ?? null,
+      vsTeamAvg: vsTeam?.avg ?? null,
+    });
+    if (!graded.surfaced) continue; // below MIN_SURFACE_SCORE, per spec not shown at all
+
+    scored.push({
       mlbGameId: gameIdByTeam.get(b.team) ?? null,
       batterId: b.batter_id,
       batterName: b.batter_name,
       team: b.team,
       position: b.position ?? null,
       jerseyNumber: b.jersey_number ?? null,
+      battingOrderSlot: b.batting_order_slot ?? null,
       hitStreak: b.hit_streak,
       trailing15Avg,
       trailing15Ab,
+      xba: savant.xba ?? null,
+      xbaLuckFlag: graded.xbaLuckFlag,
       lineupConfirmed: b.lineup_confirmed,
       last5Results: b.last5_results ?? [],
       opposingStarterName: opp?.starterName ?? null,
       opposingStarterTrailingEra: opponentTrailingEra,
-      weakerArm: opponentTrailingEra !== null && opponentTrailingEra >= WEAK_ARM_FLOOR,
-      highConfidence: opponentTrailingEra !== null && opponentTrailingEra >= ERA_GATE,
+      opposingHitsPer9,
+      vsTeamPa: vsTeam?.pa ?? null,
+      vsTeamAvg: vsTeam?.avg ?? null,
       grade: graded.grade,
       gradeScore: graded.score,
       gradeReasons: graded.reasons,
-    };
-  });
+    });
+  }
 
   scored.sort((a, b) => b.gradeScore - a.gradeScore);
-  const watchList = scored.slice(0, MAX_WATCH);
-
-  return {
-    watchList,
-    highConfidence: watchList.filter((r) => r.highConfidence),
-  };
+  return { watchList: scored.slice(0, MAX_WATCH) };
 }

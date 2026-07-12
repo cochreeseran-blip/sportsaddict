@@ -48,3 +48,15 @@ export function msUntilNextTopOfHour(now = new Date()) {
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1, 0, 0, 0));
   return next.getTime() - now.getTime();
 }
+
+// Phase 1 research-dashboard data pulls are specified in ET (see
+// migrations/020 and the pull schedule in the build spec): game logs once
+// daily at 6am ET, Savant leaderboard snapshots twice daily at 7am + 2pm
+// ET. Same DST-correct Intl approach as pacificHour above.
+export function easternHour(date = new Date()) {
+  return Number(
+    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' }).format(date)
+  );
+}
+export const GAME_LOG_PULL_HOUR_ET = Number(process.env.GAME_LOG_PULL_HOUR_ET || 6);
+export const SAVANT_PULL_HOURS_ET = (process.env.SAVANT_PULL_HOURS_ET || '7,14').split(',').map(Number);

@@ -1,97 +1,215 @@
 import { fmtNum } from './util/format.js';
 
-// One shared 0-100 score and letter grade for the PROP pick types (hit
-// prop, strikeout prop), so a user learns the scale once. Moneyline is
-// deliberately not graded (see the note where gradeMoneyline used to be):
-// it's decided by two hard facts and a deterministic sort. Built entirely
-// from data already on file: trailing ERA, K/hit form, plus Baseball
-// Savant's Statcast metrics (xERA, whiff%, hard-hit%, K%, BB%) layered on
-// top when we have them for that pitcher that day. Savant is best-effort
-// (see lib/sources/savant.js): every field here is optional, and a pick
-// with no Savant data on file still grades, just off fewer inputs.
-const THRESHOLDS = [
+// Phase 1 research-dashboard scoring for the two prop signals (K props,
+// hit props). Moneyline is deliberately not graded here (see the note at
+// the bottom of this file) -- it stays two hard facts and a deterministic
+// sort, unchanged.
+//
+// Every bucket below is a literal point scale, not a fitted/backtested
+// model -- these are still hand-picked thresholds, same honesty caveat as
+// before: nobody has validated "8+ Ks in every recent start is worth
+// exactly 60 points" against outcome data. What changed from the old
+// continuous formulas is that the INPUTS are now the right ones (the K
+// prop score finally looks at the OPPOSING LINEUP's strikeout rate, the
+// hit prop score finally looks at contact-quality metrics instead of ERA),
+// not that the scoring is suddenly validated.
+const GRADE_THRESHOLDS = [
   [90, 'A+'],
   [80, 'A'],
   [70, 'B+'],
-  [58, 'B'],
-  [45, 'C+'],
-  [0, 'C'],
+  [60, 'B'],
+  [50, 'C+'],
+  [40, 'C'],
 ];
+// Below the lowest threshold: not a grade, not surfaced at all (see
+// runStrikeoutFilter / runHitStreakFilter, which drop these from the
+// watchlist entirely rather than showing a low letter).
+export const MIN_SURFACE_SCORE = 40;
 
 export function letterGrade(score) {
-  for (const [min, label] of THRESHOLDS) {
+  for (const [min, label] of GRADE_THRESHOLDS) {
     if (score >= min) return label;
   }
-  return 'C';
+  return null; // below MIN_SURFACE_SCORE; caller should not surface this pick
 }
 
 function clampScore(n) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-// Statcast xERA vs. actual ERA: when xERA is well above ERA, the pitcher's
-// results have been running hotter than his underlying stuff/contact
-// quality, a real "he's due to get hit" signal, not survivorship. Below
-// 0.3 runs of gap is noise, not treated as a signal either way.
-function savantLuckNote(s, wantsBad) {
-  if (!s || s.era === null || s.era === undefined || s.xera === null || s.xera === undefined) return null;
-  const gap = s.xera - s.era; // positive = pitching worse than his ERA shows
-  if (Math.abs(gap) < 0.3) return null;
-  if (wantsBad && gap > 0) {
-    return { bonus: Math.min(12, gap * 6), note: `xERA ${fmtNum(s.xera)} runs hotter than his ${fmtNum(s.era)} ERA, been getting away with contact` };
+function bucket(value, scale, fallback = 0) {
+  // scale: array of [minInclusive, points], evaluated highest-first.
+  if (value === null || value === undefined) return fallback;
+  for (const [min, points] of scale) {
+    if (value >= min) return points;
   }
-  if (!wantsBad && gap < 0) {
-    return { bonus: Math.min(10, -gap * 5), note: `xERA ${fmtNum(s.xera)} backs up the ${fmtNum(s.era)} ERA, this isn't a fluke` };
-  }
-  return null;
+  return fallback;
 }
 
-// wantsBad = true when a worse arm is the good outcome for this pick
-// (hit props, moneyline-against); false when a better arm is (strikeouts).
-// Shared so the same Savant fields read the same direction consistently
-// across every pick type.
-function savantArmNotes(s, wantsBad) {
-  const notes = [];
-  let bonus = 0;
-  if (!s) return { bonus, notes };
+// ---------------------------------------------------------------------------
+// 2A. Strikeout props.
+//
+// DO NOT USE (per spec): ERA in any form, win/loss record, opposing team's
+// batting average. This function accepts none of those as inputs on
+// purpose -- there's no ERA parameter to be tempted to wire back in.
+export function scoreStrikeoutProp({
+  strictFloorKs,       // his own K floor across recent starts (qualification input)
+  pitcherKPct,         // Savant, this pitcher's own K%
+  opposingTeamKPct,    // team_batting_aggregates.team_k_pct for today's opponent -- THE key addition
+  pitcherWhiffPct,     // Savant, this pitcher's own whiff%
+  kPerStart,           // trailing average Ks/start
+  last5StartKs,        // array, most-recent-first, for the consistency bonus
+}) {
+  const reasons = [];
+  let score = 0;
 
-  const luck = savantLuckNote(s, wantsBad);
-  if (luck) {
-    bonus += luck.bonus;
-    notes.push(luck.note);
+  // Primary factors.
+  const floorPts = bucket(strictFloorKs, [[8, 60], [7, 50], [6, 35], [5, 20], [4, 10]]);
+  score += floorPts;
+  reasons.push(`K floor of ${strictFloorKs} in every recent start (+${floorPts})`);
+
+  const kPctPts = bucket(pitcherKPct, [[30, 25], [25, 15], [20, 5]]);
+  score += kPctPts;
+  if (pitcherKPct !== null && pitcherKPct !== undefined) reasons.push(`${fmtNum(pitcherKPct, 0)}% own K rate (+${kPctPts})`);
+
+  // The key addition: how strikeout-prone is the OPPONENT, not just how
+  // good is the pitcher. A low-strikeout opposing lineup actively hurts
+  // the pick (-10), reflected as a penalty, not just an absent bonus.
+  let oppPts;
+  if (opposingTeamKPct === null || opposingTeamKPct === undefined) {
+    oppPts = 0;
+  } else if (opposingTeamKPct >= 26) oppPts = 20;
+  else if (opposingTeamKPct >= 23) oppPts = 10;
+  else if (opposingTeamKPct >= 20) oppPts = 0;
+  else oppPts = -10;
+  score += oppPts;
+  if (opposingTeamKPct !== null && opposingTeamKPct !== undefined) {
+    reasons.push(`opponent strikes out ${fmtNum(opposingTeamKPct, 0)}% of the time (${oppPts >= 0 ? '+' : ''}${oppPts})`);
   }
-  if (s.hardHitPct !== null && s.hardHitPct !== undefined) {
-    if (wantsBad && s.hardHitPct >= 42) {
-      bonus += 8;
-      notes.push(`${s.hardHitPct.toFixed(0)}% hard-hit rate allowed (Statcast)`);
-    } else if (!wantsBad && s.hardHitPct <= 32) {
-      bonus += 6;
-      notes.push(`${s.hardHitPct.toFixed(0)}% hard-hit rate allowed, well below average`);
+
+  // Secondary factors.
+  const whiffPts = bucket(pitcherWhiffPct, [[30, 10], [25, 5]]);
+  score += whiffPts;
+  if (pitcherWhiffPct !== null && pitcherWhiffPct !== undefined) reasons.push(`${fmtNum(pitcherWhiffPct, 0)}% whiff rate (+${whiffPts})`);
+
+  const perStartPts = bucket(kPerStart, [[9, 15], [7, 10], [5, 5]]);
+  score += perStartPts;
+  if (kPerStart !== null && kPerStart !== undefined) reasons.push(`${fmtNum(kPerStart, 1)} Ks/start lately (+${perStartPts})`);
+
+  // Consistency bonus: hit floor+2 in at least 4 of his last 5 starts.
+  if (Array.isArray(last5StartKs) && last5StartKs.length && Number.isFinite(strictFloorKs)) {
+    const recent5 = last5StartKs.slice(0, 5);
+    const hitFloorPlus2 = recent5.filter((k) => k >= strictFloorKs + 2).length;
+    if (recent5.length >= 5 && hitFloorPlus2 >= 4) {
+      score += 5;
+      reasons.push(`hit floor+2 in ${hitFloorPlus2}/${recent5.length} recent starts (+5)`);
     }
   }
-  if (s.whiffPct !== null && s.whiffPct !== undefined) {
-    if (wantsBad && s.whiffPct <= 20) {
-      bonus += 5;
-      notes.push(`${s.whiffPct.toFixed(0)}% whiff rate, hitters aren't missing`);
-    } else if (!wantsBad && s.whiffPct >= 28) {
-      bonus += 6;
-      notes.push(`${s.whiffPct.toFixed(0)}% whiff rate, hitters are missing a lot`);
+
+  score = clampScore(score);
+  return { score, grade: letterGrade(score), reasons, surfaced: score >= MIN_SURFACE_SCORE };
+}
+
+// ---------------------------------------------------------------------------
+// 2B. Hit props.
+//
+// DO NOT USE (per spec): opposing pitcher's ERA (doesn't measure contact
+// allowed -- replaced by H/9 below), batter-vs-specific-pitcher splits
+// under 20 PA. This codebase has never computed per-pitcher splits (only
+// batter-vs-TEAM, already gated at 20+ PA), so there's nothing to remove
+// there; the ERA removal is the real change.
+export function scoreHitProp({
+  trailing15Avg,
+  xba,                  // Savant expected batting average
+  opposingHitsPer9,     // replaces opposing pitcher ERA
+  hitStreak,
+  hardHitPct,           // Savant, this batter's own hard-hit%
+  battingOrderSlot,      // 1-9, from the confirmed lineup
+  vsTeamPa,              // career PA against today's opponent
+  vsTeamAvg,
+}) {
+  const reasons = [];
+  let score = 0;
+
+  // Primary factors.
+  const avgPts = bucket(trailing15Avg, [[0.330, 35], [0.300, 25], [0.280, 15], [0.250, 5]]);
+  score += avgPts;
+  if (trailing15Avg !== null && trailing15Avg !== undefined) reasons.push(`batting ${fmtNum(trailing15Avg, 3)} over his last 15 (+${avgPts})`);
+
+  let xbaPts;
+  if (xba === null || xba === undefined) xbaPts = 0;
+  else if (xba >= 0.280) xbaPts = 20;
+  else if (xba >= 0.260) xbaPts = 10;
+  else if (xba >= 0.240) xbaPts = 0;
+  else xbaPts = -5;
+  score += xbaPts;
+  let xbaLuckFlag = null;
+  if (xba !== null && xba !== undefined && trailing15Avg !== null && trailing15Avg !== undefined) {
+    reasons.push(`xBA ${fmtNum(xba, 3)} (${xbaPts >= 0 ? '+' : ''}${xbaPts})`);
+    // "If xBA is significantly higher than actual BA, that's a BUY signal
+    // (unlucky but hitting the ball well)." Flagged for the dashboard,
+    // separate from the score itself -- this is a note, not extra points.
+    if (xba - trailing15Avg >= 0.03) {
+      xbaLuckFlag = 'buy';
+      reasons.push(`xBA running ${fmtNum(xba - trailing15Avg, 3)} above actual average, unlucky BABIP not bad contact`);
+    } else if (trailing15Avg - xba >= 0.03) {
+      xbaLuckFlag = 'sell';
+      reasons.push(`actual average running ${fmtNum(trailing15Avg - xba, 3)} above xBA, results ahead of the underlying contact quality`);
     }
   }
-  if (s.kPct !== null && s.kPct !== undefined && !wantsBad && s.kPct >= 25) {
-    bonus += 5;
-    notes.push(`${s.kPct.toFixed(0)}% strikeout rate`);
+
+  const h9Pts = bucket(opposingHitsPer9, [[9.5, 25], [8.5, 15], [7.5, 5]]);
+  score += h9Pts;
+  if (opposingHitsPer9 !== null && opposingHitsPer9 !== undefined) reasons.push(`opposing arm allows ${fmtNum(opposingHitsPer9, 1)} hits/9 (+${h9Pts})`);
+
+  // Secondary factors.
+  const streakPts = bucket(hitStreak, [[15, 20], [11, 15], [8, 10], [5, 5]]);
+  score += streakPts;
+  if (hitStreak >= 5) reasons.push(`${hitStreak}-game hit streak (+${streakPts})`);
+
+  const hardHitPts = bucket(hardHitPct, [[43, 10], [35, 5]]);
+  score += hardHitPts;
+  if (hardHitPct !== null && hardHitPct !== undefined) reasons.push(`${fmtNum(hardHitPct, 0)}% hard-hit rate (+${hardHitPts})`);
+
+  let orderPts = 0;
+  if (Number.isInteger(battingOrderSlot)) {
+    orderPts = battingOrderSlot <= 3 ? 10 : battingOrderSlot <= 5 ? 5 : 0;
+    score += orderPts;
+    reasons.push(`batting ${battingOrderSlot}${ordinalSuffix(battingOrderSlot)} (+${orderPts})`);
   }
-  if (s.bbPct !== null && s.bbPct !== undefined) {
-    if (wantsBad && s.bbPct >= 10) {
-      bonus += 4;
-      notes.push(`${s.bbPct.toFixed(0)}% walk rate, control has been shaky`);
-    } else if (!wantsBad && s.bbPct <= 6) {
-      bonus += 3;
-      notes.push(`${s.bbPct.toFixed(0)}% walk rate, throwing strikes`);
-    }
+
+  let vsTeamPts = 0;
+  if (Number.isInteger(vsTeamPa) && vsTeamPa >= 20 && vsTeamAvg !== null && vsTeamAvg !== undefined) {
+    vsTeamPts = bucket(vsTeamAvg, [[0.330, 10], [0.280, 5], [0.200, 0]], -5);
+    score += vsTeamPts;
+    reasons.push(`${fmtNum(vsTeamAvg, 3)} career vs this team in ${vsTeamPa} PA (${vsTeamPts >= 0 ? '+' : ''}${vsTeamPts})`);
   }
-  return { bonus: Math.min(25, bonus), notes };
+
+  score = clampScore(score);
+
+  // Hard floors: a grade above B implies "this bat is actually hitting
+  // well right now, against a beatable matchup" -- neither a cold streak
+  // that only qualified via xBA, nor a batter with unimpressive expected
+  // contact quality, gets to claim that regardless of matchup points.
+  const B_TOP = 69; // top of the B band under GRADE_THRESHOLDS
+  let flooredNote = null;
+  if ((trailing15Avg === null || trailing15Avg === undefined || trailing15Avg < 0.28) && score > B_TOP) {
+    score = B_TOP;
+    flooredNote = 'capped at B: trailing average is below the .280 floor for a top grade';
+  } else if ((xba === null || xba === undefined || xba < 0.25) && score > B_TOP) {
+    score = B_TOP;
+    flooredNote = 'capped at B: Savant xBA is below .250, results are running ahead of contact quality';
+  }
+  if (flooredNote) reasons.push(flooredNote);
+
+  return { score, grade: letterGrade(score), reasons, surfaced: score >= MIN_SURFACE_SCORE, xbaLuckFlag };
+}
+
+function ordinalSuffix(n) {
+  if (n % 10 === 1 && n % 100 !== 11) return 'st';
+  if (n % 10 === 2 && n % 100 !== 12) return 'nd';
+  if (n % 10 === 3 && n % 100 !== 13) return 'rd';
+  return 'th';
 }
 
 // NOTE: there is deliberately no gradeMoneyline. A moneyline pick is
@@ -101,57 +219,6 @@ function savantArmNotes(s, wantsBad) {
 // left for a grade to decide. Any score blending "distance past the ERA
 // gate" against "break-even price" would use coefficients never fit to
 // outcome data, the same unvalidated blending removed elsewhere. The
-// board shows the two qualifying facts and no letter.
-
-// Hard floor for hit props: a batter who isn't actually hitting well
-// (below .280 trailing) cannot be graded above a B, no matter how hot
-// his streak is or how bad the arm he's facing is. A grade should never
-// imply "this is a great bat", only "this is a great matchup for a bat
-// that's actually hitting" - those are different claims, and blending
-// them is exactly how a .236 hitter on a lucky streak ends up graded A.
-// Applied AFTER the normal score so it can clamp a score that would
-// otherwise letter-grade above B back down, keeping the numeric score
-// and the displayed letter in agreement.
-const HIT_AVG_FLOOR = 0.28;
-const HIT_AVG_FLOOR_CAP_SCORE = 69; // top of the 'B' band in THRESHOLDS
-
-// Hit props: hot recent form (streak + trailing average) against a
-// beatable arm. Savant on the opposing starter sharpens "beatable" beyond
-// a single trailing-ERA number.
-export function gradeHitProp({ hitStreak, trailing15Avg, opposingTrailingEra, opposingSavant }) {
-  const formPart = (hitStreak ?? 0) * 2.2 + Math.max(0, (trailing15Avg ?? 0) - 0.28) * 90;
-  const armPart = opposingTrailingEra !== null && opposingTrailingEra !== undefined
-    ? Math.max(0, opposingTrailingEra - 4.2) * 6
-    : 0;
-  let score = 35 + formPart + armPart;
-  const reasons = [];
-  if (hitStreak >= 2) reasons.push(`${hitStreak}-game hit streak`);
-  if (trailing15Avg !== null && trailing15Avg !== undefined) reasons.push(`batting ${fmtNum(trailing15Avg, 3)} over his last 15`);
-  if (opposingTrailingEra !== null && opposingTrailingEra !== undefined) reasons.push(`opposing arm has a ${fmtNum(opposingTrailingEra)} ERA over his last starts`);
-  const { bonus, notes } = savantArmNotes(opposingSavant, true);
-  score += bonus;
-  reasons.push(...notes);
-  score = clampScore(score);
-
-  if ((trailing15Avg === null || trailing15Avg === undefined || trailing15Avg < HIT_AVG_FLOOR) && score > HIT_AVG_FLOOR_CAP_SCORE) {
-    score = HIT_AVG_FLOOR_CAP_SCORE;
-    reasons.push(`capped at B: trailing average is below the ${HIT_AVG_FLOOR.toFixed(3)} floor for a top grade`);
-  }
-
-  return { score, grade: letterGrade(score), reasons };
-}
-
-// Strikeouts: a high, consistent K floor from his own recent starts, plus
-// how many Ks per start and how sharp the arm's been. Savant on his OWN
-// numbers (not the opponent's) adds K%/whiff%/BB% context.
-export function gradeStrikeout({ strictFloorKs, kPerStart, trailingEra, ownSavant }) {
-  let score = 30 + (strictFloorKs ?? 0) * 5 + (kPerStart ?? 0) * 2 + Math.max(0, 4.3 - (trailingEra ?? 4.3)) * 8;
-  const reasons = [`${strictFloorKs}+ strikeouts in every recent start`];
-  if (kPerStart !== null && kPerStart !== undefined) reasons.push(`${fmtNum(kPerStart, 1)} Ks per start lately`);
-  if (trailingEra !== null && trailingEra !== undefined) reasons.push(`${fmtNum(trailingEra)} ERA over that stretch`);
-  const { bonus, notes } = savantArmNotes(ownSavant, false);
-  score += bonus;
-  reasons.push(...notes);
-  score = clampScore(score);
-  return { score, grade: letterGrade(score), reasons };
-}
+// board shows the two qualifying facts and no letter. Per the Phase 1
+// spec, moneyline gets richer DISPLAY data (Savant profiles, trailing
+// offense) but no change to qualification or ranking.

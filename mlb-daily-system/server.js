@@ -16,6 +16,8 @@ import { gradePendingPicks, publishPick } from './lib/trackedPicks.js';
 import { renderAdminEmail, sendAdminEmail, marketingRecipients, loadPublishedPicks, marketingUnsubscribe } from './lib/adminEmail.js';
 import { verifyUnsubscribeToken, makeUnsubscribeToken } from './lib/emailTokens.js';
 import { readSystemStatus, requestRefresh } from './lib/systemStatus.js';
+import { buildDashboardData } from './lib/dashboard/api.js';
+import { liveMonitorSnapshot } from './lib/dashboard/live.js';
 
 // This is the WEB app only: it serves slatefinder.lol (admin/finder) and
 // slateaddict.com (customer), and the JSON API. It does NOT run the
@@ -676,14 +678,17 @@ const server = http.createServer(async (req, res) => {
     const onAdminHost = isAdminHost(req);
 
     // --- admin surface (admin host only) -----------------------------------
-    // Every /admin* page, /admin.js, and /api/admin/* endpoint exists ONLY
-    // on the admin host. On the customer host these route patterns are not
-    // matched at all, so the request falls through to the final 404: the
-    // routes aren't just forbidden there, they're undiscoverable. On the
-    // admin host they additionally require an admin account (403 otherwise).
+    // Every /admin* page, /admin.js, /api/admin/*, and /api/dashboard*
+    // endpoint exists ONLY on the admin host. On the customer host these
+    // route patterns are not matched at all, so the request falls through
+    // to the final 404: the routes aren't just forbidden there, they're
+    // undiscoverable. On the admin host they additionally require an admin
+    // account (403 otherwise). The Phase 1 research dashboard (/api/dashboard*)
+    // is admin-only private research, not a customer-facing surface.
     const isAdminRoute = /^\/admin(\/(slate|users|email))?$/.test(url.pathname)
       || url.pathname === '/admin.js'
-      || url.pathname.startsWith('/api/admin/');
+      || url.pathname.startsWith('/api/admin/')
+      || url.pathname.startsWith('/api/dashboard');
 
     if (isAdminRoute && !onAdminHost) {
       // Customer host: pretend the admin surface does not exist.
@@ -702,6 +707,53 @@ const server = http.createServer(async (req, res) => {
       if (!(await requireAdmin(req, res))) return;
       res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(fs.readFileSync(path.join(__dirname, 'web', 'admin.js')));
+      return;
+    }
+
+    // --- Phase 1 research dashboard (admin-only, private) -------------------
+    // Data endpoint: the full slate + all three signal tabs for one date.
+    // Same auth as every other admin surface (requireAdmin), served from
+    // the existing /admin shell's "Research" tab, not a separate page.
+    if (onAdminHost && url.pathname === '/api/dashboard' && req.method === 'GET') {
+      if (!(await requireAdmin(req, res))) return;
+      const date = url.searchParams.get('date') || todayIsoDate();
+      if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      try {
+        const data = await buildDashboardData(pool, date);
+        sendJson(res, 200, data);
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+      return;
+    }
+
+    // Live monitor: Server-Sent Events, one snapshot line every 60s while
+    // the connection is open. SSE over WebSocket per the spec -- simpler,
+    // one-way is all this needs, and it works through Railway's proxy with
+    // no special configuration.
+    if (onAdminHost && url.pathname === '/api/dashboard/live' && req.method === 'GET') {
+      if (!(await requireAdmin(req, res))) return;
+      const date = url.searchParams.get('date') || todayIsoDate();
+      if (!ISO_DATE_RE.test(date)) return sendJson(res, 400, { error: 'bad date' });
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      let closed = false;
+      req.on('close', () => { closed = true; clearInterval(timer); });
+      const tick = async () => {
+        if (closed) return;
+        try {
+          const snapshot = await liveMonitorSnapshot(pool, date);
+          res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+        } catch (err) {
+          // Don't kill the stream over one bad tick, just skip it.
+          console.warn(`  Live monitor tick failed: ${err.message}`);
+        }
+      };
+      await tick();
+      const timer = setInterval(tick, 60000);
       return;
     }
 

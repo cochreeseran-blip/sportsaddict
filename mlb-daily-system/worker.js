@@ -11,8 +11,14 @@ import { sendDailyNewsletter } from './lib/newsletter.js';
 import { fetchMoneylines, normalizeTeam } from './lib/sources/odds.js';
 import { getOddsProvider, oddsApiKey } from './lib/sources/oddsProvider.js';
 import { breakevenPct } from './lib/breakeven.js';
-import { pacificDateIso, isGenerationHour, msUntilNextTopOfHour, GENERATION_HOUR_PT } from './lib/schedule.js';
+import {
+  pacificDateIso, isGenerationHour, msUntilNextTopOfHour, GENERATION_HOUR_PT,
+  easternHour, GAME_LOG_PULL_HOUR_ET, SAVANT_PULL_HOURS_ET,
+} from './lib/schedule.js';
 import { markRefreshStarted, markRefreshFinished, claimRefreshRequest } from './lib/systemStatus.js';
+import { pullTodaysRosterHistory } from './lib/data/game-logs-pull.js';
+import { runSavantSnapshotPull } from './lib/data/savant-pull.js';
+import { recalcTeamBattingAggregates, recalcBatterVsTeamHistory } from './lib/data/team-aggregates.js';
 
 // The always-on engine. This is the headless "brain": it runs the
 // research pipeline continuously (MLB Stats API is free and unmetered),
@@ -106,6 +112,49 @@ async function maybePullClosingLines() {
   }
 }
 
+// Daily historical-data maintenance, per the Phase 1 spec's pull schedule:
+// game logs once at 6am ET (backfilling yesterday's completed games into
+// pitcher_game_logs / batter_game_logs for today's rostered players), and
+// the two derived aggregate tables recalculated right after. Both MLB-Stats-
+// only, neither touches the metered odds budget. Latched per calendar day
+// so a slow tick that straddles the hour boundary can't double-run it.
+let gameLogPulledFor = null;
+async function maybeRunDailyGameLogPull() {
+  const date = engineGameDate();
+  if (easternHour() !== GAME_LOG_PULL_HOUR_ET || gameLogPulledFor === date) return;
+  gameLogPulledFor = date;
+  console.log('Engine: daily game-log pull (6am ET)...');
+  try {
+    const { pitchersDone, battersDone } = await pullTodaysRosterHistory(pool, date);
+    const season = Number(date.slice(0, 4));
+    const teamAgg = await recalcTeamBattingAggregates(pool, season, date);
+    const vsTeam = await recalcBatterVsTeamHistory(pool, date);
+    console.log(`Engine: game-log pull done - ${pitchersDone} pitchers, ${battersDone} batters, ${teamAgg.written} team aggregates, ${vsTeam.written} vs-team rows.`);
+  } catch (err) {
+    console.warn(`Engine: daily game-log pull failed: ${err.message}`);
+  }
+}
+
+// Savant leaderboard snapshot, twice a day per the spec (7am + 2pm ET).
+// Latched per (date, hour) pair so it fires once per scheduled hour, not
+// once total for the day.
+let savantPulledFor = null;
+async function maybeRunSavantSnapshot() {
+  const date = engineGameDate();
+  const hour = easternHour();
+  const key = `${date}:${hour}`;
+  if (!SAVANT_PULL_HOURS_ET.includes(hour) || savantPulledFor === key) return;
+  savantPulledFor = key;
+  console.log(`Engine: Savant leaderboard snapshot (${hour}:00 ET)...`);
+  try {
+    const season = Number(date.slice(0, 4));
+    const result = await runSavantSnapshotPull(pool, season, date);
+    console.log(`Engine: Savant snapshot - ${result.pitchers.written} pitchers, ${result.batters.written} batters.`);
+  } catch (err) {
+    console.warn(`Engine: Savant snapshot pull failed: ${err.message}`);
+  }
+}
+
 // Top-of-hour loop. Exactly one tick per hour; the 8 AM PT tick is the
 // generation run (odds + record + lock + newsletter), every other tick is
 // an MLB-only refresh (lineups, probable starters, filter recompute).
@@ -120,6 +169,8 @@ function scheduleHourlyTicks() {
       label: generation ? 'generation run (8 AM PT)' : 'hourly MLB-only refresh',
     });
     await maybePullClosingLines();
+    await maybeRunDailyGameLogPull();
+    await maybeRunSavantSnapshot();
     try {
       const { graded, checked } = await gradePendingBets(pool);
       if (checked) console.log(`Engine: bets auto-graded ${graded}/${checked}.`);

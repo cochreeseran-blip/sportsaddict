@@ -164,6 +164,26 @@ export async function fetchLinescore(gamePk) {
   };
 }
 
+// Live in-game stat line for whichever pitcher is CURRENTLY on the mound
+// for a side (from the boxscore, which carries a running stat line per
+// player while the game is in progress). Used by the dashboard's live
+// monitor to show K-prop progress in real time and to know exactly how
+// many Ks a departed starter had at the moment he was pulled.
+export async function fetchLivePitcherLine(gamePk, side, pitcherId) {
+  if (!pitcherId) return null;
+  const url = `${BASE}/game/${gamePk}/boxscore`;
+  const data = await fetchJson(url);
+  const p = data.teams?.[side]?.players?.[`ID${pitcherId}`];
+  const s = p?.stats?.pitching;
+  if (!s) return null;
+  return {
+    strikeouts: s.strikeOuts ?? null,
+    hits: s.hits ?? null,
+    earnedRuns: s.earnedRuns ?? null,
+    inningsPitched: s.inningsPitched ?? null,
+  };
+}
+
 // Game-by-game pitching log for the season, most recent start first.
 export async function fetchPitcherGameLog(pitcherId, season) {
   const url = `${BASE}/people/${pitcherId}/stats?stats=gameLog&group=pitching&season=${season}`;
@@ -232,13 +252,17 @@ export async function fetchConfirmedLineup(gamePk, side) {
   const team = data.teams?.[side];
   const order = team?.battingOrder || [];
   if (!order.length) return [];
-  return order.map((id) => {
+  // battingOrder is already in actual lineup sequence (index 0 = leadoff),
+  // so slot = index + 1 -- needed for the hit-prop lineup-position bonus
+  // (Phase 1 spec 2B: batting 1st-3rd/4th-5th/6th+).
+  return order.map((id, idx) => {
     const p = team.players?.[`ID${id}`];
     return {
       id,
       fullName: p?.person?.fullName || null,
       jerseyNumber: p?.jerseyNumber || null,
       position: p?.position?.abbreviation || null,
+      battingOrderSlot: idx + 1,
     };
   });
 }
@@ -279,3 +303,34 @@ export async function fetchActiveRoster(teamId) {
     hitters: roster.filter((p) => p.position?.abbreviation && p.position.abbreviation !== 'P').map(toPlayer),
   };
 }
+
+// Every MLB team for a season (30 clubs; historically stable but fetched
+// live rather than hardcoded in case of relocation/rebrand). Used by the
+// historical backfill to enumerate who to pull rosters for -- there is no
+// bulk "every game log ever" endpoint, so backfill has to go team by team,
+// season by season.
+export async function fetchAllTeams(season) {
+  const url = `${BASE}/teams?sportId=1&season=${season}`;
+  const data = await fetchJson(url);
+  return (data.teams || []).map((t) => ({ id: t.id, name: t.name, abbrev: t.abbreviation }));
+}
+
+// A team's FULL SEASON roster (everyone who appeared for the club that
+// year), not just who's active today -- rosterType=active only returns
+// the current 26-man, which is useless for a historical-season backfill
+// where "today" isn't the season being pulled.
+export async function fetchSeasonRoster(teamId, season) {
+  const url = `${BASE}/teams/${teamId}/roster?rosterType=fullSeason&season=${season}`;
+  const data = await fetchJson(url);
+  const roster = data.roster || [];
+  const toPlayer = (p) => ({
+    id: p.person.id,
+    fullName: p.person.fullName,
+    position: p.position?.abbreviation || null,
+  });
+  return {
+    pitchers: roster.filter((p) => p.position?.abbreviation === 'P').map(toPlayer),
+    hitters: roster.filter((p) => p.position?.abbreviation && p.position.abbreviation !== 'P').map(toPlayer),
+  };
+}
+

@@ -124,6 +124,23 @@ export async function trailingHitsPer9(pool, pitcherId, n = 5) {
   return Math.round((hits / ip) * 9 * 100) / 100;
 }
 
+// Trailing home runs allowed per 9 innings, same stored-history approach
+// as trailingHitsPer9 above. This is the matchup input for the HR board:
+// "does this arm actually give up home runs", measured directly instead of
+// inferred from ERA.
+export async function trailingHrPer9(pool, pitcherId, n = 5) {
+  const { rows } = await pool.query(
+    `SELECT innings_pitched, home_runs_allowed FROM pitcher_game_logs
+      WHERE player_id = $1 ORDER BY game_date DESC LIMIT $2`,
+    [pitcherId, n]
+  );
+  if (!rows.length) return null;
+  const ip = rows.reduce((sum, r) => sum + (Number(r.innings_pitched) || 0), 0);
+  const hr = rows.reduce((sum, r) => sum + (Number(r.home_runs_allowed) || 0), 0);
+  if (ip <= 0) return null;
+  return Math.round((hr / ip) * 9 * 100) / 100;
+}
+
 // Daily maintenance: re-pull the CURRENT season's log for everyone on
 // today's two rosters (via the games table), so games since the last pull
 // land in history. Cheap and idempotent -- ON CONFLICT upserts, so running

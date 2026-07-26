@@ -42,10 +42,94 @@ export function moneylineCandidates(moneyline) {
   }));
 }
 
+// Shared shape for both hit tiers. `tier` decides the signal type, the
+// headline, and which probability is the pick's own score -- everything
+// else about a 1+ and a 2+ candidate is identical, and they come from the
+// same projection, so they must not drift apart in two copies of this.
+function hitCandidate(b, tier) {
+  const isMulti = tier === 'multi';
+  const prob = isMulti ? b.pAtLeastTwo : b.pAtLeastOne;
+  const pct = prob !== null && prob !== undefined ? `${(prob * 100).toFixed(0)}%` : '-';
+  const abNote = b.expectedAtBats ? ` in a projected ${fmtNum(b.expectedAtBats, 1)} at-bats` : '';
+  const slotNote = Number.isInteger(b.battingOrderSlot)
+    ? `batting ${b.battingOrderSlot}`
+    : 'lineup slot not posted yet';
+  const historyNote = b.multiHitRate !== null && b.multiHitRate !== undefined
+    ? ` He has a multi-hit game in ${(b.multiHitRate * 100).toFixed(0)}% of his last ${b.trailing15Games ?? 15}.`
+    : '';
+
+  return {
+    type: isMulti ? 'multi_hit' : 'hit_streak',
+    key: `${isMulti ? 'multihit' : 'hit'}:${b.batterName}:${b.team}`,
+    // Score is the tier's own probability scaled to 0-100, so the pooled
+    // top-6 ranks a 78% single-hit play against a 41% multi-hit play on
+    // comparable footing with the other signals' 0-100 grade scores.
+    score: prob !== null && prob !== undefined ? Math.round(prob * 100) : 0,
+    grade: b.grade ?? null,
+    gradeReasons: b.gradeReasons ?? [],
+    mlbGameId: b.mlbGameId ?? null,
+    batterId: b.batterId ?? null,
+    batterName: b.batterName,
+    team: b.team,
+    position: b.position ?? null,
+    jerseyNumber: b.jerseyNumber ?? null,
+    battingOrderSlot: b.battingOrderSlot ?? null,
+    lineupConfirmed: b.lineupConfirmed,
+    last5Results: b.last5Results,
+    trailing15Avg: b.trailing15Avg ?? null,
+    // Always carried alongside the average, a .345 on 58 at-bats and a
+    // .345 on 12 at-bats are not the same claim, see lib/filters/hitStreak.js.
+    trailing15Ab: b.trailing15Ab ?? 0,
+    xba: b.xba ?? null,
+    xbaLuckFlag: b.xbaLuckFlag ?? null,
+    // The projection, carried in full so a published pick's card can be
+    // rebuilt from the ledger alone years later.
+    expectedHits: b.expectedHits ?? null,
+    expectedAtBats: b.expectedAtBats ?? null,
+    hitProbPerAb: b.hitProbPerAb ?? null,
+    pAtLeastOne: b.pAtLeastOne ?? null,
+    pAtLeastTwo: b.pAtLeastTwo ?? null,
+    projectionBasis: b.projectionBasis ?? null,
+    multiHitRate: b.multiHitRate ?? null,
+    trailing15Games: b.trailing15Games ?? null,
+    opposingStarterName: b.opposingStarterName ?? null,
+    opposingStarterTrailingEra: b.opposingStarterTrailingEra ?? null,
+    opposingHitsPer9: b.opposingHitsPer9 ?? null,
+    headline: isMulti
+      ? `${b.batterName} (${b.team}) to get 2+ hits`
+      : `${b.batterName} (${b.team}) to get a hit`,
+    detail:
+      `Projected ${fmtNum(b.expectedHits, 2)} hits${abNote}, ${pct} to reach ${isMulti ? '2+' : '1+'}. ` +
+      `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 (${b.trailing15Ab ?? 0} AB)` +
+      `${b.xba !== null && b.xba !== undefined ? `, xBA ${fmtNum(b.xba, 3)}` : ''}, ${slotNote}, ` +
+      `facing ${b.opposingStarterName ?? 'today\'s starter'}` +
+      `${b.opposingHitsPer9 !== null && b.opposingHitsPer9 !== undefined ? ` (${fmtNum(b.opposingHitsPer9, 1)} H/9)` : ''}.` +
+      `${isMulti ? historyNote : ''}${lineupWarning(b.lineupConfirmed)}`,
+  };
+}
+
+// The 1+ hit tier. Kept as signal_type 'hit_streak' so the existing ledger
+// history, grading path, and public record stay continuous -- the pick
+// being asked for is unchanged ("gets a hit"), only how it's selected and
+// ranked has changed.
 export function hitPropCandidates(hitStreak) {
-  return (hitStreak?.watchList || []).map((b) => ({
-    type: 'hit_streak',
-    key: `hit:${b.batterName}:${b.team}`,
+  const source = hitStreak?.singleHit?.length ? hitStreak.singleHit : (hitStreak?.watchList || []);
+  return source.map((b) => hitCandidate(b, 'single'));
+}
+
+// The 2+ hit tier, a new signal type with its own grading rule (see
+// gradeOnePick in lib/trackedPicks.js) and its own line on the record.
+export function multiHitCandidates(hitStreak) {
+  return (hitStreak?.multiHit || []).map((b) => hitCandidate(b, 'multi'));
+}
+
+// Home run props. Ranked on the Statcast-based score (see scoreHomeRunProp
+// in lib/grading.js), which is what makes this board worth surfacing at
+// all now -- the old trailing-HR-rate version never was.
+export function homeRunCandidates(windHr) {
+  return (windHr?.watchList || []).map((b) => ({
+    type: 'home_run',
+    key: `hr:${b.batterName}:${b.team}`,
     score: b.gradeScore ?? 0,
     grade: b.grade ?? null,
     gradeReasons: b.gradeReasons ?? [],
@@ -55,16 +139,28 @@ export function hitPropCandidates(hitStreak) {
     team: b.team,
     position: b.position ?? null,
     jerseyNumber: b.jerseyNumber ?? null,
+    battingOrderSlot: b.battingOrderSlot ?? null,
     lineupConfirmed: b.lineupConfirmed,
     last5Results: b.last5Results,
-    trailing15Avg: b.trailing15Avg ?? null,
-    // Always carried alongside the average, a .345 on 58 at-bats and a
-    // .345 on 12 at-bats are not the same claim, see lib/filters/hitStreak.js.
-    trailing15Ab: b.trailing15Ab ?? 0,
+    barrelPct: b.barrelPct ?? null,
+    avgExitVelo: b.avgExitVelo ?? null,
+    hardHitPct: b.hardHitPct ?? null,
+    xslg: b.xslg ?? null,
+    trailing15HrRate: b.trailing15HrRate ?? null,
+    trailing15Games: b.trailing15Games ?? null,
+    venue: b.venue ?? null,
+    windBlowingOut: b.windBlowingOut ?? false,
+    windSpeedMph: b.windSpeedMph ?? null,
     opposingStarterName: b.opposingStarterName ?? null,
-    opposingStarterTrailingEra: b.opposingStarterTrailingEra ?? null,
-    headline: `${b.batterName} (${b.team}) to get a hit`,
-    detail: `${b.hitStreak >= 5 ? `On a ${b.hitStreak}-game hit streak` : `Batting ${fmtNum(b.trailing15Avg, 3)} over his last 15 games (${b.trailing15Ab ?? 0} AB)`}, facing ${b.opposingStarterName ?? 'a struggling pitcher'} (${fmtNum(b.opposingStarterTrailingEra)} ERA).${lineupWarning(b.lineupConfirmed)}`,
+    opposingHrPer9: b.opposingHrPer9 ?? null,
+    opposingBarrelPct: b.opposingBarrelPct ?? null,
+    headline: `${b.batterName} (${b.team}) to hit a home run`,
+    detail:
+      `${b.barrelPct !== null && b.barrelPct !== undefined ? `${fmtNum(b.barrelPct, 1)}% barrel rate` : 'Recent power form'}` +
+      `${b.avgExitVelo !== null && b.avgExitVelo !== undefined ? `, ${fmtNum(b.avgExitVelo, 1)} mph average exit velocity` : ''}, ` +
+      `facing ${b.opposingStarterName ?? 'today\'s starter'}` +
+      `${b.opposingHrPer9 !== null && b.opposingHrPer9 !== undefined ? ` (${fmtNum(b.opposingHrPer9, 2)} HR/9 allowed)` : ''}` +
+      `${b.windBlowingOut ? `, wind blowing out at ${b.venue}` : ''}.${lineupWarning(b.lineupConfirmed)}`,
   }));
 }
 

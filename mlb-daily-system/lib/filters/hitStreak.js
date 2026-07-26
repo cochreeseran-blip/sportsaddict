@@ -2,6 +2,7 @@ import { scoreHitProp } from '../grading.js';
 import { postedLineupTeams, benchedOut } from '../lineupStatus.js';
 import { trailingHitsPer9 } from '../data/game-logs-pull.js';
 import { teamAbbr } from '../util/teamAbbr.js';
+import { projectHits } from '../hitProjection.js';
 
 const HIT_STREAK_GATE = 5;
 const AVG_GATE = 0.30; // spec: trailing-15 avg qualification path raised to .300
@@ -21,6 +22,15 @@ const MIN_TRAILING_AB = 30;
 // enough that a genuine streaking regular is never wrongly dropped.
 const STREAK_EXEMPT_MIN_AB = 15;
 const MAX_WATCH = 15; // spec: "TOP 15 shown"
+
+// Tier cutoffs for the multi-hit board. A batter is only called a "2+ hit"
+// candidate when the projection puts him meaningfully above the field: the
+// typical regular's P(2+) sits near 25%, so 32% is genuinely the upper
+// slice rather than a relabelling of everyone. The 1+ tier's floor is the
+// same idea from the other end: below ~70% a "gets a hit" play isn't safe
+// enough to be worth calling out at all.
+const MULTI_HIT_TIER_MIN = 0.32;
+const SINGLE_HIT_TIER_MIN = 0.70;
 
 // Hot recent form (streak, trailing average, OR Savant xBA) against a
 // beatable arm, scored per lib/grading.js scoreHitProp -- contact-quality
@@ -157,6 +167,17 @@ export async function runHitStreakFilter(pool, gameDate) {
     });
     if (!graded.surfaced) continue; // below MIN_SURFACE_SCORE, per spec not shown at all
 
+    // The projection is what the board is actually built on now: the same
+    // model produces both tiers, so the 2+ list can never disagree with
+    // the 1+ list. The letter grade rides along as the quality read on the
+    // matchup, but ordering within a tier is by that tier's probability.
+    const projection = projectHits({
+      trailing15Avg,
+      xba: savant.xba ?? null,
+      opposingHitsPer9,
+      battingOrderSlot: b.batting_order_slot ?? null,
+    });
+
     scored.push({
       mlbGameId: gameIdByTeam.get(b.team) ?? null,
       batterId: b.batter_id,
@@ -180,9 +201,47 @@ export async function runHitStreakFilter(pool, gameDate) {
       grade: graded.grade,
       gradeScore: graded.score,
       gradeReasons: graded.reasons,
+      // Projection fields, flattened so every consumer (ledger, dashboard,
+      // email) reads the same keys without digging into a nested object.
+      expectedHits: projection.expectedHits,
+      expectedAtBats: projection.expectedAtBats,
+      hitProbPerAb: projection.hitProbPerAb,
+      pAtLeastOne: projection.pAtLeastOne,
+      pAtLeastTwo: projection.pAtLeastTwo,
+      projectionBasis: projection.basis,
+      projectionComponents: projection.components,
+      // Empirical counterpart to pAtLeastTwo: how often he actually had a
+      // multi-hit game recently, so the projection can be sanity-checked.
+      multiHitRate: b.trailing_15_multi_hit_rate !== null && b.trailing_15_multi_hit_rate !== undefined
+        ? Number(b.trailing_15_multi_hit_rate)
+        : null,
+      trailing15Games: b.trailing_15_games ?? null,
     });
   }
 
+  // Two boards off one model. multiHit is ordered by P(2+) because that's
+  // the question being asked; singleHit by P(1+) for the same reason. A
+  // batter can legitimately appear on both: a leadoff masher is both the
+  // best 2+ candidate and one of the safest 1+ plays, and hiding him from
+  // one list to avoid the overlap would be hiding a true answer.
+  const multiHit = scored
+    .filter((b) => b.pAtLeastTwo >= MULTI_HIT_TIER_MIN)
+    .sort((a, b) => b.pAtLeastTwo - a.pAtLeastTwo || b.gradeScore - a.gradeScore)
+    .slice(0, MAX_WATCH);
+
+  const singleHit = scored
+    .filter((b) => b.pAtLeastOne >= SINGLE_HIT_TIER_MIN)
+    .sort((a, b) => b.pAtLeastOne - a.pAtLeastOne || b.gradeScore - a.gradeScore)
+    .slice(0, MAX_WATCH);
+
   scored.sort((a, b) => b.gradeScore - a.gradeScore);
-  return { watchList: scored.slice(0, MAX_WATCH) };
+
+  return {
+    // watchList stays the grade-ranked list so existing consumers (the
+    // ledger recorder, the email digest) keep working unchanged.
+    watchList: scored.slice(0, MAX_WATCH),
+    multiHit,
+    singleHit,
+    tierCutoffs: { multiHit: MULTI_HIT_TIER_MIN, singleHit: SINGLE_HIT_TIER_MIN },
+  };
 }

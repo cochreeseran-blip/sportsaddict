@@ -11,7 +11,7 @@ import { runHitStreakFilter } from './filters/hitStreak.js';
 import { runWindHrFilter } from './filters/windHr.js';
 import { runStrikeoutFilter } from './filters/strikeouts.js';
 import { saveDigest } from './digest.js';
-import { buildTopPicks, moneylineCandidates, hitPropCandidates, koCandidates } from './topPicks.js';
+import { buildTopPicks, moneylineCandidates, hitPropCandidates, koCandidates, multiHitCandidates, homeRunCandidates } from './topPicks.js';
 import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
@@ -440,8 +440,9 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
   }
   log(`Weather: ${windOk}/${venues.size} venue(s) updated (${windSkippedUnverified} skipped, unverified park orientation).`);
 
-  // Filters + digest. Three buckets feed everything: all qualifying home
-  // moneyline calls, the top 15 hit picks, and the top 10 K/O picks.
+  // Filters + digest. Four boards feed everything now: qualifying home
+  // moneyline calls, the two hit tiers (1+ and 2+, from one projection),
+  // home runs, and strikeouts.
   const moneyline = await runMoneylineFilter(pool, gameDate);
   const hitStreak = await runHitStreakFilter(pool, gameDate);
   const windHr = await runWindHrFilter(pool, gameDate);
@@ -453,6 +454,8 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
   // top 6 can see everyone). Slice here so the digest, email, Research,
   // and Daily Slate all agree on the same 15.
   hitStreak.watchList = (hitStreak.watchList || []).slice(0, 15);
+  log(`Hit board: ${hitStreak.singleHit?.length ?? 0} at 1+ tier, ${hitStreak.multiHit?.length ?? 0} at 2+ tier.`);
+  log(`Home run board: ${windHr.watchList?.length ?? 0} qualifying batter(s).`);
 
   // The moneyline board locks for the day once the generation run has
   // happened (see migrations/013_moneyline_lock.sql): after that, no new
@@ -483,8 +486,9 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
 
   await saveDigest(pool, gameDate, 'moneyline', moneyline);
   await saveDigest(pool, gameDate, 'hit_streak', hitStreak);
-  // Wind/HR still computed (park/weather infra stays warm) but no longer
-  // surfaced, the third bucket is K/O now, not home runs.
+  // The home run board is live now (Statcast-scored, see filters/windHr.js
+  // and scoreHomeRunProp). Digest key stays 'wind_hr' so historical digests
+  // remain readable under the same key.
   await saveDigest(pool, gameDate, 'wind_hr', windHr);
   await saveDigest(pool, gameDate, 'strikeouts', strikeouts);
   await saveDigest(pool, gameDate, 'top_picks', { picks: topPicks });
@@ -507,6 +511,8 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
     const allCandidates = [
       ...liveMlCandidates,
       ...hitPropCandidates(hitStreak),
+      ...multiHitCandidates(hitStreak),
+      ...homeRunCandidates(windHr),
       ...koCandidates(strikeouts),
     ];
     const trackedCount = await recordTrackedPicks(pool, gameDate, allCandidates);

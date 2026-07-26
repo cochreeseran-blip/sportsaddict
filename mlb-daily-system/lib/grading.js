@@ -232,6 +232,113 @@ export function scoreHitProp({
   return { score, grade: letterGrade(score), reasons, surfaced: score >= MIN_SURFACE_SCORE, xbaLuckFlag };
 }
 
+// ---------------------------------------------------------------------------
+// 2C. Home run props.
+//
+// The old wind/HR filter ranked almost entirely on trailing HR rate plus a
+// wind bonus, which is the wrong shape for this market: over 15 games,
+// home runs are so rare that the rate is mostly noise (one extra homer
+// swings it by 7 points), and it says nothing about whether the contact
+// underneath was real. Statcast is exactly what fixes that -- barrel rate
+// and exit velocity are the most stable, most predictive HR inputs
+// available, and they stabilize far faster than the HR rate itself.
+//
+// DO NOT USE: opposing pitcher ERA (same reason as hit props -- it doesn't
+// measure the thing being asked). What matters from the arm is how often
+// he actually gives up home runs and how hard he's being hit.
+export function scoreHomeRunProp({
+  barrelPct,           // Savant, batter's own barrel rate -- the single best HR input
+  avgExitVelo,         // Savant, batter's average exit velocity
+  hardHitPct,          // Savant, batter's own hard-hit rate
+  xslg,                // Savant, expected slugging (power output the contact deserves)
+  trailing15HrRate,    // HR per game over the trailing window (empirical, noisy on its own)
+  opposingHrPer9,      // how often today's starter actually allows home runs
+  opposingBarrelPct,   // Savant, barrel rate the opposing arm allows
+  windBlowingOut,      // verified park orientation only (see lib/geo.js)
+  windSpeedMph,
+  battingOrderSlot,
+}) {
+  const reasons = [];
+  let score = 0;
+
+  // Primary: the batter's own contact quality. Barrel rate carries the
+  // most weight because a barrel is, by Statcast's definition, the exact
+  // batted-ball profile that becomes a home run.
+  const barrelPts = bucket(barrelPct, [[14, 40], [11, 30], [8, 20], [6, 10]]);
+  score += barrelPts;
+  if (barrelPct !== null && barrelPct !== undefined) reasons.push(`${fmtNum(barrelPct, 1)}% barrel rate (+${barrelPts})`);
+
+  const eloPts = bucket(avgExitVelo, [[93, 20], [91, 12], [89, 5]]);
+  score += eloPts;
+  if (avgExitVelo !== null && avgExitVelo !== undefined) reasons.push(`${fmtNum(avgExitVelo, 1)} mph average exit velocity (+${eloPts})`);
+
+  const xslgPts = bucket(xslg, [[0.500, 15], [0.450, 10], [0.400, 5]]);
+  score += xslgPts;
+  if (xslg !== null && xslg !== undefined) reasons.push(`${fmtNum(xslg, 3)} expected slugging (+${xslgPts})`);
+
+  const hardHitPts = bucket(hardHitPct, [[45, 10], [38, 5]]);
+  score += hardHitPts;
+  if (hardHitPct !== null && hardHitPct !== undefined) reasons.push(`${fmtNum(hardHitPct, 0)}% hard-hit rate (+${hardHitPts})`);
+
+  // The matchup: an arm that gives up home runs, measured directly.
+  let oppPts;
+  if (opposingHrPer9 === null || opposingHrPer9 === undefined) oppPts = 0;
+  else if (opposingHrPer9 >= 1.8) oppPts = 20;
+  else if (opposingHrPer9 >= 1.3) oppPts = 12;
+  else if (opposingHrPer9 >= 1.0) oppPts = 5;
+  else oppPts = -8; // an arm that genuinely suppresses homers is a real negative
+  score += oppPts;
+  if (opposingHrPer9 !== null && opposingHrPer9 !== undefined) {
+    reasons.push(`opposing arm allows ${fmtNum(opposingHrPer9, 2)} HR/9 (${oppPts >= 0 ? '+' : ''}${oppPts})`);
+  }
+
+  const oppBarrelPts = bucket(opposingBarrelPct, [[10, 10], [8, 5]]);
+  score += oppBarrelPts;
+  if (opposingBarrelPct !== null && opposingBarrelPct !== undefined && oppBarrelPts > 0) {
+    reasons.push(`opposing arm allows ${fmtNum(opposingBarrelPct, 1)}% barrels (+${oppBarrelPts})`);
+  }
+
+  // Secondary: recent HR production. Deliberately small -- it's the noisy
+  // input this rewrite exists to demote, kept only as corroboration that
+  // the contact quality above is currently turning into actual home runs.
+  const ratePts = bucket(trailing15HrRate, [[0.35, 10], [0.20, 6], [0.10, 3]]);
+  score += ratePts;
+  if (trailing15HrRate !== null && trailing15HrRate !== undefined && ratePts > 0) {
+    reasons.push(`${fmtNum(trailing15HrRate * 100, 0)}% of recent games with a homer (+${ratePts})`);
+  }
+
+  // Wind, only at a park whose orientation is verified (an unverified
+  // bearing can't tell "out" from "in", see runHomeRunFilter). A bonus,
+  // never a requirement: a masher facing a batting-practice arm indoors is
+  // still the better spot than a mediocre bat in a gale.
+  if (windBlowingOut) {
+    const windPts = windSpeedMph !== null && windSpeedMph !== undefined && windSpeedMph >= 12 ? 8 : 4;
+    score += windPts;
+    reasons.push(`wind blowing out${windSpeedMph ? ` at ${fmtNum(windSpeedMph, 0)} mph` : ''} (+${windPts})`);
+  }
+
+  // More trips to the plate is more chances to run into one.
+  if (Number.isInteger(battingOrderSlot)) {
+    const orderPts = battingOrderSlot <= 5 ? 5 : 0;
+    score += orderPts;
+    if (orderPts) reasons.push(`batting ${battingOrderSlot}${ordinalSuffix(battingOrderSlot)} (+${orderPts})`);
+  }
+
+  score = clampScore(score);
+
+  // Hard floor: a top grade on a home run pick has to be backed by
+  // Statcast, not by a hot week. Without barrel data on file there is no
+  // evidence the contact quality is real, so the pick cannot grade above
+  // B no matter how many homers he happened to hit lately.
+  const B_TOP = 69;
+  if ((barrelPct === null || barrelPct === undefined) && score > B_TOP) {
+    score = B_TOP;
+    reasons.push('capped at B: no Savant barrel data on file, so the contact quality behind the recent homers is unverified');
+  }
+
+  return { score, grade: letterGrade(score), reasons, surfaced: score >= MIN_SURFACE_SCORE };
+}
+
 function ordinalSuffix(n) {
   if (n % 10 === 1 && n % 100 !== 11) return 'st';
   if (n % 10 === 2 && n % 100 !== 12) return 'nd';

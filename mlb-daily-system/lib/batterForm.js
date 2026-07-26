@@ -21,6 +21,11 @@ export function computeBatterStats(splits, trailingGames = 15) {
   const abSum = last15.reduce((sum, s) => sum + Number(s.stat?.atBats ?? 0), 0);
   const hitsSum = last15.reduce((sum, s) => sum + Number(s.stat?.hits ?? 0), 0);
   const hrSum = last15.reduce((sum, s) => sum + Number(s.stat?.homeRuns ?? 0), 0);
+  // How often he ACTUALLY had a multi-hit game recently. The projection in
+  // lib/hitProjection.js says what should happen from rate inputs; this is
+  // the empirical counterpart shown beside it, so a projected P(2+) can be
+  // checked against the batter's own history instead of trusted blind.
+  const multiHitGames = last15.filter((s) => Number(s.stat?.hits ?? 0) >= 2).length;
 
   // Oldest-to-newest so it reads left-to-right as a normal form guide, most
   // recent game on the right.
@@ -38,6 +43,10 @@ export function computeBatterStats(splits, trailingGames = 15) {
     // MIN_TRAILING_AB gate in lib/filters/hitStreak.js.
     trailing15Ab: abSum,
     trailing15HrRate: last15.length > 0 ? round3(hrSum / last15.length) : null,
+    trailing15MultiHitRate: last15.length > 0 ? round3(multiHitGames / last15.length) : null,
+    // Denominator behind the per-GAME rates above (multi-hit, HR). Distinct
+    // from trailing15Ab, which is the denominator behind the average.
+    trailing15Games: last15.length,
     gamesConsidered: last15.length,
     last5Results,
   };
@@ -47,8 +56,9 @@ export async function upsertBatterForm(pool, record) {
   await pool.query(
     `INSERT INTO batter_form
        (game_date, batter_id, batter_name, team, hit_streak, trailing_15_avg, trailing_15_ab, trailing_15_hr_rate,
-        lineup_confirmed, last5_results, position, jersey_number, batting_order_slot, lineup_confirmed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+        lineup_confirmed, last5_results, position, jersey_number, batting_order_slot,
+        trailing_15_multi_hit_rate, trailing_15_games, lineup_confirmed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
              CASE WHEN $9 THEN now() ELSE NULL END)
      ON CONFLICT (game_date, batter_id) DO UPDATE SET
        batter_name = EXCLUDED.batter_name,
@@ -57,6 +67,8 @@ export async function upsertBatterForm(pool, record) {
        trailing_15_avg = EXCLUDED.trailing_15_avg,
        trailing_15_ab = EXCLUDED.trailing_15_ab,
        trailing_15_hr_rate = EXCLUDED.trailing_15_hr_rate,
+       trailing_15_multi_hit_rate = EXCLUDED.trailing_15_multi_hit_rate,
+       trailing_15_games = EXCLUDED.trailing_15_games,
        lineup_confirmed = EXCLUDED.lineup_confirmed,
        last5_results = EXCLUDED.last5_results,
        position = COALESCE(EXCLUDED.position, batter_form.position),
@@ -84,6 +96,8 @@ export async function upsertBatterForm(pool, record) {
       record.position ?? null,
       record.jerseyNumber ?? null,
       record.battingOrderSlot ?? null,
+      record.trailing15MultiHitRate ?? null,
+      record.trailing15Games ?? null,
     ]
   );
 }

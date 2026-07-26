@@ -18,6 +18,7 @@ import { verifyUnsubscribeToken, makeUnsubscribeToken } from './lib/emailTokens.
 import { readSystemStatus, requestRefresh } from './lib/systemStatus.js';
 import { buildDashboardData } from './lib/dashboard/api.js';
 import { liveMonitorSnapshot } from './lib/dashboard/live.js';
+import { buildPerformanceBreakdown } from './lib/performance.js';
 
 // This is the WEB app only: it serves slatefinder.lol (admin/finder) and
 // slateaddict.com (customer), and the JSON API. It does NOT run the
@@ -415,6 +416,33 @@ function shapeLedgerPick(p) {
     awayStarterTrailingEra: m.awayStarterTrailingEra ?? null,
     awayStarterTrailingStarts: m.awayStarterTrailingStarts ?? null,
     awayStarterSeasonEra: m.awayStarterSeasonEra ?? null,
+    // Grade + reasons: what the pick was scored, and why, frozen at pick
+    // time so a card rebuilt from the ledger years later says exactly what
+    // it said the morning it was made.
+    grade: m.grade ?? null,
+    gradeScore: m.score ?? null,
+    gradeReasons: m.gradeReasons ?? [],
+    // Hit projection (both tiers, see lib/hitProjection.js).
+    expectedHits: m.expectedHits ?? null,
+    expectedAtBats: m.expectedAtBats ?? null,
+    pAtLeastOne: m.pAtLeastOne ?? null,
+    pAtLeastTwo: m.pAtLeastTwo ?? null,
+    multiHitRate: m.multiHitRate ?? null,
+    battingOrderSlot: m.battingOrderSlot ?? null,
+    xba: m.xba ?? null,
+    xbaLuckFlag: m.xbaLuckFlag ?? null,
+    opposingStarterName: m.opposingStarterName ?? null,
+    opposingHitsPer9: m.opposingHitsPer9 ?? null,
+    // Home run inputs.
+    barrelPct: m.barrelPct ?? null,
+    avgExitVelo: m.avgExitVelo ?? null,
+    hardHitPct: m.hardHitPct ?? null,
+    xslg: m.xslg ?? null,
+    trailing15HrRate: m.trailing15HrRate ?? null,
+    opposingHrPer9: m.opposingHrPer9 ?? null,
+    windBlowingOut: m.windBlowingOut ?? null,
+    windSpeedMph: m.windSpeedMph ?? null,
+    venue: m.venue ?? null,
     result: p.result,
     published: p.published,
     publishedAt: p.published_at,
@@ -576,7 +604,9 @@ async function buildAdminSlate(date) {
 
     const warnings = [];
     let lineupConfirmed = null;
-    if (p.signalType === 'hit_streak') {
+    // Every batter signal shares the same lineup risk: a pick on someone
+    // who turns out not to be starting is dead, whichever prop it is.
+    if (p.signalType === 'hit_streak' || p.signalType === 'multi_hit' || p.signalType === 'home_run') {
       const team = m.team;
       lineupConfirmed = lineupByTeam[team]?.confirmed === true;
       if (!lineupConfirmed) {
@@ -618,10 +648,16 @@ async function buildAdminSlate(date) {
     };
   });
 
-  const bySignal = { moneyline: [], hit_streak: [], strikeout: [], other: [] };
+  const bySignal = { moneyline: [], strikeout: [], multi_hit: [], hit_streak: [], home_run: [], other: [] };
   for (const p of picks) {
     (bySignal[p.signalType] || bySignal.other).push(p);
   }
+  // Within each prop board, best first by the metric that board is
+  // actually ranked on, matching what the filters produced.
+  bySignal.multi_hit.sort((a, b) => (b.pAtLeastTwo ?? 0) - (a.pAtLeastTwo ?? 0));
+  bySignal.hit_streak.sort((a, b) => (b.pAtLeastOne ?? 0) - (a.pAtLeastOne ?? 0));
+  bySignal.home_run.sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0));
+  bySignal.strikeout.sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0));
   // Worst away arm first - the top row is the free-slate pick.
   bySignal.moneyline.sort((a, b) => (b.awayStarterTrailingEra ?? 0) - (a.awayStarterTrailingEra ?? 0));
 
@@ -947,6 +983,19 @@ const server = http.createServer(async (req, res) => {
     // The dual public record: the trust surface, open to everyone.
     if (url.pathname === '/api/record' && req.method === 'GET') {
       sendJson(res, 200, await buildRecord());
+      return;
+    }
+
+    // Per-signal and per-grade breakdown off the same immutable ledger.
+    // Public on purpose: this is the evidence behind every claim the
+    // product makes, and a track record nobody can audit is worthless.
+    // Both scopes ship (algorithm = everything generated, published = what
+    // was actually called), so the honest and the flattering number are
+    // always side by side.
+    if (url.pathname === '/api/performance/breakdown' && req.method === 'GET') {
+      const sinceParam = url.searchParams.get('sinceDays');
+      const sinceDays = sinceParam !== null && /^\d{1,4}$/.test(sinceParam) ? Number(sinceParam) : null;
+      sendJson(res, 200, await buildPerformanceBreakdown(pool, { sinceDays }));
       return;
     }
 

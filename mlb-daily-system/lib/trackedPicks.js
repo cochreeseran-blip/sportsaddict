@@ -80,7 +80,15 @@ async function gradeOnePick(pick) {
     return result.homeScore > result.awayScore ? 'win' : 'loss';
   }
 
-  if (pick.signal_type === 'hit_streak' || pick.signal_type === 'wind_hr') {
+  // All four batter signals grade off the same game log; only the
+  // threshold differs. 'wind_hr' is the retired name for the HR signal,
+  // still graded so historical rows finish out.
+  if (
+    pick.signal_type === 'hit_streak' ||
+    pick.signal_type === 'multi_hit' ||
+    pick.signal_type === 'home_run' ||
+    pick.signal_type === 'wind_hr'
+  ) {
     const batterId = pick.qualifying_metrics?.batterId;
     if (!batterId) return null; // picks recorded before batterId was tracked
     // pg returns DATE columns as JS Date objects, so String(game_date) is
@@ -95,7 +103,9 @@ async function gradeOnePick(pick) {
     // loss for "gets a hit" / "goes deep" purposes, not still-pending.
     const hits = Number(split?.stat?.hits ?? 0);
     const homeRuns = Number(split?.stat?.homeRuns ?? 0);
-    return pick.signal_type === 'hit_streak' ? (hits >= 1 ? 'win' : 'loss') : (homeRuns >= 1 ? 'win' : 'loss');
+    if (pick.signal_type === 'hit_streak') return hits >= 1 ? 'win' : 'loss';
+    if (pick.signal_type === 'multi_hit') return hits >= 2 ? 'win' : 'loss';
+    return homeRuns >= 1 ? 'win' : 'loss'; // home_run and legacy wind_hr
   }
 
   if (pick.signal_type === 'strikeout') {

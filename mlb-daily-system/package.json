@@ -21,7 +21,9 @@
     "newsletter": "node scripts/newsletter.js",
     "reconcile-ml": "node scripts/reconcile-moneyline-picks.js",
     "make-admin": "node scripts/make-admin.js",
-    "test": "node scripts/test-admin.js"
+    "test": "node scripts/test-admin.js && node scripts/test-signals.js",
+    "test:admin": "node scripts/test-admin.js",
+    "test:signals": "node scripts/test-signals.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

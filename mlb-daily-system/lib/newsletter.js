@@ -103,22 +103,47 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl, pos
         .map((p) =>
           pickBlock({
             headline: `${p.homeTeam}${fmtOdds(p.homeMl) ? ` (${fmtOdds(p.homeMl)})` : ''} over ${p.awayTeam}`,
-            detail: `${p.awayStarterName ?? 'The away starter'} is at ${(p.awayStarterTrailingEra ?? 0).toFixed?.(2) ?? '-'} trailing ERA over his last ${p.awayStarterTrailingStarts ?? 0} start(s) (season ${(p.awayStarterSeasonEra ?? 0).toFixed?.(2) ?? '-'}).`,
+            detail: `${p.awayStarterName ?? 'The away starter'} is at ${(p.awayStarterTrailingEra ?? 0).toFixed?.(2) ?? '-'} trailing ERA over ${p.awayStarterTrailingStarts > 0 ? `his last ${p.awayStarterTrailingStarts} start${p.awayStarterTrailingStarts === 1 ? '' : 's'}` : 'his recent starts'} (season ${(p.awayStarterSeasonEra ?? 0).toFixed?.(2) ?? '-'}).`,
           })
         )
         .join('')
     : empty('No qualifying games.');
 
-  const hits = digest.hitStreak?.watchList?.length
-    ? digest.hitStreak.watchList
+  // Hit boards: the same projection produces both, so each block leads
+  // with its own tier's probability. Falls back to the grade-ranked
+  // watchList for digests written before the tiers existed, so an old
+  // date's email still renders instead of coming back empty.
+  const hitBlock = (list, tier) =>
+    list
+      .map((b, i) => {
+        const prob = tier === 'multi' ? b.pAtLeastTwo : b.pAtLeastOne;
+        const pct = prob !== null && prob !== undefined ? `${Math.round(prob * 100)}% ` : '';
+        const slot = Number.isInteger(b.battingOrderSlot) ? `batting ${b.battingOrderSlot}` : 'slot not posted';
+        return pickBlock({
+          headline: `${i + 1}. ${b.batterName} (${b.team}) to get ${tier === 'multi' ? '2+ hits' : 'a hit'}`,
+          detail: `${pct}projected${b.expectedHits ? `, ${b.expectedHits.toFixed(2)} expected hits` : ''}. Batting ${b.trailing15Avg?.toFixed(3) ?? '-'} L15 (${b.trailing15Ab ?? 0} AB), ${slot}, vs ${b.opposingStarterName ?? 'TBD'}${b.opposingHitsPer9 ? ` (${b.opposingHitsPer9.toFixed(1)} H/9)` : ''}.`,
+        });
+      })
+      .join('');
+
+  const multiList = digest.hitStreak?.multiHit ?? [];
+  const singleList = digest.hitStreak?.singleHit?.length
+    ? digest.hitStreak.singleHit
+    : (digest.hitStreak?.watchList ?? []);
+
+  const multiHits = multiList.length ? hitBlock(multiList, 'multi') : empty('Nobody projects high enough for a multi-hit call today.');
+  const hits = singleList.length ? hitBlock(singleList, 'single') : empty('No qualifying hitters.');
+
+  const homers = digest.windHr?.watchList?.length
+    ? digest.windHr.watchList
         .map((b, i) =>
           pickBlock({
-            headline: `${i + 1}. ${b.batterName} (${b.team}) to get a hit`,
-            detail: `${b.hitStreak >= 5 ? `${b.hitStreak}-game hit streak` : `batting ${b.trailing15Avg?.toFixed(3) ?? '-'} L15 (${b.trailing15Ab ?? 0} AB)`}, vs ${b.opposingStarterName ?? 'TBD'} (${b.opposingStarterTrailingEra?.toFixed(2) ?? '-'} ERA).`,
+            headline: `${i + 1}. ${b.batterName} (${b.team}) to go deep`,
+            detail: `${b.barrelPct !== null && b.barrelPct !== undefined ? `${b.barrelPct.toFixed(1)}% barrel rate` : 'recent power form'}${b.avgExitVelo ? `, ${b.avgExitVelo.toFixed(1)} mph exit velo` : ''}, vs ${b.opposingStarterName ?? 'TBD'}${b.opposingHrPer9 !== null && b.opposingHrPer9 !== undefined ? ` (${b.opposingHrPer9.toFixed(2)} HR/9 allowed)` : ''}${b.windBlowingOut ? ', wind blowing out' : ''}.`,
           })
         )
         .join('')
-    : empty('No qualifying hitters.');
+    : empty('No qualifying power spots.');
 
   const kos = digest.strikeouts?.watchList?.length
     ? digest.strikeouts.watchList
@@ -154,10 +179,16 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl, pos
     <p style="${S.h2}">All moneyline picks</p>
     ${ml}
 
-    <p style="${S.h2}">Top 15 hit picks</p>
+    <p style="${S.h2}">2+ hit candidates</p>
+    ${multiHits}
+
+    <p style="${S.h2}">Safest 1+ hit plays</p>
     ${hits}
 
-    <p style="${S.h2}">Top 10 K/O picks</p>
+    <p style="${S.h2}">Home runs</p>
+    ${homers}
+
+    <p style="${S.h2}">Top K/O picks</p>
     ${kos}
 
     <p style="${S.muted}">Lineups usually post 1&ndash;3 hours before first pitch &mdash; check the site for confirmed lineups before betting a hitter.</p>
@@ -199,7 +230,8 @@ async function loadDigestForEmail(pool, gameDate) {
   return {
     topPicks: byType.top_picks?.picks || [],
     moneyline: byType.moneyline || { picks: [] },
-    hitStreak: byType.hit_streak || { watchList: [] },
+    hitStreak: byType.hit_streak || { watchList: [], multiHit: [], singleHit: [] },
+    windHr: byType.wind_hr || { watchList: [] },
     strikeouts: byType.strikeouts || { watchList: [] },
   };
 }

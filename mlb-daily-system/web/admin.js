@@ -36,7 +36,19 @@ async function apiSend(path, method, body) {
   return data;
 }
 
-const state = { view: 'slate', dashDate: todayIso(), signalTab: 'strikeouts', dashData: null, liveSource: null, autoTimer: null };
+const state = {
+  view: 'slate',
+  dashDate: todayIso(),
+  signalTab: 'strikeouts',
+  dashData: null,
+  liveSource: null,
+  autoTimer: null,
+  // Performance tab: which scope and window are being viewed. Defaults to
+  // the algorithm scope because that's the honest number (every pick the
+  // system generated), not the flattering published subset.
+  perfScope: 'algorithm',
+  perfWindow: null,
+};
 
 // ---------------------------------------------------------------------------
 // RESEARCH DASHBOARD (Phase 1 private research dashboard, slatefinder.lol)
@@ -78,9 +90,35 @@ function pitcherProfileCell(name, profile) {
     </div>`;
 }
 
-function lineupStatusPill(confirmed, confirmedAt) {
-  if (confirmed) return `<span class="pill ok"><span class="pill-dot"></span>Confirmed${confirmedAt ? ` · ${fmtTime(confirmedAt)}` : ''}</span>`;
-  return '<span class="pill dim">Projected</span>';
+// Two pills per game, one per team. The team abbreviation prefix is not
+// decoration: without it the column reads "Projected Confirmed" and there
+// is no way to tell WHICH side's lineup is out, which is the entire
+// question this column answers before a batter prop can be trusted.
+function lineupStatusPill(teamLabel, confirmed, confirmedAt) {
+  const label = teamLabel ? `${esc(teamLabel)} ` : '';
+  if (confirmed) {
+    return `<span class="pill ok"><span class="pill-dot"></span>${label}confirmed${confirmedAt ? ` · ${fmtTime(confirmedAt)}` : ''}</span>`;
+  }
+  return `<span class="pill dim">${label}projected</span>`;
+}
+
+// "Chicago White Sox" -> "CWS" for the compact lineup pills. Falls back to
+// the first three letters so an unmapped name still labels its pill.
+const TEAM_ABBR = {
+  'Arizona Diamondbacks': 'AZ', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
+  'Boston Red Sox': 'BOS', 'Chicago Cubs': 'CHC', 'Chicago White Sox': 'CWS',
+  'Cincinnati Reds': 'CIN', 'Cleveland Guardians': 'CLE', 'Colorado Rockies': 'COL',
+  'Detroit Tigers': 'DET', 'Houston Astros': 'HOU', 'Kansas City Royals': 'KC',
+  'Los Angeles Angels': 'LAA', 'Los Angeles Dodgers': 'LAD', 'Miami Marlins': 'MIA',
+  'Milwaukee Brewers': 'MIL', 'Minnesota Twins': 'MIN', 'New York Mets': 'NYM',
+  'New York Yankees': 'NYY', 'Athletics': 'ATH', 'Oakland Athletics': 'OAK',
+  'Philadelphia Phillies': 'PHI', 'Pittsburgh Pirates': 'PIT', 'San Diego Padres': 'SD',
+  'San Francisco Giants': 'SF', 'Seattle Mariners': 'SEA', 'St. Louis Cardinals': 'STL',
+  'Tampa Bay Rays': 'TB', 'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR',
+  'Washington Nationals': 'WSH',
+};
+function abbr(teamName) {
+  return TEAM_ABBR[teamName] || (teamName || '').slice(0, 3).toUpperCase();
 }
 
 function slateOverviewTable(games) {
@@ -90,7 +128,7 @@ function slateOverviewTable(games) {
       <td>${esc(g.awayTeam)} @ ${esc(g.homeTeam)}<div class="faint" style="font-size:11px">${esc(g.venue || '')}</div></td>
       <td>${pitcherProfileCell(g.awayStarterName, g.awayStarterProfile)}</td>
       <td>${pitcherProfileCell(g.homeStarterName, g.homeStarterProfile)}</td>
-      <td>${lineupStatusPill(g.awayLineupConfirmed, g.awayLineupConfirmedAt)} ${lineupStatusPill(g.homeLineupConfirmed, g.homeLineupConfirmedAt)}</td>
+      <td class="lineup-cell">${lineupStatusPill(abbr(g.awayTeam), g.awayLineupConfirmed, g.awayLineupConfirmedAt)}${lineupStatusPill(abbr(g.homeTeam), g.homeLineupConfirmed, g.homeLineupConfirmedAt)}</td>
       <td class="mono">${g.awayMl !== null && g.awayMl !== undefined ? fmtOdds(g.awayMl) : '-'} / ${g.homeMl !== null && g.homeMl !== undefined ? fmtOdds(g.homeMl) : '-'}</td>
       <td class="mono live-cell" data-live-game="${esc(g.mlbGameId)}">-</td>
     </tr>`).join('');
@@ -119,18 +157,73 @@ function strikeoutCard(p) {
     </div>`;
 }
 
-function hitPropCard(p) {
+// The headline number on a hit card is the projection for THAT tier: a 2+
+// card leads with P(2+), a 1+ card with P(1+). Both come from one model
+// (lib/hitProjection.js) so the two boards always agree with each other.
+function hitPropCard(p, tier = 'single') {
+  const isMulti = tier === 'multi';
+  const prob = isMulti ? p.pAtLeastTwo : p.pAtLeastOne;
   const luck = p.xbaLuckFlag === 'buy' ? '<span class="pill ok">Buy signal</span>' : p.xbaLuckFlag === 'sell' ? '<span class="pill warn">Regression risk</span>' : '';
+  const slot = Number.isInteger(p.battingOrderSlot)
+    ? `batting ${p.battingOrderSlot}`
+    : '<span class="warn-text">slot TBD</span>';
+  // The empirical check on the projection: how often he ACTUALLY had a
+  // multi-hit game recently. Shown on 2+ cards because that's the tier it
+  // corroborates.
+  const actual = isMulti && p.multiHitRate !== null && p.multiHitRate !== undefined
+    ? `<span class="proj-actual">actually ${fmtPct(p.multiHitRate, 0)} of his last ${p.trailing15Games ?? 15}</span>`
+    : '';
+
   return `
     <div class="sig-card">
       <div class="sig-head">
-        <span>${esc(p.batterName)} <span class="faint">(${esc(p.team)}${p.battingOrderSlot ? `, batting ${p.battingOrderSlot}` : ''})</span></span>
+        <span>${esc(p.batterName)} <span class="faint">(${esc(p.team)}, ${slot})</span></span>
         <span style="display:flex;align-items:center;gap:8px">${gradeBadge(p.grade)}${luck}</span>
       </div>
-      <div class="sig-sub">${p.hitStreak >= 5 ? `${p.hitStreak}-game hit streak, ` : ''}batting ${fmtNum(p.trailing15Avg, 3)} over his last 15 (${p.trailing15Ab} AB)${p.xba !== null ? `, xBA ${fmtNum(p.xba, 3)}` : ''}</div>
-      <div class="sig-note">vs ${esc(p.opposingStarterName || 'TBD')}${p.opposingHitsPer9 !== null ? `, allows <span class="mono ${colorClass(p.opposingHitsPer9, { goodMin: 9.5, badMax: 7.5 })}">${fmtNum(p.opposingHitsPer9, 1)}</span> H/9` : ''}</div>
+      <div class="proj-row">
+        <div class="proj-main">
+          <span class="proj-pct ${colorClass(prob, isMulti ? { goodMin: 0.40, badMax: 0.32 } : { goodMin: 0.78, badMax: 0.70 })}">${fmtPct(prob, 0)}</span>
+          <span class="proj-label">to get ${isMulti ? '2+' : '1+'} hit${isMulti ? 's' : ''}</span>
+        </div>
+        <div class="proj-side">
+          <span class="mono">${fmtNum(p.expectedHits, 2)} projected hits</span>
+          <span class="faint">in ${fmtNum(p.expectedAtBats, 1)} AB</span>
+        </div>
+      </div>
+      ${actual ? `<div class="sig-note">${actual}</div>` : ''}
+      <div class="sig-sub">${p.hitStreak >= 5 ? `${p.hitStreak}-game hit streak, ` : ''}batting ${fmtNum(p.trailing15Avg, 3)} over his last 15 (${p.trailing15Ab} AB)${p.xba !== null && p.xba !== undefined ? `, xBA ${fmtNum(p.xba, 3)}` : ''}</div>
+      <div class="sig-note">vs ${esc(p.opposingStarterName || 'TBD')}${p.opposingHitsPer9 !== null && p.opposingHitsPer9 !== undefined ? `, allows <span class="mono ${colorClass(p.opposingHitsPer9, { goodMin: 9.5, badMax: 7.5 })}">${fmtNum(p.opposingHitsPer9, 1)}</span> H/9` : ''}</div>
       ${p.vsTeamPa >= 20 ? `<div class="sig-note mono">${fmtNum(p.vsTeamAvg, 3)} career vs this team (${p.vsTeamPa} PA)</div>` : ''}
-      <div class="faint" style="font-size:11px;margin-top:6px">${esc(p.gradeReasons.join(' · '))}</div>
+      <div class="faint" style="font-size:11px;margin-top:6px">${esc((p.gradeReasons || []).join(' · '))}</div>
+    </div>`;
+}
+
+// Home run card. Leads with barrel rate because that's what the score is
+// actually built on, not the HR count, which over 15 games is mostly noise.
+function homeRunCard(p) {
+  const noSavant = p.barrelPct === null || p.barrelPct === undefined;
+  const wind = p.windBlowingOut
+    ? `<span class="pill ok">Wind out${p.windSpeedMph ? ` ${fmtNum(p.windSpeedMph, 0)} mph` : ''}</span>` : '';
+  return `
+    <div class="sig-card">
+      <div class="sig-head">
+        <span>${esc(p.batterName)} <span class="faint">(${esc(p.team)}${Number.isInteger(p.battingOrderSlot) ? `, batting ${p.battingOrderSlot}` : ''})</span></span>
+        <span style="display:flex;align-items:center;gap:8px">${gradeBadge(p.grade)}${wind}</span>
+      </div>
+      <div class="proj-row">
+        <div class="proj-main">
+          <span class="proj-pct ${colorClass(p.barrelPct, { goodMin: 12, badMax: 7 })}">${noSavant ? '-' : fmtNum(p.barrelPct, 1) + '%'}</span>
+          <span class="proj-label">barrel rate</span>
+        </div>
+        <div class="proj-side">
+          <span class="mono">${p.avgExitVelo !== null && p.avgExitVelo !== undefined ? `${fmtNum(p.avgExitVelo, 1)} mph exit velo` : 'no exit velo'}</span>
+          <span class="faint">${p.xslg !== null && p.xslg !== undefined ? `${fmtNum(p.xslg, 3)} xSLG` : ''}</span>
+        </div>
+      </div>
+      ${noSavant ? '<div class="sig-note warn-text">No Savant data on file, capped at B.</div>' : ''}
+      <div class="sig-note">vs ${esc(p.opposingStarterName || 'TBD')}${p.opposingHrPer9 !== null && p.opposingHrPer9 !== undefined ? `, allows <span class="mono ${colorClass(p.opposingHrPer9, { goodMin: 1.5, badMax: 1.0 })}">${fmtNum(p.opposingHrPer9, 2)}</span> HR/9` : ''}</div>
+      <div class="sig-note mono">Homered in ${fmtPct(p.trailing15HrRate, 0)} of his last ${p.trailing15Games ?? 15} · ${esc(p.venue || '')}</div>
+      <div class="faint" style="font-size:11px;margin-top:6px">${esc((p.gradeReasons || []).join(' · '))}</div>
     </div>`;
 }
 
@@ -159,22 +252,44 @@ function gradeBadge(grade) {
 }
 
 function signalPanel(data) {
+  const multi = data.multiHit || [];
+  const single = data.singleHit || [];
+  const hrs = data.homeRuns || [];
   const tabs = [
     ['strikeouts', `K Props (${data.strikeouts.length})`],
-    ['hitProps', `Hit Props (${data.hitProps.length})`],
+    ['multiHit', `2+ Hits (${multi.length})`],
+    ['hitProps', `1+ Hit (${single.length})`],
+    ['homeRuns', `Home Runs (${hrs.length})`],
     ['moneyline', `Moneyline (${data.moneyline.picks.length})`],
   ];
   const tabBtns = tabs.map(([key, label]) =>
     `<button class="tab ${state.signalTab === key ? 'active' : ''}" data-signal-tab="${key}">${label}</button>`).join('');
 
+  const cutoff = data.tierCutoffs || {};
   let body;
   if (state.signalTab === 'strikeouts') {
-    body = data.strikeouts.length ? `<div class="sig-cards">${data.strikeouts.map(strikeoutCard).join('')}</div>` : emptyState('No K props today', 'Nothing clears the K-floor gate.');
+    body = data.strikeouts.length
+      ? `<div class="sig-cards">${data.strikeouts.map(strikeoutCard).join('')}</div>`
+      : emptyState('No K props today', 'Nothing clears the K-floor gate.');
+  } else if (state.signalTab === 'multiHit') {
+    body = multi.length
+      ? `<p class="section-sub">Batters projected above ${fmtPct(cutoff.multiHit ?? 0.32, 0)} to record two or more hits, best first.</p>
+         <div class="sig-cards">${multi.map((p) => hitPropCard(p, 'multi')).join('')}</div>`
+      : emptyState('No 2+ hit candidates today', `Nobody projects above ${fmtPct(cutoff.multiHit ?? 0.32, 0)} for a multi-hit game.`);
   } else if (state.signalTab === 'hitProps') {
-    body = data.hitProps.length ? `<div class="sig-cards">${data.hitProps.map(hitPropCard).join('')}</div>` : emptyState('No hit props today', 'Nothing clears the qualification gates.');
+    body = single.length
+      ? `<p class="section-sub">The safest 1+ hit plays, everyone projected above ${fmtPct(cutoff.singleHit ?? 0.70, 0)}.</p>
+         <div class="sig-cards">${single.map((p) => hitPropCard(p, 'single')).join('')}</div>`
+      : emptyState('No 1+ hit plays today', `Nobody projects above ${fmtPct(cutoff.singleHit ?? 0.70, 0)} to get a hit.`);
+  } else if (state.signalTab === 'homeRuns') {
+    body = hrs.length
+      ? `<p class="section-sub">Ranked on Statcast contact quality against arms that give up home runs.</p>
+         <div class="sig-cards">${hrs.map(homeRunCard).join('')}</div>`
+      : emptyState('No home run candidates today', 'Nothing clears the barrel-rate or HR-rate gate.');
   } else {
-    const picks = data.moneyline.picks.length ? `<div class="sig-cards">${data.moneyline.picks.map(moneylineCard).join('')}</div>` : emptyState('SIT', 'No home favorite clears both gates today.');
-    body = picks;
+    body = data.moneyline.picks.length
+      ? `<div class="sig-cards">${data.moneyline.picks.map(moneylineCard).join('')}</div>`
+      : emptyState('SIT', 'No home favorite clears both gates today.');
   }
   return `<nav class="tabs" style="margin:14px 0">${tabBtns}</nav>${body}`;
 }
@@ -283,15 +398,90 @@ function wireDashboardControls() {
 }
 
 // ---------------------------------------------------------------------------
-// HOME RUNS
-// The filter itself (lib/filters/windHr.js) already runs every pipeline
-// cycle, it's just not wired to the ledger or surfaced anywhere yet.
-// Placeholder tab until that's built out.
-async function renderHomeRuns() {
+// PERFORMANCE
+// Per-signal and per-grade hit rates off the immutable ledger. This is the
+// answer to "which of these actually work" -- and, because the ledger
+// cannot be edited (see the tracked_picks_guard trigger), it's also the
+// evidence behind any claim the public site makes.
+function perfRateCell(row) {
+  if (row.winRate !== null && row.winRate !== undefined) {
+    const cls = row.winRate >= 0.6 ? 'pos' : row.winRate < 0.45 ? 'neg' : '';
+    return `<span class="mono ${cls}">${fmtPct(row.winRate, 1)}</span>`;
+  }
+  if (row.graded === 0) return '<span class="faint">-</span>';
+  return `<span class="faint" title="Needs ${row.needsForRate} more graded">${row.needsForRate} more</span>`;
+}
+
+function perfSignalBlock(sig) {
+  const gradeRows = (sig.grades || [])
+    .filter((g) => g.graded > 0 || g.pending > 0)
+    .map((g) => `
+      <tr>
+        <td>${gradeBadge(g.grade)}</td>
+        <td class="mono">${g.wins}-${g.losses}${g.pushes ? `-${g.pushes}` : ''}</td>
+        <td>${perfRateCell(g)}</td>
+        <td class="mono faint">${g.pending || 0}</td>
+      </tr>`).join('');
+
+  return `
+    <div class="perf-block">
+      <div class="perf-head">
+        <span class="perf-name">${esc(sig.label)}</span>
+        <span class="perf-topline">
+          <span class="perf-wl mono">${sig.wins}-${sig.losses}${sig.pushes ? `-${sig.pushes}` : ''}</span>
+          <span class="perf-rate">${perfRateCell(sig)}</span>
+        </span>
+      </div>
+      ${gradeRows
+        ? `<div class="table-wrap"><table class="data-table perf-table">
+             <thead><tr><th>Grade</th><th>W-L</th><th>Hit rate</th><th>Pending</th></tr></thead>
+             <tbody>${gradeRows}</tbody></table></div>`
+        : '<p class="section-sub">No graded picks with a grade on file yet.</p>'}
+    </div>`;
+}
+
+async function renderPerformance() {
   const host = $('#admin-view');
-  host.innerHTML = `
-    <div class="section-head"><h2 class="section-title">Home runs</h2></div>
-    <div class="empty-state"><div class="es-title">Coming soon</div>Home run props aren't live yet.</div>`;
+  host.innerHTML = '<div class="section-head"><h2 class="section-title">Performance</h2></div><p class="section-sub">Loading…</p>';
+  try {
+    const windowParam = state.perfWindow ? `?sinceDays=${state.perfWindow}` : '';
+    const d = await api(`/api/performance/breakdown${windowParam}`);
+    const scope = state.perfScope === 'published' ? d.published : d.algorithm;
+
+    const windows = [[null, 'All time'], [30, 'Last 30 days'], [7, 'Last 7 days']];
+    const windowBtns = windows.map(([days, label]) =>
+      `<button class="tab ${(state.perfWindow ?? null) === days ? 'active' : ''}" data-perf-window="${days ?? ''}">${label}</button>`).join('');
+    const scopeBtns = [['algorithm', 'Algorithm (everything generated)'], ['published', 'Published (what I called)']]
+      .map(([key, label]) => `<button class="tab ${state.perfScope === key ? 'active' : ''}" data-perf-scope="${key}">${label}</button>`).join('');
+
+    host.innerHTML = `
+      <div class="section-head"><h2 class="section-title">Performance</h2></div>
+      <p class="section-sub">Straight counts off the pick ledger. Nothing is excluded, and a published pick can never be edited or removed, so these numbers can only get more honest over time. Hit rates stay hidden until ${d.minGradedForRate} graded picks.</p>
+      <nav class="tabs" style="margin:12px 0 4px">${scopeBtns}</nav>
+      <nav class="tabs" style="margin:0 0 16px">${windowBtns}</nav>
+      <div class="perf-overall">
+        <div class="perf-overall-wl mono">${scope.overall.wins}-${scope.overall.losses}${scope.overall.pushes ? `-${scope.overall.pushes}` : ''}</div>
+        <div class="perf-overall-meta">
+          <span>${scope.overall.graded} graded${scope.overall.pending ? `, ${scope.overall.pending} pending` : ''}</span>
+          <span>${scope.overall.winRate !== null ? `${fmtPct(scope.overall.winRate, 1)} overall` : 'rate hidden until the sample is real'}</span>
+        </div>
+      </div>
+      ${scope.signals.length
+        ? scope.signals.map(perfSignalBlock).join('')
+        : emptyState('Nothing graded yet', 'Once games finish and picks grade, the breakdown appears here.')}`;
+
+    host.querySelectorAll('[data-perf-scope]').forEach((btn) => {
+      btn.addEventListener('click', () => { state.perfScope = btn.dataset.perfScope; renderPerformance(); });
+    });
+    host.querySelectorAll('[data-perf-window]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.perfWindow = btn.dataset.perfWindow ? Number(btn.dataset.perfWindow) : null;
+        renderPerformance();
+      });
+    });
+  } catch (err) {
+    host.innerHTML = `<div class="section-head"><h2 class="section-title">Performance</h2></div>${emptyState('Performance unavailable', err.message)}`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +646,7 @@ function showView(name) {
   state.view = name;
   document.querySelectorAll('#adminTabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   if (name === 'slate') renderSlate();
-  if (name === 'homeruns') renderHomeRuns();
+  if (name === 'performance') renderPerformance();
   if (name === 'record') renderRecord();
   if (name === 'users') renderUsers();
   if (name === 'email') renderEmail();

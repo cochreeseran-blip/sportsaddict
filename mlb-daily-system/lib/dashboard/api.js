@@ -1,6 +1,7 @@
 import { runStrikeoutFilter } from '../filters/strikeouts.js';
 import { runHitStreakFilter } from '../filters/hitStreak.js';
 import { runMoneylineFilter } from '../filters/moneyline.js';
+import { runWindHrFilter } from '../filters/windHr.js';
 import * as mlb from '../sources/mlbStats.js';
 
 const num = (v) => (v === null || v === undefined ? null : Number(v));
@@ -185,15 +186,17 @@ async function isBlowoutInflated(pool, pitcherId, n = 3) {
   return Number.isFinite(best) && best < 4.5;
 }
 
-// The full dashboard payload for one date: slate overview + all three
-// signal tabs. Each signal's filter runs unmodified; moneyline gets the
-// display enrichment above, K props and hit props are already scored
-// with the corrected logic (see lib/grading.js).
+// The full dashboard payload for one date: slate overview + every signal
+// board. Each signal's filter runs unmodified; moneyline gets the display
+// enrichment above, the prop boards arrive already scored (lib/grading.js)
+// and, for hits, already projected and split into tiers
+// (lib/hitProjection.js, lib/filters/hitStreak.js).
 export async function buildDashboardData(pool, gameDate) {
-  const [slate, strikeouts, hitProps, moneyline] = await Promise.all([
+  const [slate, strikeouts, hitProps, homeRuns, moneyline] = await Promise.all([
     buildSlateOverview(pool, gameDate),
     runStrikeoutFilter(pool, gameDate),
     runHitStreakFilter(pool, gameDate),
+    runWindHrFilter(pool, gameDate),
     runMoneylineFilter(pool, gameDate),
   ]);
   const moneylinePicks = await enrichMoneylinePicks(pool, gameDate, moneyline.picks);
@@ -201,7 +204,13 @@ export async function buildDashboardData(pool, gameDate) {
     gameDate,
     slate,
     strikeouts: strikeouts.watchList,
+    // Both hit tiers off the one projection. hitProps stays the
+    // grade-ranked list so nothing that read it before breaks.
     hitProps: hitProps.watchList,
+    multiHit: hitProps.multiHit ?? [],
+    singleHit: hitProps.singleHit ?? [],
+    tierCutoffs: hitProps.tierCutoffs ?? null,
+    homeRuns: homeRuns.watchList ?? [],
     moneyline: { signal: moneyline.signal, picks: moneylinePicks, otherGames: moneyline.otherGames },
   };
 }

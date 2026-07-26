@@ -1,12 +1,21 @@
-/* Slatefinder client, vanilla JS single-page app, no build step.
-   This is a bare skeleton: the account system (signup/login/logout) is
-   real and wired to the server, everything else is an empty section
-   waiting to be redesigned. No game data, stats, or picks are rendered
-   here. */
+/* Slate Addict, the public app. Vanilla JS, no build step.
+   Three views: Today (the picks that were published before first pitch),
+   Track record (the immutable ledger, per signal and per grade), and How
+   it works (what each number means, stated plainly).
+
+   Design principle throughout: this product's only real asset is a track
+   record that cannot be edited after the fact, so the evidence is never
+   more than one click away and the caveats are printed next to the
+   numbers, not buried. */
 
 'use strict';
 
-const state = { view: 'signals', user: null };
+const state = {
+  view: 'today',
+  user: null,
+  today: new Date().toISOString().slice(0, 10),
+  recordScope: 'published',
+};
 
 // ---------------------------------------------------------------------------
 // Procedural avatars: every account gets a face built from its seed. Same
@@ -80,8 +89,20 @@ function avatarSvg(seed, size = 34) {
   return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" style="border-radius:${Math.round(size * 0.22)}px;display:block" aria-hidden="true">${parts.join('')}</svg>`;
 }
 
-// --- tiny helpers -----------------------------------------------------------
+// --- helpers ----------------------------------------------------------------
 const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtOdds = (ml) => (ml === null || ml === undefined ? '-' : ml > 0 ? `+${ml}` : `${ml}`);
+const fmtNum = (n, d = 2) => (n === null || n === undefined ? '-' : Number(n).toFixed(d));
+const fmtPct = (n, d = 0) => (n === null || n === undefined ? '-' : `${(Number(n) * 100).toFixed(d)}%`);
+
+function longDate(dateStr) {
+  return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+function etTime(iso) {
+  if (!iso) return 'TBD';
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
+}
 
 async function api(path) {
   const res = await fetch(path);
@@ -100,15 +121,279 @@ async function apiSend(path, method, body) {
   return data;
 }
 
+function emptyState(title, msg) {
+  return `<div class="empty-state"><div class="es-title">${esc(title)}</div>${esc(msg)}</div>`;
+}
+
+function gradeBadge(grade) {
+  if (!grade) return '';
+  const cls = `g-${String(grade).toLowerCase().replace('+', 'plus')}`;
+  return `<span class="grade-badge ${cls}">${esc(grade)}</span>`;
+}
+
+// Result chip. A pick that lost says so, in the same size type as a win:
+// hiding losses is exactly what makes a track record worthless.
+function resultChip(result) {
+  if (result === 'win') return '<span class="res-chip win">Win</span>';
+  if (result === 'loss') return '<span class="res-chip loss">Loss</span>';
+  if (result === 'push') return '<span class="res-chip push">Push</span>';
+  return '<span class="res-chip pending">Pending</span>';
+}
+
+const SIGNAL_META = {
+  strikeout: { label: 'Strikeouts', blurb: 'Pitchers whose recent starts support the over.' },
+  multi_hit: { label: '2+ Hits', blurb: 'Batters projected to collect multiple hits.' },
+  hit_streak: { label: '1+ Hit', blurb: 'The safest hit plays on the board.' },
+  home_run: { label: 'Home Runs', blurb: 'Statcast power against arms that give up homers.' },
+  moneyline: { label: 'Moneyline', blurb: 'Home favorites facing a struggling starter.' },
+  wind_hr: { label: 'Home Runs', blurb: 'Power spots.' },
+};
+const SIGNAL_ORDER = ['strikeout', 'multi_hit', 'hit_streak', 'home_run', 'moneyline', 'wind_hr'];
+
 // ---------------------------------------------------------------------------
-// NAV: tab switching only, each section is an empty placeholder until the
-// redesign wires real content back in.
+// TODAY
+// Only picks that were PUBLISHED before first pitch appear here. That's
+// the whole promise: nothing gets added after a game starts, and nothing
+// gets quietly removed after it ends.
+
+function pickCard(p) {
+  const meta = SIGNAL_META[p.signalType] || { label: p.signalType };
+  const headline = p.headline || p.description || '';
+
+  // The one number that matters most for this pick type, shown large.
+  let lead = '';
+  if (p.signalType === 'multi_hit' && p.pAtLeastTwo !== null && p.pAtLeastTwo !== undefined) {
+    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtPct(p.pAtLeastTwo)}</span><span class="pc-lead-lbl">projected to get 2+ hits</span></div>`;
+  } else if (p.signalType === 'hit_streak' && p.pAtLeastOne !== null && p.pAtLeastOne !== undefined) {
+    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtPct(p.pAtLeastOne)}</span><span class="pc-lead-lbl">projected to get a hit</span></div>`;
+  } else if (p.signalType === 'strikeout' && p.suggestedLine !== null && p.suggestedLine !== undefined) {
+    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtNum(p.suggestedLine, 1)}</span><span class="pc-lead-lbl">strikeout line, taking the over</span></div>`;
+  } else if (p.signalType === 'home_run' && p.barrelPct !== null && p.barrelPct !== undefined) {
+    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtNum(p.barrelPct, 1)}%</span><span class="pc-lead-lbl">barrel rate</span></div>`;
+  } else if (p.signalType === 'moneyline' && p.homeMl !== null && p.homeMl !== undefined) {
+    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtOdds(p.homeMl)}</span><span class="pc-lead-lbl">locked at publish time</span></div>`;
+  }
+
+  return `
+    <article class="pick-card ${p.result === 'win' ? 'is-win' : p.result === 'loss' ? 'is-loss' : ''}">
+      <div class="pc-top">
+        <span class="pc-kind">${esc(meta.label)}</span>
+        <span class="pc-badges">${gradeBadge(p.grade)}${resultChip(p.result)}</span>
+      </div>
+      <h3 class="pc-headline">${esc(headline)}</h3>
+      ${lead}
+      <p class="pc-detail">${esc(p.detail || '')}</p>
+    </article>`;
+}
+
+function heroBlock(record) {
+  const pub = record?.published;
+  if (!pub) return '';
+  const rate = pub.winRate !== null && pub.winRate !== undefined
+    ? `<span class="hero-rate">${fmtPct(pub.winRate, 1)}</span><span class="hero-rate-lbl">win rate</span>`
+    : `<span class="hero-rate-lbl">Win rate stays hidden until the sample is big enough to mean something.</span>`;
+  return `
+    <div class="hero">
+      <div class="hero-left">
+        <h1 class="hero-title">Every pick, logged before first pitch.</h1>
+        <p class="hero-sub">Published picks are written to a ledger the app itself cannot edit or delete. Wins and losses both stay on the record, permanently.</p>
+      </div>
+      <div class="hero-right">
+        <div class="hero-wl">${pub.wins}<span class="hero-dash">-</span>${pub.losses}${pub.pushes ? `<span class="hero-push">-${pub.pushes}</span>` : ''}</div>
+        <div class="hero-meta">${rate}</div>
+        <button class="btn ghost small" data-nav="record">See the full record</button>
+      </div>
+    </div>`;
+}
+
+async function renderToday() {
+  const host = $('#view-today');
+  host.innerHTML = '<p class="section-sub">Loading today\'s board…</p>';
+  try {
+    const [digest, record] = await Promise.all([
+      api(`/api/digest?date=${state.today}`),
+      api('/api/record').catch(() => null),
+    ]);
+
+    const picks = digest.publishedToday || [];
+    const grouped = new Map();
+    for (const p of picks) {
+      if (!grouped.has(p.signalType)) grouped.set(p.signalType, []);
+      grouped.get(p.signalType).push(p);
+    }
+    const sections = SIGNAL_ORDER.filter((k) => grouped.has(k)).map((k) => {
+      const meta = SIGNAL_META[k] || { label: k, blurb: '' };
+      return `
+        <section class="board-section">
+          <div class="board-head">
+            <h2 class="board-title">${esc(meta.label)}</h2>
+            <span class="board-blurb">${esc(meta.blurb || '')}</span>
+          </div>
+          <div class="pick-grid">${grouped.get(k).map(pickCard).join('')}</div>
+        </section>`;
+    }).join('');
+
+    host.innerHTML = `
+      ${heroBlock(record)}
+      <div class="board-date">
+        <h2 class="section-title">${esc(longDate(digest.date))}</h2>
+        <span class="section-sub">${picks.length} published pick${picks.length === 1 ? '' : 's'}</span>
+      </div>
+      ${sections || emptyState('Nothing published yet today', 'Picks go up in the morning, before first pitch. Check back shortly, or look at the track record in the meantime.')}`;
+  } catch (err) {
+    host.innerHTML = emptyState('Could not load today\'s board', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TRACK RECORD
+// The proof. Two scopes side by side so the flattering number is never
+// shown without the honest one.
+
+function perfRate(row) {
+  if (row.winRate !== null && row.winRate !== undefined) {
+    const cls = row.winRate >= 0.6 ? 'pos' : row.winRate < 0.45 ? 'neg' : '';
+    return `<span class="mono ${cls}">${fmtPct(row.winRate, 1)}</span>`;
+  }
+  if (!row.graded) return '<span class="faint">no graded picks</span>';
+  return `<span class="faint">${row.needsForRate} more picks needed</span>`;
+}
+
+function signalRecordCard(sig) {
+  const grades = (sig.grades || []).filter((g) => g.graded > 0);
+  const gradeRows = grades.map((g) => `
+    <tr>
+      <td>${gradeBadge(g.grade)}</td>
+      <td class="mono">${g.wins}-${g.losses}</td>
+      <td>${perfRate(g)}</td>
+    </tr>`).join('');
+  const meta = SIGNAL_META[sig.signalType] || { label: sig.label };
+  return `
+    <div class="rec-card">
+      <div class="rec-card-head">
+        <span class="rec-card-name">${esc(meta.label || sig.label)}</span>
+        <span class="rec-card-wl mono">${sig.wins}-${sig.losses}${sig.pushes ? `-${sig.pushes}` : ''}</span>
+      </div>
+      <div class="rec-card-rate">${perfRate(sig)}</div>
+      ${gradeRows ? `
+        <table class="rec-grade-table">
+          <thead><tr><th>Grade</th><th>W-L</th><th>Hit rate</th></tr></thead>
+          <tbody>${gradeRows}</tbody>
+        </table>` : '<p class="rec-card-note">Grade breakdown appears once picks finish grading.</p>'}
+      ${sig.pending ? `<div class="rec-card-note">${sig.pending} still pending</div>` : ''}
+    </div>`;
+}
+
+async function renderRecord() {
+  const host = $('#view-record');
+  host.innerHTML = '<p class="section-sub">Loading the record…</p>';
+  try {
+    const breakdown = await api('/api/performance/breakdown');
+    const scope = state.recordScope === 'algorithm' ? breakdown.algorithm : breakdown.published;
+    const scopeBtns = [
+      ['published', 'Picks I called'],
+      ['algorithm', 'Everything the system generated'],
+    ].map(([k, label]) => `<button class="tab ${state.recordScope === k ? 'active' : ''}" data-record-scope="${k}">${label}</button>`).join('');
+
+    host.innerHTML = `
+      <div class="board-date">
+        <h2 class="section-title">Track record</h2>
+        <span class="section-sub">Straight counts off an append-only ledger. A published pick can never be edited or deleted, so these numbers can only get more honest.</span>
+      </div>
+      <nav class="tabs" style="margin:14px 0 18px">${scopeBtns}</nav>
+      <div class="rec-overall">
+        <div class="rec-overall-wl">${scope.overall.wins}<span class="hero-dash">-</span>${scope.overall.losses}${scope.overall.pushes ? `<span class="hero-push">-${scope.overall.pushes}</span>` : ''}</div>
+        <div class="rec-overall-meta">
+          <span>${scope.overall.graded} graded${scope.overall.pending ? ` · ${scope.overall.pending} pending` : ''}</span>
+          <span>${scope.overall.winRate !== null ? `${fmtPct(scope.overall.winRate, 1)} overall` : `Rate hidden until ${breakdown.minGradedForRate} graded picks`}</span>
+        </div>
+      </div>
+      ${scope.signals.length
+        ? `<div class="rec-grid">${scope.signals.map(signalRecordCard).join('')}</div>`
+        : emptyState('Nothing graded yet', 'Once games finish, results land here automatically.')}
+      <p class="rec-disclaimer">
+        ${state.recordScope === 'algorithm'
+          ? 'This scope counts every pick the system generated, including ones that were never published. It is the harsher number, and it is here so the published record can be checked against it.'
+          : 'This scope counts only picks published before first pitch. Switch scopes to see everything the system generated, published or not.'}
+      </p>`;
+
+    host.querySelectorAll('[data-record-scope]').forEach((btn) => {
+      btn.addEventListener('click', () => { state.recordScope = btn.dataset.recordScope; renderRecord(); });
+    });
+  } catch (err) {
+    host.innerHTML = emptyState('Record unavailable', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HOW IT WORKS
+// Plain-language explanation of every number the app shows, including what
+// it does NOT know. A research product that hides its method is a tout.
+function renderHow() {
+  $('#view-how').innerHTML = `
+    <div class="board-date">
+      <h2 class="section-title">How it works</h2>
+      <span class="section-sub">What each number means, where it comes from, and what it can't tell you.</span>
+    </div>
+
+    <div class="how-grid">
+      <div class="how-card">
+        <h3>Strikeout props</h3>
+        <p>Starts from a pitcher's <strong>floor</strong>: the strikeout count he has reached in essentially every recent start, allowing for one off night. The score then weighs his own strikeout and whiff rates against <strong>how often the opposing lineup actually strikes out</strong>, which is the input that separates a good arm in a bad spot from a good arm in a great one.</p>
+      </div>
+      <div class="how-card">
+        <h3>Hit props, both tiers</h3>
+        <p>One projection produces both boards. It estimates a per-at-bat hit probability by blending recent batting average, Savant's expected batting average, and how many hits the opposing starter actually allows, then runs it over the at-bats his lineup slot is worth. That yields the chance of <strong>1+ hit</strong> and the chance of <strong>2+ hits</strong>, which is why the two tiers never disagree.</p>
+      </div>
+      <div class="how-card">
+        <h3>Home runs</h3>
+        <p>Ranked on Statcast contact quality, mainly <strong>barrel rate</strong> and exit velocity, against arms measured by the home runs they actually give up. Recent home run count is only a minor input: over fifteen games it is mostly noise. Wind helps at parks whose orientation has been verified, and never counts as a substitute for real power.</p>
+      </div>
+      <div class="how-card">
+        <h3>Moneyline</h3>
+        <p>Two hard facts, no score: the home team is priced between -115 and -180, and the opposing starter's ERA over his last three starts is 6.00 or worse. At most two games a day clear both. Some days none do, and on those days the honest answer is to sit.</p>
+      </div>
+      <div class="how-card">
+        <h3>The grades</h3>
+        <p>A letter from A+ down to C, from a points scale over the inputs above. They are useful for ranking one pick against another on the same board. They are <strong>not fitted to betting outcomes</strong>, which is exactly why the track record breaks results down by grade, so the letters can be checked against what actually happened.</p>
+      </div>
+      <div class="how-card">
+        <h3>Why the record is trustworthy</h3>
+        <p>Publishing is one-way and enforced by the database itself, not by app code. A published pick cannot be edited, cannot be un-published, and cannot be deleted, by anyone, including the owner. Nothing can be published after a game has started. Losses stay up.</p>
+      </div>
+    </div>
+
+    <div class="how-caveat">
+      <h3>What this does not do</h3>
+      <p>It does not know the betting line you are being offered, so it cannot tell you whether a price is good value. It does not model bullpen usage, weather beyond wind, injuries not yet reflected in a lineup, or anything about how a game is actually managed. Projections assume at-bats are independent, which they aren't. Treat everything here as research that narrows a slate, not as a prediction of the future.</p>
+    </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// NAV + CHROME
 function showView(name) {
   state.view = name;
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
+  document.querySelectorAll('.tab[data-view]').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
-  const wantPath = name === 'record' ? '/record' : '/';
+  if (name === 'today') renderToday();
+  if (name === 'record') renderRecord();
+  if (name === 'how') renderHow();
+  const wantPath = name === 'today' ? '/' : `/${name}`;
   if (location.pathname !== wantPath) history.replaceState(null, '', wantPath);
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+// The header record chip: the headline claim, visible on every screen, and
+// deliberately raw W-L rather than a percentage until the sample earns one.
+async function loadRecordChip() {
+  try {
+    const r = await api('/api/record');
+    const pub = r.published;
+    if (!pub || (pub.wins + pub.losses) === 0) return;
+    const chip = $('#recordChip');
+    chip.innerHTML = `<span class="chip-wl mono">${pub.wins}-${pub.losses}</span>${pub.winRate !== null && pub.winRate !== undefined ? `<span class="chip-rate">${fmtPct(pub.winRate, 1)}</span>` : ''}`;
+    chip.hidden = false;
+  } catch { /* the chip is decoration; never block the app on it */ }
 }
 
 async function init() {
@@ -117,37 +402,43 @@ async function init() {
     if (tab) showView(tab.dataset.view);
   });
 
+  // In-app nav links (e.g. "See the full record" in the hero).
+  document.addEventListener('click', (e) => {
+    const nav = e.target.closest('[data-nav]');
+    if (!nav) return;
+    e.preventDefault();
+    showView(nav.dataset.nav);
+  });
+
   wireAuth();
 
   try {
-    const me = await api('/api/auth/me').catch(() => ({ user: null }));
+    const [status, me] = await Promise.all([
+      api('/api/status').catch(() => null),
+      api('/api/auth/me').catch(() => ({ user: null })),
+    ]);
+    if (status?.today) state.today = status.today;
     state.user = me.user;
-  } catch { /* fall back to signed-out */ }
+  } catch { /* fall back to the client clock and signed-out */ }
 
-  if (!state.user) {
-    openAuthGate();
-  }
   updateAccountChip();
+  loadRecordChip();
 
-  if (location.pathname === '/record') {
-    showView('record');
-  }
+  const path = location.pathname;
+  showView(path === '/record' ? 'record' : path === '/how' ? 'how' : 'today');
 }
 
 // ---------------------------------------------------------------------------
-// ACCOUNT GATE
+// ACCOUNT
 let authMode = 'signup';
 
-// "Remember me": the session cookie handles staying logged in; this just
-// remembers the email locally so a returning user opens straight onto the
-// login form with their address filled in.
 function rememberedEmail() {
-  try { return localStorage.getItem('sf_email') || ''; } catch { return ''; }
+  try { return localStorage.getItem('sa_email') || ''; } catch { return ''; }
 }
 function setRememberedEmail(email) {
   try {
-    if (email) localStorage.setItem('sf_email', email);
-    else localStorage.removeItem('sf_email');
+    if (email) localStorage.setItem('sa_email', email);
+    else localStorage.removeItem('sa_email');
   } catch { /* private mode etc. */ }
 }
 
@@ -155,7 +446,6 @@ function openAuthGate() {
   $('#authGate').hidden = false;
   $('#authFormWrap').hidden = false;
   $('#authReveal').hidden = true;
-  // Never carry a previous session's password (or its visibility) over.
   const pw = $('#authPassword');
   pw.value = '';
   pw.type = 'password';
@@ -183,8 +473,6 @@ function setAuthMode(mode) {
   $('#authToggleLabel').textContent = signup ? 'Already have an account?' : 'New here?';
   $('#authToggle').textContent = signup ? 'Log in' : 'Create an account';
   $('#authPassword').setAttribute('autocomplete', signup ? 'new-password' : 'current-password');
-  // The marketing opt-in is only meaningful at signup (explicit consent,
-  // unchecked by default); it's hidden on the login form.
   const mkt = $('#authMarketingRow');
   if (mkt) mkt.hidden = !signup;
   $('#authError').hidden = true;
@@ -192,16 +480,21 @@ function setAuthMode(mode) {
 
 function updateAccountChip() {
   const chip = $('#accountChip');
+  const signIn = $('#signInBtn');
   if (!state.user) {
     chip.hidden = true;
+    signIn.hidden = false;
     return;
   }
   chip.hidden = false;
+  signIn.hidden = true;
   $('#accountAvatar').innerHTML = avatarSvg(state.user.avatarSeed, 26);
   $('#accountName').textContent = state.user.username;
 }
 
 function wireAuth() {
+  $('#signInBtn').addEventListener('click', openAuthGate);
+  $('#authSkip').addEventListener('click', closeAuthGate);
   $('#authToggle').addEventListener('click', () => setAuthMode(authMode === 'signup' ? 'login' : 'signup'));
 
   $('#authShowPw').addEventListener('click', () => {
@@ -224,8 +517,8 @@ function wireAuth() {
         email: $('#authEmail').value.trim(),
         password: $('#authPassword').value,
         rememberMe: remember,
-        // Explicit opt-in, only sent on signup; the server ignores it on
-        // login. Unchecked by default (never opt anyone in silently).
+        // Explicit opt-in, only sent on signup; unchecked by default so
+        // nobody is ever subscribed silently.
         marketingOptIn: authMode === 'signup' && $('#authMarketing')?.checked === true,
       };
       const path = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
@@ -234,7 +527,6 @@ function wireAuth() {
       state.user = user;
       updateAccountChip();
       if (authMode === 'signup') {
-        // The reveal: this is who you are now.
         $('#authFormWrap').hidden = true;
         $('#revealAvatar').innerHTML = avatarSvg(user.avatarSeed, 96);
         $('#revealName').textContent = user.username;
@@ -256,7 +548,6 @@ function wireAuth() {
     try { await apiSend('/api/auth/logout', 'POST'); } catch { /* cookie clears anyway */ }
     state.user = null;
     updateAccountChip();
-    openAuthGate();
   });
 }
 

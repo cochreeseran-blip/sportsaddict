@@ -38,7 +38,15 @@ export function moneylineCandidates(moneyline) {
     homeStarterName: p.homeStarterName ?? null,
     homeStarterSeasonEra: p.homeStarterSeasonEra ?? null,
     headline: `${p.homeTeam} (${fmtOdds(p.homeMl)}) to beat ${p.awayTeam}`,
-    detail: `${p.awayStarterName ?? 'The away starter'}'s trailing ERA is ${fmtNum(p.awayStarterTrailingEra)} over his last ${p.awayStarterTrailingStarts ?? 0} start(s) (season: ${fmtNum(p.awayStarterSeasonEra)}).`,
+    // The start count is only stated when it's actually known. Printing
+    // "over his last 0 start(s)" reads as broken and undermines the one
+    // number the whole pick rests on, so an unknown count says "recent
+    // starts" instead of asserting a wrong quantity.
+    detail: `${p.awayStarterName ?? 'The away starter'}'s trailing ERA is ${fmtNum(p.awayStarterTrailingEra)} over ${
+      p.awayStarterTrailingStarts > 0
+        ? `his last ${p.awayStarterTrailingStarts} start${p.awayStarterTrailingStarts === 1 ? '' : 's'}`
+        : 'his recent starts'
+    }${p.awayStarterSeasonEra !== null && p.awayStarterSeasonEra !== undefined ? ` (season: ${fmtNum(p.awayStarterSeasonEra)})` : ''}.`,
   }));
 }
 

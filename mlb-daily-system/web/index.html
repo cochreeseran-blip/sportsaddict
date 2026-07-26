@@ -3,44 +3,53 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>slateaddict.com</title>
-<meta name="description" content="slateaddict.com">
+<title>Slate Addict</title>
+<meta name="description" content="MLB prop research with a track record that cannot be edited. Every pick is logged before first pitch and graded whether it wins or loses.">
 <link rel="stylesheet" href="/styles.css">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d12'/%3E%3Cpath d='M8 21 L13 11 L18 17 L24 8' fill='none' stroke='%2334d17f' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
 
 <header class="topbar">
   <div class="brand">
-    <span class="brand-name">slateaddict.com</span>
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="8" class="mark-bg"/>
+      <path d="M8 21 L13 11 L18 17 L24 8" fill="none" class="mark-line" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="brand-name">Slate<span class="brand-accent">Addict</span></span>
   </div>
 
   <nav class="tabs" id="tabs">
-    <button class="tab active" data-view="signals">Daily Slate</button>
-    <button class="tab" data-view="slate">Research</button>
-    <button class="tab" data-view="record">Record</button>
-    <button class="tab" data-view="chat">Live Chat</button>
+    <button class="tab active" data-view="today">Today</button>
+    <button class="tab" data-view="record">Track record</button>
+    <button class="tab" data-view="how">How it works</button>
   </nav>
 
   <div class="topbar-right">
+    <span class="record-chip" id="recordChip" hidden></span>
     <div class="account-chip" id="accountChip" hidden>
       <span class="account-avatar" id="accountAvatar"></span>
       <span class="account-name" id="accountName"></span>
       <button class="btn ghost small" id="signOutBtn" title="Sign out">Sign out</button>
     </div>
+    <button class="btn primary small" id="signInBtn" hidden>Sign in</button>
   </div>
 </header>
 
 <main id="app">
-  <section id="view-signals" class="view active"></section>
-  <section id="view-slate" class="view"></section>
+  <section id="view-today" class="view active"></section>
   <section id="view-record" class="view"></section>
-  <section id="view-chat" class="view"></section>
+  <section id="view-how" class="view"></section>
 </main>
 
 <div id="authGate" class="auth-gate" hidden>
   <div class="auth-card">
     <div class="auth-brand">
-      <span>slateaddict.com</span>
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" style="width:26px;height:26px">
+        <rect width="32" height="32" rx="8" class="mark-bg"/>
+        <path d="M8 21 L13 11 L18 17 L24 8" fill="none" class="mark-line" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>Slate<span class="brand-accent">Addict</span></span>
     </div>
 
     <div id="authFormWrap">
@@ -62,7 +71,7 @@
         </label>
         <label class="remember-row" id="authMarketingRow">
           <input type="checkbox" id="authMarketing">
-          <span>Email me picks and product updates. You can unsubscribe anytime.</span>
+          <span>Email me the daily board. You can unsubscribe anytime.</span>
         </label>
         <div class="modal-error" id="authError" hidden></div>
         <button type="submit" class="btn primary auth-submit" id="authSubmit">Create account</button>
@@ -71,19 +80,20 @@
         <span id="authToggleLabel">Already have an account?</span>
         <button type="button" class="auth-toggle" id="authToggle">Log in</button>
       </div>
+      <button type="button" class="auth-skip" id="authSkip">Keep looking around</button>
     </div>
 
     <div id="authReveal" hidden>
       <p class="auth-sub" style="margin-bottom:14px">Say hello to yourself.</p>
       <div class="auth-reveal-avatar" id="revealAvatar"></div>
       <div class="auth-reveal-name" id="revealName"></div>
-      <button type="button" class="btn primary auth-submit" id="authEnter">Enter Slatefinder</button>
+      <button type="button" class="btn primary auth-submit" id="authEnter">Enter</button>
     </div>
   </div>
 </div>
 
 <footer class="footer">
-  <span class="footer-note">Slatefinder. Research signals only, not betting advice.</span>
+  <span class="footer-note">Research signals, not betting advice. Verify starters and lineups before first pitch. 21+. If gambling stops being fun, call 1-800-GAMBLER.</span>
 </footer>
 
 <script src="/app.js"></script>

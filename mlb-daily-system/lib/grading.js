@@ -77,8 +77,17 @@ export function scoreStrikeoutProp({
   // below and the qualification gate in runStrikeoutFilter), it just
   // isn't allowed to single-handedly crater an otherwise dominant stretch
   // anymore.
+  // CALIBRATION NOTE: every bucket below is sized so the maximum
+  // attainable total lands near 105, not far above it. An earlier version
+  // summed to ~140, which meant any competent arm saturated the 0-100
+  // clamp and graded A+ -- three different pitchers on the same slate all
+  // scoring exactly 100 tells you nothing, and it silently destroys the
+  // per-grade performance breakdown (lib/performance.js), whose entire
+  // purpose is separating an A+ from an A. Points still aren't fitted to
+  // outcome data; they're now at least scaled so the top of the range is
+  // reachable only by a genuinely elite profile.
   const floorBasis = softFloorKs ?? strictFloorKs;
-  const floorPts = bucket(floorBasis, [[8, 60], [7, 50], [6, 35], [5, 20], [4, 10]]);
+  const floorPts = bucket(floorBasis, [[8, 42], [7, 36], [6, 28], [5, 17], [4, 9]]);
   score += floorPts;
   reasons.push(`K floor of ${floorBasis}+ in all but at most one recent start (+${floorPts})`);
 
@@ -90,12 +99,12 @@ export function scoreStrikeoutProp({
   if (Number.isFinite(strictFloorKs) && Number.isFinite(softFloorKs)) {
     const gap = softFloorKs - strictFloorKs;
     if (gap <= 1) {
-      score += 5;
-      reasons.push(`strict floor ${strictFloorKs} is right behind the soft floor, very consistent (+5)`);
+      score += 4;
+      reasons.push(`strict floor ${strictFloorKs} is right behind the soft floor, very consistent (+4)`);
     }
   }
 
-  const kPctPts = bucket(pitcherKPct, [[30, 25], [25, 15], [20, 5]]);
+  const kPctPts = bucket(pitcherKPct, [[30, 18], [25, 13], [20, 5]]);
   score += kPctPts;
   if (pitcherKPct !== null && pitcherKPct !== undefined) reasons.push(`${fmtNum(pitcherKPct, 0)}% own K rate (+${kPctPts})`);
 
@@ -105,8 +114,8 @@ export function scoreStrikeoutProp({
   let oppPts;
   if (opposingTeamKPct === null || opposingTeamKPct === undefined) {
     oppPts = 0;
-  } else if (opposingTeamKPct >= 26) oppPts = 20;
-  else if (opposingTeamKPct >= 23) oppPts = 10;
+  } else if (opposingTeamKPct >= 26) oppPts = 16;
+  else if (opposingTeamKPct >= 23) oppPts = 9;
   else if (opposingTeamKPct >= 20) oppPts = 0;
   else oppPts = -10;
   score += oppPts;
@@ -115,11 +124,11 @@ export function scoreStrikeoutProp({
   }
 
   // Secondary factors.
-  const whiffPts = bucket(pitcherWhiffPct, [[30, 10], [25, 5]]);
+  const whiffPts = bucket(pitcherWhiffPct, [[30, 9], [25, 5]]);
   score += whiffPts;
   if (pitcherWhiffPct !== null && pitcherWhiffPct !== undefined) reasons.push(`${fmtNum(pitcherWhiffPct, 0)}% whiff rate (+${whiffPts})`);
 
-  const perStartPts = bucket(kPerStart, [[9, 15], [7, 10], [5, 5]]);
+  const perStartPts = bucket(kPerStart, [[9, 12], [7, 8], [5, 4]]);
   score += perStartPts;
   if (kPerStart !== null && kPerStart !== undefined) reasons.push(`${fmtNum(kPerStart, 1)} Ks/start lately (+${perStartPts})`);
 
@@ -128,8 +137,8 @@ export function scoreStrikeoutProp({
     const recent5 = last5StartKs.slice(0, 5);
     const hitFloorPlus2 = recent5.filter((k) => k >= strictFloorKs + 2).length;
     if (recent5.length >= 5 && hitFloorPlus2 >= 4) {
-      score += 5;
-      reasons.push(`hit floor+2 in ${hitFloorPlus2}/${recent5.length} recent starts (+5)`);
+      score += 4;
+      reasons.push(`hit floor+2 in ${hitFloorPlus2}/${recent5.length} recent starts (+4)`);
     }
   }
 
@@ -158,15 +167,19 @@ export function scoreHitProp({
   const reasons = [];
   let score = 0;
 
-  // Primary factors.
-  const avgPts = bucket(trailing15Avg, [[0.330, 35], [0.300, 25], [0.280, 15], [0.250, 5]]);
+  // Primary factors. Same calibration note as scoreStrikeoutProp above:
+  // these buckets sum to about 104 at maximum so the 0-100 clamp is only
+  // reached by an genuinely elite profile. Before rescaling, the maxima
+  // summed to 130 and every surfaced hit prop graded A+, which makes both
+  // the grade and the per-grade performance breakdown worthless.
+  const avgPts = bucket(trailing15Avg, [[0.330, 30], [0.300, 22], [0.280, 13], [0.250, 4]]);
   score += avgPts;
   if (trailing15Avg !== null && trailing15Avg !== undefined) reasons.push(`batting ${fmtNum(trailing15Avg, 3)} over his last 15 (+${avgPts})`);
 
   let xbaPts;
   if (xba === null || xba === undefined) xbaPts = 0;
-  else if (xba >= 0.280) xbaPts = 20;
-  else if (xba >= 0.260) xbaPts = 10;
+  else if (xba >= 0.280) xbaPts = 16;
+  else if (xba >= 0.260) xbaPts = 9;
   else if (xba >= 0.240) xbaPts = 0;
   else xbaPts = -5;
   score += xbaPts;
@@ -185,29 +198,29 @@ export function scoreHitProp({
     }
   }
 
-  const h9Pts = bucket(opposingHitsPer9, [[9.5, 25], [8.5, 15], [7.5, 5]]);
+  const h9Pts = bucket(opposingHitsPer9, [[9.5, 20], [8.5, 12], [7.5, 4]]);
   score += h9Pts;
   if (opposingHitsPer9 !== null && opposingHitsPer9 !== undefined) reasons.push(`opposing arm allows ${fmtNum(opposingHitsPer9, 1)} hits/9 (+${h9Pts})`);
 
   // Secondary factors.
-  const streakPts = bucket(hitStreak, [[15, 20], [11, 15], [8, 10], [5, 5]]);
+  const streakPts = bucket(hitStreak, [[15, 14], [11, 10], [8, 7], [5, 4]]);
   score += streakPts;
   if (hitStreak >= 5) reasons.push(`${hitStreak}-game hit streak (+${streakPts})`);
 
-  const hardHitPts = bucket(hardHitPct, [[43, 10], [35, 5]]);
+  const hardHitPts = bucket(hardHitPct, [[43, 8], [35, 4]]);
   score += hardHitPts;
   if (hardHitPct !== null && hardHitPct !== undefined) reasons.push(`${fmtNum(hardHitPct, 0)}% hard-hit rate (+${hardHitPts})`);
 
   let orderPts = 0;
   if (Number.isInteger(battingOrderSlot)) {
-    orderPts = battingOrderSlot <= 3 ? 10 : battingOrderSlot <= 5 ? 5 : 0;
+    orderPts = battingOrderSlot <= 3 ? 8 : battingOrderSlot <= 5 ? 4 : 0;
     score += orderPts;
     reasons.push(`batting ${battingOrderSlot}${ordinalSuffix(battingOrderSlot)} (+${orderPts})`);
   }
 
   let vsTeamPts = 0;
   if (Number.isInteger(vsTeamPa) && vsTeamPa >= 20 && vsTeamAvg !== null && vsTeamAvg !== undefined) {
-    vsTeamPts = bucket(vsTeamAvg, [[0.330, 10], [0.280, 5], [0.200, 0]], -5);
+    vsTeamPts = bucket(vsTeamAvg, [[0.330, 8], [0.280, 4], [0.200, 0]], -5);
     score += vsTeamPts;
     reasons.push(`${fmtNum(vsTeamAvg, 3)} career vs this team in ${vsTeamPa} PA (${vsTeamPts >= 0 ? '+' : ''}${vsTeamPts})`);
   }
@@ -264,35 +277,35 @@ export function scoreHomeRunProp({
   // Primary: the batter's own contact quality. Barrel rate carries the
   // most weight because a barrel is, by Statcast's definition, the exact
   // batted-ball profile that becomes a home run.
-  const barrelPts = bucket(barrelPct, [[14, 40], [11, 30], [8, 20], [6, 10]]);
+  const barrelPts = bucket(barrelPct, [[14, 35], [11, 27], [8, 18], [6, 9]]);
   score += barrelPts;
   if (barrelPct !== null && barrelPct !== undefined) reasons.push(`${fmtNum(barrelPct, 1)}% barrel rate (+${barrelPts})`);
 
-  const eloPts = bucket(avgExitVelo, [[93, 20], [91, 12], [89, 5]]);
+  const eloPts = bucket(avgExitVelo, [[93, 15], [91, 9], [89, 4]]);
   score += eloPts;
   if (avgExitVelo !== null && avgExitVelo !== undefined) reasons.push(`${fmtNum(avgExitVelo, 1)} mph average exit velocity (+${eloPts})`);
 
-  const xslgPts = bucket(xslg, [[0.500, 15], [0.450, 10], [0.400, 5]]);
+  const xslgPts = bucket(xslg, [[0.500, 12], [0.450, 8], [0.400, 4]]);
   score += xslgPts;
   if (xslg !== null && xslg !== undefined) reasons.push(`${fmtNum(xslg, 3)} expected slugging (+${xslgPts})`);
 
-  const hardHitPts = bucket(hardHitPct, [[45, 10], [38, 5]]);
+  const hardHitPts = bucket(hardHitPct, [[45, 8], [38, 4]]);
   score += hardHitPts;
   if (hardHitPct !== null && hardHitPct !== undefined) reasons.push(`${fmtNum(hardHitPct, 0)}% hard-hit rate (+${hardHitPts})`);
 
   // The matchup: an arm that gives up home runs, measured directly.
   let oppPts;
   if (opposingHrPer9 === null || opposingHrPer9 === undefined) oppPts = 0;
-  else if (opposingHrPer9 >= 1.8) oppPts = 20;
-  else if (opposingHrPer9 >= 1.3) oppPts = 12;
-  else if (opposingHrPer9 >= 1.0) oppPts = 5;
+  else if (opposingHrPer9 >= 1.8) oppPts = 16;
+  else if (opposingHrPer9 >= 1.3) oppPts = 10;
+  else if (opposingHrPer9 >= 1.0) oppPts = 4;
   else oppPts = -8; // an arm that genuinely suppresses homers is a real negative
   score += oppPts;
   if (opposingHrPer9 !== null && opposingHrPer9 !== undefined) {
     reasons.push(`opposing arm allows ${fmtNum(opposingHrPer9, 2)} HR/9 (${oppPts >= 0 ? '+' : ''}${oppPts})`);
   }
 
-  const oppBarrelPts = bucket(opposingBarrelPct, [[10, 10], [8, 5]]);
+  const oppBarrelPts = bucket(opposingBarrelPct, [[10, 7], [8, 4]]);
   score += oppBarrelPts;
   if (opposingBarrelPct !== null && opposingBarrelPct !== undefined && oppBarrelPts > 0) {
     reasons.push(`opposing arm allows ${fmtNum(opposingBarrelPct, 1)}% barrels (+${oppBarrelPts})`);
@@ -301,7 +314,7 @@ export function scoreHomeRunProp({
   // Secondary: recent HR production. Deliberately small -- it's the noisy
   // input this rewrite exists to demote, kept only as corroboration that
   // the contact quality above is currently turning into actual home runs.
-  const ratePts = bucket(trailing15HrRate, [[0.35, 10], [0.20, 6], [0.10, 3]]);
+  const ratePts = bucket(trailing15HrRate, [[0.35, 7], [0.20, 4], [0.10, 2]]);
   score += ratePts;
   if (trailing15HrRate !== null && trailing15HrRate !== undefined && ratePts > 0) {
     reasons.push(`${fmtNum(trailing15HrRate * 100, 0)}% of recent games with a homer (+${ratePts})`);
@@ -312,14 +325,14 @@ export function scoreHomeRunProp({
   // never a requirement: a masher facing a batting-practice arm indoors is
   // still the better spot than a mediocre bat in a gale.
   if (windBlowingOut) {
-    const windPts = windSpeedMph !== null && windSpeedMph !== undefined && windSpeedMph >= 12 ? 8 : 4;
+    const windPts = windSpeedMph !== null && windSpeedMph !== undefined && windSpeedMph >= 12 ? 6 : 3;
     score += windPts;
     reasons.push(`wind blowing out${windSpeedMph ? ` at ${fmtNum(windSpeedMph, 0)} mph` : ''} (+${windPts})`);
   }
 
   // More trips to the plate is more chances to run into one.
   if (Number.isInteger(battingOrderSlot)) {
-    const orderPts = battingOrderSlot <= 5 ? 5 : 0;
+    const orderPts = battingOrderSlot <= 5 ? 4 : 0;
     score += orderPts;
     if (orderPts) reasons.push(`batting ${battingOrderSlot}${ordinalSuffix(battingOrderSlot)} (+${orderPts})`);
   }

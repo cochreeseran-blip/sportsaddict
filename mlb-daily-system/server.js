@@ -472,14 +472,16 @@ function pickFreeMoneyline(ledgerRows) {
 }
 
 // ---------------------------------------------------------------------------
-// Static assets: the SlateFinder single-page app. Whitelisted files only -
-// no directory traversal surface. /record serves the same SPA (the app
-// reads location.pathname and opens the Record view); the admin bundle
-// is served separately and only to admins.
+// Static assets: the Slate Addict single-page app. Whitelisted files only -
+// no directory traversal surface. /record and /how serve the same SPA (it
+// reads location.pathname and opens the matching view), so those routes
+// are shareable links rather than client-only state; the admin bundle is
+// served separately and only to admins.
 const STATIC_FILES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/record': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/how': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
 };

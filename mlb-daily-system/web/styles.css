@@ -1,32 +1,44 @@
-/* Bare, unbranded scaffold. Neutral palette, system fonts, structural
-   layout only, no visual identity, this is being redesigned from
-   scratch. */
+/* Slate Addict.
+   Light, dense, evidence-forward. Green means the number favours the
+   pick, red means it doesn't; nothing is coloured for decoration. The
+   Finder (admin) shares this sheet, which is why the tokens below are
+   generic rather than page-specific. */
 
 :root {
-  --bg: #ffffff;
-  --bg-2: #f7f7f7;
+  --bg: #fbfbfa;
+  --bg-2: #f4f4f2;
   --panel: #ffffff;
-  --panel-2: #fafafa;
-  --border: #e2e2e2;
-  --border-strong: #cccccc;
-  --text: #111111;
-  --text-2: #555555;
-  --text-3: #888888;
-  --accent: #4a4a4a;
-  --green: #2e7d4f;
-  --green-bg: rgba(46, 125, 79, 0.1);
+  --panel-2: #fafaf9;
+  --border: #e4e3df;
+  --border-strong: #cfcec9;
+  --text: #14161a;
+  --text-2: #55585f;
+  --text-3: #8a8d94;
+  --accent: #1d7a4c;
+  --accent-soft: rgba(29, 122, 76, 0.10);
+  --green: #1d7a4c;
+  --green-bg: rgba(29, 122, 76, 0.10);
   --red: #b3392f;
-  --red-bg: rgba(179, 57, 47, 0.1);
-  --amber: #a67c1e;
-  --amber-bg: rgba(166, 124, 30, 0.1);
+  --red-bg: rgba(179, 57, 47, 0.10);
+  --amber: #9a6f14;
+  --amber-bg: rgba(154, 111, 20, 0.12);
   --radius: 8px;
+  --card-radius: 12px;
   --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-display: var(--font);
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow: 0 1px 2px rgba(20, 22, 26, 0.05), 0 1px 3px rgba(20, 22, 26, 0.04);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* [hidden] must win over any component's display rule. Without this, any
+   rule like `.account-chip { display: flex }` silently defeats
+   `el.hidden = true`, which is how both "Sign in" and "Sign out" ended up
+   visible at once. Global and !important on purpose: hiding is not a
+   style choice, it's a state, and no component should be able to override
+   it by accident. */
+[hidden] { display: none !important; }
 
 body {
   background: var(--bg);
@@ -1026,3 +1038,222 @@ select.date-select:focus { outline: 1px solid var(--accent); }
 .admin-pick-checks { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 14px; }
 .admin-pick-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
 .admin-email-preview iframe { width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+
+/* --- projection + performance surfaces -------------------------------------
+   The probability is the headline on a hit or HR card, so it gets real
+   size and sits on its own row above the supporting numbers, rather than
+   being buried in a sentence. */
+.proj-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  margin: 12px 0 4px; padding: 10px 12px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+}
+.proj-main { display: flex; align-items: baseline; gap: 8px; }
+.proj-pct {
+  font-family: var(--font-display); font-weight: 800; font-size: 30px;
+  line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.proj-label { font-size: 12.5px; color: var(--text-2); }
+.proj-side { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 12px; }
+.proj-side .faint { font-size: 11px; }
+.proj-actual { color: var(--text-2); font-size: 11.5px; }
+.warn-text { color: var(--amber); }
+
+.perf-overall {
+  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  padding: 18px 20px; margin-bottom: 18px;
+  border: 1px solid var(--border); border-radius: var(--card-radius, 10px); background: var(--panel);
+}
+.perf-overall-wl {
+  font-family: var(--font-display); font-weight: 800; font-size: 40px;
+  line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.perf-overall-meta { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--text-2); }
+
+.perf-block {
+  border: 1px solid var(--border); border-radius: var(--card-radius, 10px);
+  background: var(--panel); padding: 14px 16px; margin-bottom: 12px;
+}
+.perf-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.perf-name { font-family: var(--font-display); font-weight: 700; font-size: 15px; }
+.perf-topline { display: flex; align-items: baseline; gap: 12px; }
+.perf-wl { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.perf-rate { font-size: 14px; }
+.perf-table td, .perf-table th { padding: 6px 10px; font-size: 12.5px; }
+.lineup-cell { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+
+/* ===========================================================================
+   SLATE ADDICT (the public app at slateaddict.com)
+   Everything below is consumer-app surface. The Finder reuses the tokens
+   and the generic components above, not these.
+   ========================================================================= */
+
+.brand-mark { width: 26px; height: 26px; flex: 0 0 auto; }
+.mark-bg { fill: #14161a; }
+.mark-line { stroke: #34d17f; }
+.brand-accent { color: var(--accent); }
+
+/* Header record chip: the headline claim, present on every screen. */
+.record-chip {
+  display: inline-flex; align-items: baseline; gap: 7px;
+  padding: 5px 10px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--panel);
+  font-size: 12px;
+}
+.record-chip .chip-wl { font-weight: 700; font-variant-numeric: tabular-nums; }
+.record-chip .chip-rate { color: var(--accent); font-weight: 600; }
+
+/* --- hero ---------------------------------------------------------------- */
+.hero {
+  display: flex; gap: 28px; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  padding: 30px 32px; margin-bottom: 30px;
+  background: linear-gradient(135deg, #14161a 0%, #1d2329 100%);
+  border-radius: 16px; color: #f4f5f6;
+}
+.hero-left { flex: 1 1 380px; }
+.hero-title {
+  font-family: var(--font-display); font-weight: 800; font-size: 30px;
+  line-height: 1.15; letter-spacing: -0.025em; margin-bottom: 10px;
+}
+.hero-sub { color: #b6bcc4; font-size: 14px; line-height: 1.6; max-width: 52ch; }
+.hero-right {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  padding: 20px 24px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.10);
+}
+.hero-wl {
+  font-family: var(--font-display); font-weight: 800; font-size: 46px;
+  line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+}
+.hero-dash { opacity: 0.4; margin: 0 2px; }
+.hero-push { opacity: 0.5; font-size: 30px; }
+.hero-meta { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; max-width: 34ch; }
+.hero-rate { font-size: 20px; font-weight: 700; color: #34d17f; }
+.hero-rate-lbl { font-size: 12px; color: #9aa2ab; line-height: 1.5; }
+.hero .btn.ghost {
+  border-color: rgba(255,255,255,0.25); color: #e8eaed; background: transparent;
+}
+.hero .btn.ghost:hover { background: rgba(255,255,255,0.10); }
+
+/* --- board --------------------------------------------------------------- */
+.board-date { margin-bottom: 22px; }
+.board-date .section-title {
+  font-family: var(--font-display); font-weight: 800; font-size: 22px; letter-spacing: -0.02em;
+}
+.board-date .section-sub { display: block; margin-top: 5px; color: var(--text-2); font-size: 13px; max-width: 70ch; line-height: 1.6; }
+
+.board-section { margin-bottom: 32px; }
+.board-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.board-head .board-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 17px; letter-spacing: -0.01em; margin: 0;
+}
+.board-blurb { color: var(--text-3); font-size: 12.5px; }
+
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 14px; }
+
+.pick-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  padding: 16px 18px; box-shadow: var(--shadow); position: relative; overflow: hidden;
+}
+/* A graded pick carries its outcome as a left rule: visible at a glance
+   while scrolling, and losses are marked exactly as loudly as wins. */
+.pick-card.is-win { box-shadow: inset 3px 0 0 var(--green), var(--shadow); }
+.pick-card.is-loss { box-shadow: inset 3px 0 0 var(--red), var(--shadow); }
+.pc-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.pc-kind {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
+}
+.pc-badges { display: flex; align-items: center; gap: 6px; }
+.pc-headline {
+  font-family: var(--font-display); font-weight: 700; font-size: 15.5px;
+  line-height: 1.35; letter-spacing: -0.01em; margin-bottom: 10px;
+}
+.pc-lead {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  padding: 10px 12px; margin-bottom: 10px;
+  background: var(--bg-2); border-radius: 8px;
+}
+.pc-lead-num {
+  font-family: var(--font-display); font-weight: 800; font-size: 26px; line-height: 1;
+  letter-spacing: -0.02em; color: var(--accent); font-variant-numeric: tabular-nums;
+}
+.pc-lead-lbl { font-size: 12px; color: var(--text-2); }
+.pc-detail { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+
+.res-chip {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; border: 1px solid transparent;
+}
+.res-chip.win { color: var(--green); background: var(--green-bg); border-color: rgba(29,122,76,0.28); }
+.res-chip.loss { color: var(--red); background: var(--red-bg); border-color: rgba(179,57,47,0.28); }
+.res-chip.push { color: var(--amber); background: var(--amber-bg); border-color: rgba(154,111,20,0.28); }
+.res-chip.pending { color: var(--text-3); background: var(--bg-2); border-color: var(--border); }
+
+/* --- track record -------------------------------------------------------- */
+.rec-overall {
+  display: flex; align-items: baseline; gap: 22px; flex-wrap: wrap;
+  padding: 24px 26px; margin-bottom: 20px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
+}
+.rec-overall-wl {
+  font-family: var(--font-display); font-weight: 800; font-size: 48px; line-height: 1;
+  letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+}
+.rec-overall-meta { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+
+.rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.rec-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  padding: 16px 18px; box-shadow: var(--shadow);
+}
+.rec-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.rec-card-name { font-family: var(--font-display); font-weight: 700; font-size: 15px; }
+.rec-card-wl { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rec-card-rate { font-size: 13px; margin-top: 3px; margin-bottom: 12px; }
+.rec-grade-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rec-grade-table th {
+  text-align: left; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-3); font-weight: 600; padding: 5px 8px 5px 0; border-bottom: 1px solid var(--border);
+}
+.rec-grade-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--bg-2); }
+.rec-card-note { font-size: 11.5px; color: var(--text-3); margin-top: 10px; }
+.rec-disclaimer {
+  margin-top: 20px; padding: 14px 16px; font-size: 12.5px; line-height: 1.65; color: var(--text-2);
+  background: var(--bg-2); border-radius: 10px; max-width: 84ch;
+}
+
+/* --- how it works -------------------------------------------------------- */
+.how-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.how-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  padding: 18px 20px; box-shadow: var(--shadow);
+}
+.how-card h3 { font-family: var(--font-display); font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+.how-card p { font-size: 13px; line-height: 1.65; color: var(--text-2); }
+.how-card strong { color: var(--text); font-weight: 600; }
+.how-caveat {
+  margin-top: 18px; padding: 20px 22px; border-radius: var(--card-radius);
+  background: var(--bg-2); border: 1px solid var(--border); max-width: 90ch;
+}
+.how-caveat h3 { font-family: var(--font-display); font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+.how-caveat p { font-size: 13px; line-height: 1.7; color: var(--text-2); }
+
+.auth-skip {
+  display: block; width: 100%; margin-top: 12px; padding: 6px;
+  background: none; border: none; cursor: pointer;
+  font-size: 12.5px; color: var(--text-3); text-decoration: underline;
+}
+.auth-skip:hover { color: var(--text-2); }
+
+@media (max-width: 620px) {
+  .hero { padding: 22px 20px; }
+  .hero-title { font-size: 24px; }
+  .hero-wl { font-size: 38px; }
+  .rec-overall-wl { font-size: 38px; }
+  .pick-grid, .rec-grid, .how-grid { grid-template-columns: 1fr; }
+}

@@ -162,8 +162,10 @@ const SIGNAL_ORDER = ['strikeout', 'multi_hit', 'hit_streak', 'home_run', 'money
 // matters for that pick type, carries the team's colour as an accent, and
 // states its result plainly once graded -- losses in the same weight as
 // wins, because a record that hides them is worth nothing.
-function pickCard(p) {
+function pickCard(p, opts) {
+  if (p.locked) return lockedCard(p);
   const meta = SIGNAL_META[p.signalType] || { label: p.signalType };
+  const featured = Boolean(opts && opts.featuredId && p.id === opts.featuredId);
   const person = p.batterId || p.pitcherId || null;
   const personName = p.batterName || p.pitcherName || '';
   const team = p.team || p.homeTeam || '';
@@ -175,8 +177,9 @@ function pickCard(p) {
     : `<span class="pc-face">${Media.headshot(person, personName, 52)}</span>`;
 
   return `
-    <article class="pick-card ${p.result === 'win' ? 'is-win' : p.result === 'loss' ? 'is-loss' : ''}"
+    <article class="pick-card ${featured ? 'is-featured' : ''} ${p.result === 'win' ? 'is-win' : p.result === 'loss' ? 'is-loss' : ''}"
              style="--team-color:${Media.teamColor(team)}">
+      ${featured ? '<div class="pc-featured-flag">Today\'s free pick</div>' : ''}
       <div class="pc-top">
         <span class="pc-kind">${esc(meta.label)}</span>
         <span class="pc-badges">${gradeBadge(p.grade)}${resultChip(p.result)}</span>
@@ -191,6 +194,64 @@ function pickCard(p) {
       ${lead}
       <p class="pc-detail">${esc(p.detail || '')}</p>
     </article>`;
+}
+
+// A pick the reader has not paid for. The server already stripped the
+// player, the team and every number before this reached the browser, so
+// there is nothing here to reveal -- this only draws the empty seat.
+//
+// It still shows the grade and, once the game is done, the result. That
+// is the point: the locked board wins and loses in public, so the record
+// on the next tab is something the reader watched happen rather than a
+// number they have to take on faith.
+function lockedCard(p) {
+  const meta = SIGNAL_META[p.signalType] || { label: p.signalType };
+  return `
+    <article class="pick-card is-locked ${p.result === 'win' ? 'is-win' : p.result === 'loss' ? 'is-loss' : ''}">
+      <div class="pc-top">
+        <span class="pc-kind">${esc(meta.label)}</span>
+        <span class="pc-badges">${gradeBadge(p.grade)}${resultChip(p.result)}</span>
+      </div>
+      <div class="pc-body">
+        <span class="pc-face pc-face-locked" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="4" y="10" width="16" height="10" rx="2"></rect>
+            <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+          </svg>
+        </span>
+        <div class="pc-text">
+          <h3 class="pc-headline pc-headline-locked">Members only</h3>
+          <div class="pc-sub">Published before first pitch</div>
+        </div>
+      </div>
+      <div class="pc-lead pc-lead-locked" aria-hidden="true">
+        <span class="pc-redact pc-redact-lg"></span>
+        <span class="pc-redact pc-redact-sm"></span>
+      </div>
+      <p class="pc-detail pc-detail-locked" aria-hidden="true">
+        <span class="pc-redact"></span><span class="pc-redact pc-redact-sm"></span>
+      </p>
+    </article>`;
+}
+
+// The upsell. States the count plainly and leans on the record rather
+// than on urgency, because the record is the actual argument.
+function upsellBlock(access, record) {
+  if (!access || access.research || !access.lockedCount) return '';
+  const pub = record?.published;
+  const proof = pub && pub.winRate != null
+    ? `The full board is ${pub.wins}-${pub.losses} on the record.`
+    : 'Every pick lands on the public record, win or lose.';
+  return `
+    <section class="upsell">
+      <div class="upsell-body">
+        <h3 class="upsell-title">${access.lockedCount} more pick${access.lockedCount === 1 ? '' : 's'} on today's board</h3>
+        <p class="upsell-copy">You are seeing the day's best pick free. Members get the rest, with the full projection and the reasoning behind every one. ${esc(proof)}</p>
+        <div class="upsell-actions">
+          <button class="btn primary" data-nav="record">See the track record first</button>
+        </div>
+      </div>
+    </section>`;
 }
 
 // The headline: who, in as few words as possible. The full sentence lives
@@ -299,7 +360,24 @@ async function renderToday() {
       api(`/api/slate?date=${state.today}`).catch(() => null),
     ]);
 
-    const picks = digest.publishedToday || [];
+    const allPicks = digest.publishedToday || [];
+    const access = digest.access || {};
+    const cardOpts = { featuredId: digest.featuredPickId ?? null };
+
+    // A free reader's one real pick is lifted out of its signal section and
+    // shown first. Left in place it lands wherever its signal happens to
+    // sort -- three sections down, behind a wall of locked cards -- which
+    // makes the free tier feel like a locked door with a pick hidden behind
+    // it rather than a pick with more available.
+    const featured = access.research ? null : allPicks.find((p) => p.id === digest.featuredPickId && !p.locked);
+    const picks = featured ? allPicks.filter((p) => p.id !== featured.id) : allPicks;
+
+    const featuredBlock = featured
+      ? `<section class="board-section featured-section">
+           <div class="pick-grid pick-grid-single">${pickCard(featured, cardOpts)}</div>
+         </section>`
+      : '';
+
     const grouped = new Map();
     for (const p of picks) {
       if (!grouped.has(p.signalType)) grouped.set(p.signalType, []);
@@ -313,7 +391,7 @@ async function renderToday() {
             <h2 class="board-title">${esc(meta.label)}</h2>
             <span class="board-blurb">${esc(meta.blurb || '')}</span>
           </div>
-          <div class="pick-grid">${grouped.get(k).map(pickCard).join('')}</div>
+          <div class="pick-grid">${grouped.get(k).map((p) => pickCard(p, cardOpts)).join('')}</div>
         </section>`;
     }).join('');
 
@@ -327,9 +405,11 @@ async function renderToday() {
         ${liveStrip(slate.games)}` : ''}
       <div class="board-date">
         <h2 class="section-title">${esc(longDate(digest.date))}</h2>
-        <span class="section-sub">${picks.length} published pick${picks.length === 1 ? '' : 's'}</span>
+        <span class="section-sub">${allPicks.length} published pick${allPicks.length === 1 ? '' : 's'}</span>
       </div>
-      ${sections || emptyState('Nothing published yet today', 'Picks go up in the morning, before first pitch. Check back shortly, or look at the track record in the meantime.')}`;
+      ${featuredBlock}
+      ${upsellBlock(access, record)}
+      ${sections || (featuredBlock ? '' : emptyState('Nothing published yet today', 'Picks go up in the morning, before first pitch. Check back shortly, or look at the track record in the meantime.'))}`;
   } catch (err) {
     host.innerHTML = emptyState('Could not load today\'s board', err.message);
   }

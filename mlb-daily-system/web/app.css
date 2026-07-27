@@ -210,6 +210,58 @@ input, select, textarea { background: var(--panel-2); color: var(--text); border
 .pc-lead-sub { flex: 1 1 100%; font-size: 11.5px; color: var(--text-3); }
 .pc-detail { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
 
+/* --- the free tier's featured pick ------------------------------------- */
+/* The one real card on a free reader's board. Marked so it reads as a gift
+   rather than as the leftover the paid cards were cut from. */
+.pick-card.is-featured { border-color: rgba(33, 224, 122, 0.4); }
+.pick-card.is-featured::before { background: var(--accent); width: 4px; }
+.pc-featured-flag {
+  display: inline-block; margin-bottom: 10px; padding: 3px 8px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--bg); background: var(--accent);
+}
+
+/* --- locked cards ------------------------------------------------------ */
+/* There is no pick in this card's markup to hide -- the server never sent
+   one. These rules only draw the shape of what is missing, so the redaction
+   bars are decoration, not a security boundary. */
+.pick-card.is-locked { background: var(--panel); border-style: dashed; }
+.pick-card.is-locked::before { background: var(--border-strong); }
+.pick-card.is-locked:hover { transform: none; border-color: var(--border-strong); }
+.pc-face-locked {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 52px; height: 52px; border-radius: 50%;
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--text-3);
+}
+.pc-headline-locked { font-size: 15px; color: var(--text-2); }
+.pc-lead-locked { display: block; background: var(--bg-2); border-style: dashed; }
+.pc-detail-locked { display: flex; flex-direction: column; gap: 6px; }
+.pc-redact {
+  display: block; height: 10px; border-radius: 3px; background: var(--border);
+  width: 100%; opacity: 0.55;
+}
+.pc-redact-lg { height: 26px; width: 45%; margin-bottom: 8px; opacity: 0.4; }
+.pc-redact-sm { width: 62%; }
+
+/* The hoisted free pick sits alone and full-width-capped, so it reads as
+   the headline of the page rather than one tile in a grid. */
+.featured-section { margin-bottom: 18px; }
+.pick-grid-single { grid-template-columns: minmax(0, 520px); }
+
+/* --- upsell ------------------------------------------------------------ */
+.upsell {
+  position: relative; overflow: hidden; margin: 4px 0 22px;
+  padding: 20px 22px; border-radius: var(--card-radius);
+  background: linear-gradient(135deg, rgba(33, 224, 122, 0.09), rgba(33, 224, 122, 0.02));
+  border: 1px solid rgba(33, 224, 122, 0.28);
+}
+.upsell-title {
+  font-family: var(--font-display); font-weight: 800; font-size: 19px;
+  letter-spacing: -0.02em; margin-bottom: 7px;
+}
+.upsell-copy { font-size: 13px; color: var(--text-2); line-height: 1.65; max-width: 62ch; }
+.upsell-actions { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+
 .res-chip {
   font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
   padding: 4px 9px; border-radius: 999px; border: 1px solid transparent;

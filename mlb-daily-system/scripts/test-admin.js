@@ -311,6 +311,107 @@ async function main() {
     }
   }
 
+  // --- Tests 14-17: the paywall ------------------------------------------
+  // Boot a THIRD server with PAYWALL_ENABLED=true (it is read once at module
+  // load, so it needs its own instance) and confirm the free surface is
+  // gated on the SERVER. The decisive test is 15: the locked picks must not
+  // be present in the response body at all. A paywall that ships the picks
+  // and hides them in CSS is not a paywall.
+  {
+    const port3 = 34600 + Math.floor(Math.random() * 300);
+    process.env.PORT = String(port3);
+    process.env.PAYWALL_ENABLED = 'true';
+    delete process.env.ADMIN_HOST;
+    delete process.env.APP_HOST;
+
+    // A board with several published props alongside the moneylines from
+    // test 10, so there is something real to lock.
+    const SECRETS = {
+      batter: 'Zzyzx Secretbatter',
+      pitcher: 'Qqqq Secretpitcher',
+      detail: 'CONFIDENTIALREASONING',
+    };
+    const mkProp = async (signal, score) => {
+      const { rows } = await pool.query(
+        `INSERT INTO tracked_picks (game_date, signal_type, mlb_game_id, description, qualifying_metrics)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        [TEST_DATE, signal, gameFuturePk, `${signal} paywall probe`, JSON.stringify({
+          batterName: SECRETS.batter, batterId: 991001, pitcherName: SECRETS.pitcher, pitcherId: 991002,
+          team: 'Detroit Tigers', headline: `${SECRETS.batter} to do a thing`, detail: SECRETS.detail,
+          grade: 'A', score, pAtLeastTwo: 0.44, expectedHits: 1.4, suggestedLine: 7.5, barrelPct: 16.5,
+        })]
+      );
+      await pool.query('UPDATE tracked_picks SET published = true WHERE id = $1', [rows[0].id]);
+      return rows[0].id;
+    };
+    const bestId = await mkProp('multi_hit', 95);
+    await mkProp('strikeout', 80);
+    await mkProp('home_run', 70);
+
+    const req3 = (path, cookie) => new Promise((resolve, reject) => {
+      const r = http.request({ host: '127.0.0.1', port: port3, method: 'GET', path,
+        headers: cookie ? { Cookie: cookie } : {} }, (res) => {
+        let b = ''; res.on('data', (c) => (b += c)); res.on('end', () => resolve({ status: res.statusCode, body: b }));
+      });
+      r.on('error', reject); r.end();
+    });
+
+    try {
+      await import(`../server.js?paywall-test=${Date.now()}`);
+      await new Promise((r) => setTimeout(r, 800));
+
+      const anon = await req3(`/api/digest?date=${TEST_DATE}`);
+      const p = JSON.parse(anon.body);
+      const board = p.publishedToday || [];
+      const unlocked = board.filter((x) => !x.locked);
+      const locked = board.filter((x) => x.locked);
+
+      record(14, 'Paywall on: a free reader gets exactly one unlocked pick, the rest locked',
+        p.access?.research === false && unlocked.length === 1 && locked.length === board.length - 1 && board.length > 1,
+        `board=${board.length} unlocked=${unlocked.length} locked=${locked.length}`);
+
+      // The decisive one. Cut the featured pick (which is allowed to carry
+      // its own player) out of the payload and re-serialise everything
+      // else: no probe value may survive anywhere in what remains. All
+      // three props share the probe name, so a leak from any locked pick
+      // shows up here regardless of which field it hid in.
+      const featuredIsBest = p.featuredPickId === bestId;
+      const rest = JSON.stringify({ ...p, publishedToday: board.filter((x) => x.id !== p.featuredPickId) });
+      const leaks = ['batter', 'pitcher', 'detail'].filter((k) => rest.includes(SECRETS[k]));
+      record(15, 'Locked picks are absent from the response body, not hidden client-side',
+        leaks.length === 0 && featuredIsBest,
+        leaks.length ? `LEAKED: ${leaks.join(', ')}` : `nothing leaks outside the featured pick; featured=${p.featuredPickId} expected=${bestId}`);
+
+      record(16, 'Locked stubs carry no player, team or projection fields',
+        locked.length > 0 && locked.every((x) => !x.batterName && !x.pitcherName && !x.team && !x.detail
+          && !x.headline && x.pAtLeastTwo === undefined && x.homeTeam === undefined),
+        `checked ${locked.length} stub(s); keys: ${Object.keys(locked[0] || {}).join(',')}`);
+
+      // A member sees the whole board with the paywall still on.
+      const crypto = await import('node:crypto');
+      const mToken = crypto.randomBytes(32).toString('hex');
+      await pool.query(`UPDATE users SET tier = 'member' WHERE id = $1`, [userId]);
+      await pool.query(`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1,$2, now() + interval '1 day')`, [mToken, userId]);
+      const mem = await req3(`/api/digest?date=${TEST_DATE}`, `sf_session=${mToken}`);
+      const mp = JSON.parse(mem.body);
+      const memLocked = (mp.publishedToday || []).filter((x) => x.locked);
+      record(17, 'Paywall on: a member sees the full board with nothing locked',
+        mp.access?.research === true && memLocked.length === 0 && (mp.publishedToday || []).length === board.length,
+        `member board=${(mp.publishedToday || []).length} locked=${memLocked.length}`);
+
+      // The track record is the free tier's proof and must stay open even
+      // with the paywall on.
+      const rec = await req3('/api/record');
+      record(18, 'Paywall on: the public track record stays open to anonymous readers',
+        rec.status === 200 && JSON.parse(rec.body)?.published !== undefined,
+        `status ${rec.status}`);
+    } catch (err) {
+      record(14, 'Paywall tests', false, err.message);
+    } finally {
+      delete process.env.PAYWALL_ENABLED;
+    }
+  }
+
   // --- summary + cleanup ---
   await cleanup();
   const passed = results.filter((r) => r.passed).length;

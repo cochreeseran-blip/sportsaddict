@@ -471,6 +471,47 @@ function pickFreeMoneyline(ledgerRows) {
   return published[0] ?? null;
 }
 
+// The free tier's one full pick of the day: the highest-scoring published
+// pick on the board, whatever signal it came from. A prop wins a tie over
+// a moneyline, because the props are what the product is actually for and
+// a free reader should see the thing worth paying for, not the side dish.
+//
+// Deliberately the BEST pick rather than a random or a deliberately weak
+// one. A free tier that shows its worst work is a bad advertisement and a
+// dishonest sample of the record it is asking to be judged on.
+const FEATURED_TIEBREAK = { multi_hit: 3, home_run: 3, strikeout: 3, hit_streak: 2, moneyline: 1 };
+
+function pickFeatured(ledgerRows) {
+  const published = ledgerRows.filter((p) => p.published).map(shapeLedgerPick);
+  if (!published.length) return null;
+  published.sort((a, b) => {
+    const rank = (FEATURED_TIEBREAK[b.signalType] ?? 0) - (FEATURED_TIEBREAK[a.signalType] ?? 0);
+    if (rank !== 0) return rank;
+    return (b.gradeScore ?? 0) - (a.gradeScore ?? 0);
+  });
+  return published[0];
+}
+
+// A published pick with everything actionable removed. This is what a
+// free reader gets for the picks they have not paid for: proof the pick
+// exists and how it graded, never who it is on.
+//
+// The stripping happens HERE, on the server, before the JSON is written.
+// Nothing actionable is serialised and then hidden with CSS -- a paywall
+// you can defeat with devtools is not a paywall.
+function lockedStub(p) {
+  return {
+    id: p.id,
+    signalType: p.signalType,
+    locked: true,
+    grade: p.grade,
+    // Safe once the game is over, and it is the honest part: the reader
+    // watches the locked board win or lose in public before deciding.
+    result: p.result,
+    published: true,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Static assets: the Slate Addict single-page app. Whitelisted files only -
 // no directory traversal surface. /record and /how serve the same SPA (it
@@ -1030,21 +1071,32 @@ const server = http.createServer(async (req, res) => {
         ledgerForDate(date),
       ]);
 
-      // FREE surface: exactly one published moneyline pick (the worst
-      // opposing arm among what the admin put on the record), plus the
-      // day's published picks' W/L. MEMBER surface (or paywall off): the
-      // full ledger for the date - every qualifying pick with its
-      // metrics, published or not - plus the research tables from the
-      // digest.
+      // FREE surface: the day's single best published pick in full, plus a
+      // stripped stub for every other published pick so the reader can see
+      // the size and shape of the board (and watch it win or lose) without
+      // being handed it. MEMBER surface (or paywall off): the full ledger
+      // for the date - every qualifying pick with its metrics, published
+      // or not - plus the research tables from the digest.
       const freeMoneyline = pickFreeMoneyline(ledger);
-      const publishedToday = ledger.filter((r) => r.published).map(shapeLedgerPick);
+      const allPublished = ledger.filter((r) => r.published).map(shapeLedgerPick);
+      const featured = research ? null : pickFeatured(ledger);
+      const publishedToday = research
+        ? allPublished
+        : allPublished.map((p) => (featured && p.id === featured.id ? p : lockedStub(p)));
 
       const base = {
         date,
         availableDates,
         updatedAt: digest.updatedAt,
         warnings: digest.warnings,
-        access: { research, paywallEnabled: PAYWALL_ENABLED },
+        access: {
+          research,
+          paywallEnabled: PAYWALL_ENABLED,
+          // What the reader is missing, so the app can say "6 more picks"
+          // rather than an unquantified nag.
+          lockedCount: research ? 0 : Math.max(0, allPublished.length - (featured ? 1 : 0)),
+        },
+        featuredPickId: featured?.id ?? null,
         freeMoneyline,
         publishedToday,
       };

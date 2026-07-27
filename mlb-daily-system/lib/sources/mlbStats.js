@@ -1,5 +1,10 @@
 // Overridable so tests/local dev can point at a fixture server.
-const BASE = process.env.MLB_STATS_API_BASE || 'https://statsapi.mlb.com/api/v1';
+//
+// Read per call rather than captured at module load: this module is
+// imported at startup by the pipeline, so a constant would freeze whatever
+// the environment looked like at import time and silently ignore any
+// later override -- which is exactly what a fixture server needs to do.
+const base = () => process.env.MLB_STATS_API_BASE || 'https://statsapi.mlb.com/api/v1';
 
 async function fetchJson(url, timeoutMs = 15000) {
   const controller = new AbortController();
@@ -21,7 +26,7 @@ async function fetchJson(url, timeoutMs = 15000) {
 // the identical request (probablePitcher(note),venue) and read the same
 // fields. There is no separate probable-pitchers API to scrape.
 export async function fetchScheduleWithProbables(dateStr) {
-  const url = `${BASE}/schedule?sportId=1&hydrate=probablePitcher(note),venue&date=${dateStr}`;
+  const url = `${base()}/schedule?sportId=1&hydrate=probablePitcher(note),venue&date=${dateStr}`;
   const data = await fetchJson(url);
   const dates = data.dates || [];
   const games = [];
@@ -55,7 +60,7 @@ export async function fetchScheduleWithProbables(dateStr) {
 // call; when it doesn't, callers fall back gracefully.
 export async function fetchScheduleRange(startDate, endDate) {
   const hydrate = 'probablePitcher,venue,team,linescore,lineups';
-  const url = `${BASE}/schedule?sportId=1&startDate=${startDate}&endDate=${endDate}&hydrate=${hydrate}`;
+  const url = `${base()}/schedule?sportId=1&startDate=${startDate}&endDate=${endDate}&hydrate=${hydrate}`;
   const data = await fetchJson(url);
   const byDate = {};
   for (const d of data.dates || []) {
@@ -102,7 +107,7 @@ export async function fetchScheduleRange(startDate, endDate) {
 // Full boxscore lineups for the game-detail view: batting order with
 // jersey numbers, positions, and (for Live/Final games) the day's line.
 export async function fetchBoxscoreLineups(gamePk) {
-  const url = `${BASE}/game/${gamePk}/boxscore`;
+  const url = `${base()}/game/${gamePk}/boxscore`;
   const data = await fetchJson(url);
   const side = (key) => {
     const team = data.teams?.[key];
@@ -139,7 +144,7 @@ export async function fetchBoxscoreLineups(gamePk) {
 // Preview/Final games the offense block is absent or stale, callers gate
 // on the schedule's abstractGameState before showing any of this.
 export async function fetchLinescore(gamePk) {
-  const url = `${BASE}/game/${gamePk}/linescore`;
+  const url = `${base()}/game/${gamePk}/linescore`;
   const data = await fetchJson(url);
   return {
     currentInning: data.currentInning ?? null,
@@ -171,7 +176,7 @@ export async function fetchLinescore(gamePk) {
 // many Ks a departed starter had at the moment he was pulled.
 export async function fetchLivePitcherLine(gamePk, side, pitcherId) {
   if (!pitcherId) return null;
-  const url = `${BASE}/game/${gamePk}/boxscore`;
+  const url = `${base()}/game/${gamePk}/boxscore`;
   const data = await fetchJson(url);
   const p = data.teams?.[side]?.players?.[`ID${pitcherId}`];
   const s = p?.stats?.pitching;
@@ -186,14 +191,14 @@ export async function fetchLivePitcherLine(gamePk, side, pitcherId) {
 
 // Game-by-game pitching log for the season, most recent start first.
 export async function fetchPitcherGameLog(pitcherId, season) {
-  const url = `${BASE}/people/${pitcherId}/stats?stats=gameLog&group=pitching&season=${season}`;
+  const url = `${base()}/people/${pitcherId}/stats?stats=gameLog&group=pitching&season=${season}`;
   const data = await fetchJson(url);
   const splits = data.stats?.[0]?.splits || [];
   return [...splits].sort((a, b) => new Date(b.date) - new Date(a.date));
 }
 
 export async function fetchPitcherSeasonEra(pitcherId, season) {
-  const url = `${BASE}/people/${pitcherId}/stats?stats=season&group=pitching&season=${season}`;
+  const url = `${base()}/people/${pitcherId}/stats?stats=season&group=pitching&season=${season}`;
   const data = await fetchJson(url);
   const stat = data.stats?.[0]?.splits?.[0]?.stat;
   const era = stat?.era !== undefined ? parseFloat(stat.era) : null;
@@ -202,7 +207,7 @@ export async function fetchPitcherSeasonEra(pitcherId, season) {
 
 // Game-by-game hitting log for the season, most recent game first.
 export async function fetchBatterGameLog(batterId, season) {
-  const url = `${BASE}/people/${batterId}/stats?stats=gameLog&group=hitting&season=${season}`;
+  const url = `${base()}/people/${batterId}/stats?stats=gameLog&group=hitting&season=${season}`;
   const data = await fetchJson(url);
   const splits = data.stats?.[0]?.splits || [];
   return [...splits].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -216,7 +221,7 @@ export async function fetchBatterGameLog(batterId, season) {
 // the small handful of games that already cleared the odds filter, right
 // before a pick locks in, rather than re-fetching the whole day's slate.
 export async function fetchGameProbables(gamePk) {
-  const url = `${BASE}/schedule?gamePk=${gamePk}&hydrate=probablePitcher`;
+  const url = `${base()}/schedule?gamePk=${gamePk}&hydrate=probablePitcher`;
   const data = await fetchJson(url);
   const game = data.dates?.[0]?.games?.[0];
   if (!game) return null;
@@ -229,7 +234,7 @@ export async function fetchGameProbables(gamePk) {
 }
 
 export async function fetchGameResult(gamePk) {
-  const url = `${BASE}/schedule?gamePk=${gamePk}`;
+  const url = `${base()}/schedule?gamePk=${gamePk}`;
   const data = await fetchJson(url);
   const game = data.dates?.[0]?.games?.[0];
   if (!game) return null;
@@ -247,7 +252,7 @@ export async function fetchGameResult(gamePk) {
 // come back empty earlier in the day - callers fall back to the active
 // roster in that case.
 export async function fetchConfirmedLineup(gamePk, side) {
-  const url = `${BASE}/game/${gamePk}/boxscore`;
+  const url = `${base()}/game/${gamePk}/boxscore`;
   const data = await fetchJson(url);
   const team = data.teams?.[side];
   const order = team?.battingOrder || [];
@@ -273,7 +278,7 @@ export async function fetchConfirmedLineup(gamePk, side) {
 // lib/parkBearings.js for how the angles are validated before being
 // trusted by the wind math.
 export async function fetchVenues(season) {
-  const url = `${BASE}/venues?sportId=1&hydrate=location&season=${season}`;
+  const url = `${base()}/venues?sportId=1&hydrate=location&season=${season}`;
   const data = await fetchJson(url);
   return (data.venues || []).map((v) => ({
     id: v.id,
@@ -289,7 +294,7 @@ export async function fetchVenues(season) {
 // just today's probable starters and confirmed lineup. One roster fetch,
 // split by position, rather than a separate call per group.
 export async function fetchActiveRoster(teamId) {
-  const url = `${BASE}/teams/${teamId}/roster?rosterType=active`;
+  const url = `${base()}/teams/${teamId}/roster?rosterType=active`;
   const data = await fetchJson(url);
   const roster = data.roster || [];
   const toPlayer = (p) => ({
@@ -310,7 +315,7 @@ export async function fetchActiveRoster(teamId) {
 // bulk "every game log ever" endpoint, so backfill has to go team by team,
 // season by season.
 export async function fetchAllTeams(season) {
-  const url = `${BASE}/teams?sportId=1&season=${season}`;
+  const url = `${base()}/teams?sportId=1&season=${season}`;
   const data = await fetchJson(url);
   return (data.teams || []).map((t) => ({ id: t.id, name: t.name, abbrev: t.abbreviation }));
 }
@@ -320,7 +325,7 @@ export async function fetchAllTeams(season) {
 // the current 26-man, which is useless for a historical-season backfill
 // where "today" isn't the season being pulled.
 export async function fetchSeasonRoster(teamId, season) {
-  const url = `${BASE}/teams/${teamId}/roster?rosterType=fullSeason&season=${season}`;
+  const url = `${base()}/teams/${teamId}/roster?rosterType=fullSeason&season=${season}`;
   const data = await fetchJson(url);
   const roster = data.roster || [];
   const toPlayer = (p) => ({
@@ -334,3 +339,34 @@ export async function fetchSeasonRoster(teamId, season) {
   };
 }
 
+
+// Career batter-vs-team splits. `vsTeamTotal` is MLB's own career total
+// against one opponent, which is what the hit-prop score wants -- the
+// per-season `vsTeam` variant would reset every year and almost never
+// clear the 20-PA gate.
+//
+// Returns null (not zeros) when the split is missing, so the caller can
+// tell "never faced them" apart from "faced them and did nothing".
+export async function fetchBatterVsTeam(batterId, opposingTeamId) {
+  const url = `${base()}/people/${batterId}/stats?stats=vsTeamTotal&group=hitting&opposingTeamId=${opposingTeamId}`;
+  const data = await fetchJson(url);
+  // The vsTeam feeds nest one split per opponent; with opposingTeamId set
+  // there is at most one, but the shape is still an array.
+  const split = data.stats?.[0]?.splits?.find((s) => s.stat) ?? null;
+  if (!split) return null;
+  const s = split.stat || {};
+  const int = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+  const pa = int(s.plateAppearances);
+  const ab = int(s.atBats);
+  if (!pa && !ab) return null;
+  return {
+    plateAppearances: pa ?? 0,
+    atBats: ab ?? 0,
+    hits: int(s.hits) ?? 0,
+    homeRuns: int(s.homeRuns) ?? 0,
+    strikeOuts: int(s.strikeOuts) ?? 0,
+    // MLB returns avg as a string like ".312"; recompute from the counts
+    // instead so a missing/odd avg string can never poison the score.
+    battingAvg: ab ? Number(((int(s.hits) ?? 0) / ab).toFixed(3)) : null,
+  };
+}

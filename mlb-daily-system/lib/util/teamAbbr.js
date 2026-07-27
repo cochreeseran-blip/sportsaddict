@@ -42,3 +42,24 @@ const NAME_TO_ABBR = {
 export function teamAbbr(fullName) {
   return NAME_TO_ABBR[fullName] || null;
 }
+
+// MLB's own numeric team ids. Needed for the Stats API's `opposingTeamId`
+// parameter (batter-vs-team splits), which takes an id and will not accept
+// a name or an abbreviation. Keyed by abbreviation so either direction
+// works: name -> abbr -> id.
+const ABBR_TO_ID = {
+  AZ: 109, ATL: 144, BAL: 110, BOS: 111, CHC: 112, CWS: 145, CIN: 113,
+  CLE: 114, COL: 115, DET: 116, HOU: 117, KC: 118, LAA: 108, LAD: 119,
+  MIA: 146, MIL: 158, MIN: 142, NYM: 121, NYY: 147, ATH: 133, OAK: 133,
+  PHI: 143, PIT: 134, SD: 135, SF: 137, SEA: 136, STL: 138, TB: 139,
+  TEX: 140, TOR: 141, WSH: 120,
+};
+
+export function teamIdFromAbbr(abbr) {
+  return ABBR_TO_ID[abbr] ?? null;
+}
+
+export function teamId(fullName) {
+  const abbr = teamAbbr(fullName);
+  return abbr ? teamIdFromAbbr(abbr) : null;
+}

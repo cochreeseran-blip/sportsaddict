@@ -3,6 +3,7 @@
 // below), seeding a controlled fixture slate so every assertion is about
 // this code's behaviour, never about whatever real data happens to exist.
 import 'dotenv/config';
+import http from 'node:http';
 import { pool } from '../lib/db.js';
 import { runMigrations } from '../lib/migrate.js';
 import { ensureAuthSchema } from '../lib/auth.js';
@@ -10,7 +11,8 @@ import { ensureInsertSafety } from '../lib/schemaGuard.js';
 import { runHitStreakFilter } from '../lib/filters/hitStreak.js';
 import { runWindHrFilter } from '../lib/filters/windHr.js';
 import { projectHits } from '../lib/hitProjection.js';
-import { scoreHomeRunProp } from '../lib/grading.js';
+import { scoreHomeRunProp, scoreHitProp } from '../lib/grading.js';
+import { vsTeamPairsForDate } from '../lib/data/vs-team-pull.js';
 import { buildPerformanceBreakdown, MIN_GRADED_FOR_RATE } from '../lib/performance.js';
 import { multiHitCandidates, hitPropCandidates, homeRunCandidates } from '../lib/topPicks.js';
 import { computeBatterStats } from '../lib/batterForm.js';
@@ -66,6 +68,9 @@ async function cleanup() {
   await pool.query('DELETE FROM pitcher_game_logs WHERE player_id IN (9001, 9002)');
   await pool.query('DELETE FROM savant_batter_metrics WHERE player_id IN (8001, 8002, 8003)');
   await pool.query('DELETE FROM savant_pitcher_metrics WHERE player_id IN (9001, 9002)');
+  await pool.query('DELETE FROM savant_batter_metrics WHERE player_id BETWEEN 8100 AND 8299');
+  await pool.query('DELETE FROM batter_vs_team_history WHERE batter_id BETWEEN 8000 AND 8299');
+  await pool.query('DELETE FROM batter_game_logs WHERE player_id BETWEEN 8000 AND 8299');
 }
 
 async function seed() {
@@ -388,6 +393,106 @@ async function main() {
       '26. The top of the HR scale is reachable without clamping at 100',
       gale.score < 100 && gale.grade === 'A+',
       `best realistic spot scores ${gale.score} (${gale.grade}), leaving headroom to rank within A+`
+    );
+  }
+
+  // --- 9. Batter-vs-team history -----------------------------------------
+  // The scorer has always read this table; nothing ever wrote to it. These
+  // cover both sources: MLB's career split (parsed against a fixture
+  // server through the MLB_STATS_API_BASE override, because statsapi is
+  // not reachable from CI) and the local-game-log fallback.
+  {
+    const pairs = await vsTeamPairsForDate(pool, DATE);
+    const judge = pairs.find((p) => p.batterId === 8001);
+    check(
+      '27. Each batter is paired with the team he is actually facing',
+      Boolean(judge) && judge.opponent === 'Chicago White Sox' && judge.opponentAbbr === 'CWS',
+      `${pairs.length} pair(s); 8001 (Tigers) faces ${judge?.opponent} [${judge?.opponentAbbr}]`
+    );
+
+    // Fixture server speaking MLB's vsTeamTotal shape.
+    const fixture = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        stats: [{
+          splits: [{
+            stat: {
+              plateAppearances: 64, atBats: 58, hits: 21,
+              homeRuns: 5, strikeOuts: 12, avg: '.362',
+            },
+          }],
+        }],
+      }));
+    });
+    await new Promise((r) => fixture.listen(0, '127.0.0.1', r));
+    const fixtureBase = `http://127.0.0.1:${fixture.address().port}/api/v1`;
+    const realBase = process.env.MLB_STATS_API_BASE;
+    process.env.MLB_STATS_API_BASE = fixtureBase;
+
+    // mlbStats reads BASE at module load, so pull a fresh copy.
+    const { pullVsTeamHistory: pullFresh } = await import(`../lib/data/vs-team-pull.js?vsteam=${Date.now()}`);
+    const apiRun = await pullFresh(pool, DATE, { force: true });
+    const { rows: apiRows } = await pool.query(
+      'SELECT total_pa, total_ab, total_hits, batting_avg FROM batter_vs_team_history WHERE batter_id = 8001 AND opponent_abbr = $1', ['CWS']
+    );
+    check(
+      '28. MLB career vs-team splits are parsed and stored',
+      apiRun.source === 'mlb-api' && apiRows[0]?.total_pa === 64
+        && apiRows[0]?.total_ab === 58 && Number(apiRows[0]?.batting_avg) === 0.362,
+      `source=${apiRun.source}, wrote ${apiRun.written}; 8001 vs CWS: ${apiRows[0]?.total_hits}/${apiRows[0]?.total_ab} = ${apiRows[0]?.batting_avg}`
+    );
+
+    // Staleness window: a second run without force must not re-fetch.
+    const cached = await pullFresh(pool, DATE);
+    check(
+      '29. Fresh rows are not re-fetched (staleness window holds)',
+      cached.source === 'cache' && cached.written === 0 && cached.pairs > 0,
+      `second run: source=${cached.source}, refreshed=${cached.refreshed} of ${cached.pairs} pair(s)`
+    );
+
+    fixture.close();
+    if (realBase === undefined) delete process.env.MLB_STATS_API_BASE;
+    else process.env.MLB_STATS_API_BASE = realBase;
+
+    // Fallback: point at a dead port so every lookup fails, and seed local
+    // game logs the derivation can work from.
+    await pool.query('DELETE FROM batter_vs_team_history WHERE batter_id = 8001');
+    for (let i = 0; i < 6; i++) {
+      await pool.query(
+        `INSERT INTO batter_game_logs (player_id, player_name, team_abbr, game_date, game_pk, opponent_abbr,
+                                       at_bats, hits, doubles, triples, home_runs, rbi, walks, strikeouts)
+         VALUES (8001, 'Elite Masher', 'DET', $1, $2, 'CWS', 4, 2, 1, 0, 1, 3, 1, 1)
+         ON CONFLICT (player_id, game_pk) DO NOTHING`,
+        [`2031-03-1${i}`, 995000 + i]
+      );
+    }
+    process.env.MLB_STATS_API_BASE = 'http://127.0.0.1:9/api/v1'; // discard port
+    const { pullVsTeamHistory: pullDown } = await import(`../lib/data/vs-team-pull.js?vsteamdown=${Date.now()}`);
+    const fallback = await pullDown(pool, DATE, { force: true });
+    const { rows: fbRows } = await pool.query(
+      'SELECT total_ab, total_hits, batting_avg FROM batter_vs_team_history WHERE batter_id = 8001 AND opponent_abbr = $1', ['CWS']
+    );
+    check(
+      '30. With MLB unreachable the pull falls back to local game logs',
+      fallback.source.startsWith('game-logs') && fbRows[0]?.total_ab === 24 && fbRows[0]?.total_hits === 12,
+      `source=${fallback.source}; derived 8001 vs CWS: ${fbRows[0]?.total_hits}/${fbRows[0]?.total_ab} = ${fbRows[0]?.batting_avg}`
+    );
+    if (realBase === undefined) delete process.env.MLB_STATS_API_BASE;
+    else process.env.MLB_STATS_API_BASE = realBase;
+
+    // And the whole point: it has to actually move a grade.
+    const withHistory = scoreHitProp({
+      trailing15Avg: 0.330, xba: 0.310, opposingHitsPer9: 10.5, hitStreak: 6,
+      hardHitPct: 46, battingOrderSlot: 2, vsTeamPa: 64, vsTeamAvg: 0.362,
+    });
+    const without = scoreHitProp({
+      trailing15Avg: 0.330, xba: 0.310, opposingHitsPer9: 10.5, hitStreak: 6,
+      hardHitPct: 46, battingOrderSlot: 2, vsTeamPa: null, vsTeamAvg: null,
+    });
+    check(
+      '31. Vs-team history changes the hit grade (the factor is live, not decorative)',
+      withHistory.score > without.score,
+      `with history ${withHistory.score}, without ${without.score} (+${withHistory.score - without.score})`
     );
   }
 

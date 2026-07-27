@@ -440,6 +440,17 @@ async function main() {
       } catch { unpublishedRejected = true; }
       record(21, 'An unpublished pick cannot be given away as the free pick', unpublishedRejected,
         unpublishedRejected ? 'check constraint rejected free-but-unpublished' : 'NOT REJECTED');
+
+      // The app's Research tab renders from `ledger`, which carries every
+      // recorded candidate with its full scoring breakdown -- published or
+      // not. That is the paid surface, so it must never ship to a free
+      // reader, and the tab must have nothing to fall back on.
+      const freeDigest = JSON.parse((await req3(`/api/digest?date=${TEST_DATE}`)).body);
+      const memberDigest = JSON.parse((await req3(`/api/digest?date=${TEST_DATE}`, `sf_session=${mToken}`)).body);
+      record(22, 'The research payload (ledger + filter boards) is member-only',
+        !('ledger' in freeDigest) && !('hitStreak' in freeDigest) && !('windHr' in freeDigest)
+          && Array.isArray(memberDigest.ledger) && memberDigest.ledger.length > 0,
+        `free keys: [${Object.keys(freeDigest).join(', ')}]; member ledger: ${memberDigest.ledger?.length} row(s)`);
     } catch (err) {
       record(14, 'Paywall tests', false, err.message);
     } finally {

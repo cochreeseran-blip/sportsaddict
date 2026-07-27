@@ -103,6 +103,12 @@ function etTime(iso) {
   if (!iso) return 'TBD';
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
 }
+// Chat timestamps render in the READER's own timezone, unlike game times
+// (which are pinned to ET because that is how a slate is discussed).
+function shortTime(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
 
 async function api(path) {
   const res = await fetch(path);
@@ -496,6 +502,211 @@ async function renderRecord() {
 }
 
 // ---------------------------------------------------------------------------
+// RESEARCH
+// The member surface: every graded pick on the slate with the full scoring
+// breakdown, not just the ones published to the free board. This is the
+// thing being paid for, so when the reader has no access the tab says what
+// it holds rather than pretending to be empty.
+async function renderResearch() {
+  const host = $('#view-research');
+  host.innerHTML = '<p class="section-sub">Loading research…</p>';
+  try {
+    const digest = await api(`/api/digest?date=${state.today}`);
+    const access = digest.access || {};
+
+    if (!access.research) {
+      host.innerHTML = `
+        <div class="board-date">
+          <h2 class="section-title">Research</h2>
+          <span class="section-sub">Members only</span>
+        </div>
+        ${upsellBlock({ ...access, lockedCount: access.lockedCount || 1 }, null)}
+        <div class="how-grid">
+          <div class="how-card">
+            <h3>What is in here</h3>
+            <p>Every batter and pitcher the engine graded today, not only the ones published to the board: the full ranked list, each one's score with the exact points behind it, and the projection inputs it was built from.</p>
+          </div>
+          <div class="how-card">
+            <h3>Why it is worth seeing</h3>
+            <p>The published board is the conclusion. This is the work: which spots nearly qualified, which graded well but got cut by the per-team limit, and what separated an A from a B on the same slate.</p>
+          </div>
+        </div>`;
+      return;
+    }
+
+    // Source is the LEDGER, not the saved digest. The ledger is every
+    // candidate the engine recorded for the date, published or not, and it
+    // exists the moment picks are generated. The digest is a snapshot that
+    // can lag a rerun, so a research tab built on it shows an empty board
+    // exactly when someone is looking. Filter boards are the fallback for
+    // dates recorded before the ledger carried grades.
+    const ledger = digest.ledger || [];
+    const bySignal = new Map();
+    for (const r of ledger) {
+      if (!bySignal.has(r.signalType)) bySignal.set(r.signalType, []);
+      bySignal.get(r.signalType).push(r);
+    }
+    for (const list of bySignal.values()) list.sort((a, b) => (b.gradeScore ?? 0) - (a.gradeScore ?? 0));
+
+    const fallback = {
+      strikeout: digest.strikeouts?.watchListAll || digest.strikeouts?.watchList || [],
+      multi_hit: digest.hitStreak?.multiHitAll || digest.hitStreak?.multiHit || digest.hitStreak?.watchList || [],
+      home_run: digest.windHr?.watchListAll || digest.windHr?.watchList || [],
+    };
+    const listFor = (kind) => (bySignal.get(kind)?.length ? bySignal.get(kind) : fallback[kind] || []);
+
+    const boards = [
+      ['strikeout', 'Strikeouts', listFor('strikeout')],
+      ['multi_hit', '2+ Hits', listFor('multi_hit')],
+      ['home_run', 'Home Runs', listFor('home_run')],
+    ];
+
+    const rows = (list, kind) => list.map((r, i) => {
+      const name = r.batterName || r.pitcherName || '';
+      const person = r.batterId || r.pitcherId || null;
+      const lead = kind === 'multi_hit' && r.pAtLeastTwo != null ? fmtPct(r.pAtLeastTwo)
+        : kind === 'strikeout' && r.suggestedLine != null ? `o${fmtNum(r.suggestedLine, 1)}`
+        : kind === 'home_run' && r.barrelPct != null ? `${fmtNum(r.barrelPct, 1)}%`
+        : '';
+      return `
+        <div class="rs-row">
+          <span class="rs-rank mono">${i + 1}</span>
+          <span class="rs-face">${Media.headshot(person, name, 34)}</span>
+          <div class="rs-main">
+            <div class="rs-name">${esc(name)}<span class="rs-team">${esc(Media.teamAbbrev(r.team))}</span></div>
+            <div class="rs-reasons">${(r.gradeReasons || []).map((x) => `<span class="rs-chip">${esc(x)}</span>`).join('')}</div>
+          </div>
+          <span class="rs-lead mono">${esc(lead)}</span>
+          <span class="rs-grade">${gradeBadge(r.grade)}<span class="rs-score mono">${r.gradeScore ?? ''}</span></span>
+        </div>`;
+    }).join('');
+
+    host.innerHTML = `
+      <div class="board-date">
+        <h2 class="section-title">Research</h2>
+        <span class="section-sub">${esc(longDate(digest.date))} · every graded candidate, best first</span>
+      </div>
+      ${boards.map(([kind, label, list]) => `
+        <section class="board-section">
+          <div class="board-head">
+            <h2 class="board-title">${esc(label)}</h2>
+            <span class="board-blurb">${list.length} graded</span>
+          </div>
+          <div class="rs-table">${list.length ? rows(list, kind) : '<p class="section-sub">Nothing graded on this board today.</p>'}</div>
+        </section>`).join('')}`;
+  } catch (err) {
+    host.innerHTML = emptyState('Could not load research', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CHAT
+// One flat room. Reading is open to anyone; posting needs an account,
+// because the poster is taken from the session and never from the request
+// body. Polls rather than holding a socket open: the traffic here is a
+// handful of messages a minute, and a socket would be more machinery than
+// the feature is worth.
+let chatTimer = null;
+let chatLastId = 0;
+
+function chatBubble(m, mine) {
+  return `
+    <div class="chat-msg ${mine ? 'is-mine' : ''}">
+      <span class="chat-avatar">${avatarSvg(m.avatarSeed, 28)}</span>
+      <div class="chat-body">
+        <div class="chat-meta"><span class="chat-user">${esc(m.username)}</span><span class="chat-time">${esc(shortTime(m.createdAt))}</span></div>
+        <div class="chat-text">${esc(m.body)}</div>
+      </div>
+    </div>`;
+}
+
+function appendChat(messages) {
+  if (!messages?.length) return;
+  const feed = $('#chatFeed');
+  if (!feed) return;
+  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+  feed.insertAdjacentHTML('beforeend', messages.map((m) => chatBubble(m, m.userId === state.user?.id)).join(''));
+  chatLastId = Math.max(chatLastId, ...messages.map((m) => m.id));
+  // Only auto-scroll if the reader was already at the bottom; yanking the
+  // view while someone is reading back is worse than a missed message.
+  if (atBottom) feed.scrollTop = feed.scrollHeight;
+}
+
+function stopChatPolling() {
+  if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
+}
+
+function startChatPolling() {
+  stopChatPolling();
+  chatTimer = setInterval(async () => {
+    if (state.view !== 'chat') return;
+    try {
+      const { messages } = await api(`/api/chat?since=${chatLastId}`);
+      appendChat(messages);
+    } catch { /* transient; next tick retries */ }
+  }, 6000);
+}
+
+async function renderChat() {
+  const host = $('#view-chat');
+  chatLastId = 0;
+  host.innerHTML = `
+    <div class="board-date">
+      <h2 class="section-title">Chat</h2>
+      <span class="section-sub">One room, everyone in it.</span>
+    </div>
+    <div class="chat-wrap">
+      <div class="chat-feed" id="chatFeed"></div>
+      ${state.user
+        ? `<form class="chat-form" id="chatForm">
+             <input class="chat-input" id="chatInput" maxlength="500" autocomplete="off" placeholder="Say something">
+             <button class="btn primary" type="submit">Send</button>
+           </form>`
+        : `<div class="chat-signin">
+             <span>Sign in to post. Anyone can read.</span>
+             <button class="btn primary small" id="chatSignIn">Sign in</button>
+           </div>`}
+      <div class="chat-error" id="chatError" hidden></div>
+    </div>`;
+
+  try {
+    const { messages } = await api('/api/chat');
+    appendChat(messages);
+    const feed = $('#chatFeed');
+    if (feed) feed.scrollTop = feed.scrollHeight;
+  } catch (err) {
+    $('#chatFeed').innerHTML = `<p class="section-sub">Could not load chat: ${esc(err.message)}</p>`;
+  }
+
+  $('#chatSignIn')?.addEventListener('click', () => openAuthGate());
+  $('#chatForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = $('#chatInput');
+    const body = input.value.trim();
+    if (!body) return;
+    const err = $('#chatError');
+    err.hidden = true;
+    input.value = '';
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      appendChat([data.message]);
+      $('#chatFeed').scrollTop = $('#chatFeed').scrollHeight;
+    } catch (e2) {
+      // Put the text back rather than losing what they typed.
+      input.value = body;
+      err.textContent = e2.message;
+      err.hidden = false;
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // HOW IT WORKS
 // Plain-language explanation of every number the app shows, including what
 // it does NOT know. A research product that hides its method is a tout.
@@ -569,10 +780,14 @@ function showView(name) {
   document.querySelectorAll('.tab[data-view]').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'today') renderToday();
-  // Only poll while Today is on screen: nobody needs live scores while
-  // reading the methodology page, and an idle tab should not keep asking.
+  // Only poll while the relevant tab is on screen: nobody needs live
+  // scores while reading the methodology page, and an idle tab should not
+  // keep asking. Same rule for the chat feed.
   if (name === 'today') startScorePolling(); else stopScorePolling();
+  if (name === 'chat') startChatPolling(); else stopChatPolling();
   if (name === 'record') renderRecord();
+  if (name === 'research') renderResearch();
+  if (name === 'chat') renderChat();
   if (name === 'how') renderHow();
   const wantPath = name === 'today' ? '/' : `/${name}`;
   if (location.pathname !== wantPath) history.replaceState(null, '', wantPath);
@@ -624,8 +839,10 @@ async function init() {
   updateAccountChip();
   loadRecordChip();
 
-  const path = location.pathname;
-  showView(path === '/record' ? 'record' : path === '/how' ? 'how' : 'today');
+  // Deep links: every tab is a real URL, so a shared /research or /chat
+  // link opens on that tab instead of bouncing to Today.
+  const ROUTES = { '/record': 'record', '/research': 'research', '/chat': 'chat', '/how': 'how' };
+  showView(ROUTES[location.pathname] || 'today');
 }
 
 // ---------------------------------------------------------------------------

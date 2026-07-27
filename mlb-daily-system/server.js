@@ -531,6 +531,8 @@ const STATIC_FILES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/record': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/research': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/chat': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/how': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   // Shared by both surfaces: design tokens and the player-media helpers

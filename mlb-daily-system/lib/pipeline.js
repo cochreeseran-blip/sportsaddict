@@ -16,6 +16,7 @@ import { recordTrackedPicks, gradePendingPicks } from './trackedPicks.js';
 import { runWithConcurrency } from './util/concurrency.js';
 import { syncParkBearings } from './parkBearings.js';
 import { fetchSavantProbablePitchers, applySavantMetrics } from './sources/savant.js';
+import { pullVsTeamHistory } from './data/vs-team-pull.js';
 
 // How many player stat lookups run in flight at once during the full-roster
 // pass. Sequential would mean ~1,000+ calls back to back on a full slate;
@@ -439,6 +440,23 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
     );
   }
   log(`Weather: ${windOk}/${venues.size} venue(s) updated (${windSkippedUnverified} skipped, unverified park orientation).`);
+
+  // 5b. Batter-vs-team career history. Must run after batter_form is
+  // populated (it reads today's batters from it) and before the filters,
+  // which score off it. Best-effort and staleness-windowed: career splits
+  // barely move day to day, so most mornings this is a no-op read.
+  try {
+    const vsTeam = await pullVsTeamHistory(pool, gameDate);
+    log(`Batter-vs-team: ${vsTeam.written} row(s) written from ${vsTeam.source}, ${vsTeam.pairs} pair(s) on the slate (${vsTeam.refreshed} stale).`);
+    if (vsTeam.source.startsWith('game-logs')) {
+      warnings.push('Batter-vs-team history fell back to local game logs, career splits from MLB were unreachable.');
+    }
+  } catch (err) {
+    // Never fatal: a missing vs-team factor costs a few grading points,
+    // it does not invalidate a board.
+    log(`Batter-vs-team pull failed (non-fatal): ${err.message}`);
+    warnings.push('Batter-vs-team history could not be refreshed today.');
+  }
 
   // Filters + digest. Four boards feed everything now: qualifying home
   // moneyline calls, the two hit tiers (1+ and 2+, from one projection),

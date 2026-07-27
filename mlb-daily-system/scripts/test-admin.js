@@ -405,6 +405,41 @@ async function main() {
       record(18, 'Paywall on: the public track record stays open to anonymous readers',
         rec.status === 200 && JSON.parse(rec.body)?.published !== undefined,
         `status ${rec.status}`);
+
+      // --- 19-21: the owner's free-pick override ---
+      // Auto-selection picked `bestId`; force a DIFFERENT published pick
+      // and confirm the customer surface follows the owner, not the score.
+      const otherId = (p.publishedToday || []).map((x) => x.id).find((id) => id !== bestId);
+      await pool.query('UPDATE tracked_picks SET is_free_pick = true WHERE id = $1', [otherId]);
+      const autoBefore = p.featuredPickChosenBy;
+      const overridden = JSON.parse((await req3(`/api/digest?date=${TEST_DATE}`)).body);
+      // The provenance flag has to survive to the client: publishedToday is
+      // re-shaped from the ledger, so a field decorated onto the featured
+      // object alone silently disappears. It did, once.
+      record(19, 'The owner\'s chosen free pick overrides auto-selection, and says so',
+        overridden.featuredPickId === otherId
+          && overridden.featuredPickChosenBy === 'owner' && autoBefore === 'auto',
+        `featured=${overridden.featuredPickId} chosenBy=${overridden.featuredPickChosenBy} (was '${autoBefore}'; owner chose ${otherId}, auto picked ${bestId})`);
+
+      // One free pick per slate, enforced by a partial unique index rather
+      // than by application code, so two admin tabs cannot both win.
+      let secondFreeRejected = false;
+      try {
+        await pool.query('UPDATE tracked_picks SET is_free_pick = true WHERE id = $1', [bestId]);
+      } catch { secondFreeRejected = true; }
+      record(20, 'A slate cannot have two free picks (DB-enforced)', secondFreeRejected,
+        secondFreeRejected ? 'second free pick on the same date rejected by the unique index' : 'NOT REJECTED');
+
+      // And the free pick must be something actually on the record.
+      const { rows: unpub } = await pool.query(
+        `INSERT INTO tracked_picks (game_date, signal_type, mlb_game_id, description, qualifying_metrics)
+         VALUES ($1,'multi_hit',$2,'unpublished probe','{}') RETURNING id`, [TEST_DATE, gameFuturePk]);
+      let unpublishedRejected = false;
+      try {
+        await pool.query('UPDATE tracked_picks SET is_free_pick = true WHERE id = $1', [unpub[0].id]);
+      } catch { unpublishedRejected = true; }
+      record(21, 'An unpublished pick cannot be given away as the free pick', unpublishedRejected,
+        unpublishedRejected ? 'check constraint rejected free-but-unpublished' : 'NOT REJECTED');
     } catch (err) {
       record(14, 'Paywall tests', false, err.message);
     } finally {

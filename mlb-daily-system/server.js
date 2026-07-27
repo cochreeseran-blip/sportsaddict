@@ -452,7 +452,7 @@ function shapeLedgerPick(p) {
 async function ledgerForDate(date) {
   const { rows } = await pool.query(
     `SELECT id, signal_type, mlb_game_id, description, locked_price, breakeven_pct,
-            closing_price, clv_pct, qualifying_metrics, result, published, published_at, published_by, created_at
+            closing_price, clv_pct, qualifying_metrics, result, published, published_at, published_by, created_at, is_free_pick
      FROM tracked_picks WHERE game_date = $1 ORDER BY signal_type, id`,
     [date]
   );
@@ -482,14 +482,23 @@ function pickFreeMoneyline(ledgerRows) {
 const FEATURED_TIEBREAK = { multi_hit: 3, home_run: 3, strikeout: 3, hit_streak: 2, moneyline: 1 };
 
 function pickFeatured(ledgerRows) {
-  const published = ledgerRows.filter((p) => p.published).map(shapeLedgerPick);
-  if (!published.length) return null;
+  const publishedRows = ledgerRows.filter((p) => p.published);
+  if (!publishedRows.length) return null;
+
+  // The owner's explicit choice wins. Auto-selection is only the default
+  // for a slate nobody curated -- picking the highest score is a decent
+  // guess, but which pick makes the best advertisement is an editorial
+  // call the person running the book should get to make.
+  const chosen = publishedRows.find((p) => p.is_free_pick);
+  if (chosen) return { ...shapeLedgerPick(chosen), freePickChosenBy: 'owner' };
+
+  const published = publishedRows.map(shapeLedgerPick);
   published.sort((a, b) => {
     const rank = (FEATURED_TIEBREAK[b.signalType] ?? 0) - (FEATURED_TIEBREAK[a.signalType] ?? 0);
     if (rank !== 0) return rank;
     return (b.gradeScore ?? 0) - (a.gradeScore ?? 0);
   });
-  return published[0];
+  return { ...published[0], freePickChosenBy: 'auto' };
 }
 
 // A published pick with everything actionable removed. This is what a
@@ -895,6 +904,41 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      // Designate the day's free pick. Clearing the previous one and
+      // setting the new one happen in a single transaction: the partial
+      // unique index (one free pick per game_date) would otherwise reject
+      // the second write while the first was still in place.
+      if (url.pathname === '/api/admin/free-pick' && req.method === 'POST') {
+        const { pickId } = await readJsonBody(req);
+        if (!Number.isInteger(pickId)) return sendJson(res, 400, { error: 'pickId required' });
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const { rows } = await client.query(
+            'SELECT id, game_date, published FROM tracked_picks WHERE id = $1 FOR UPDATE', [pickId]);
+          const pick = rows[0];
+          if (!pick) {
+            await client.query('ROLLBACK');
+            return sendJson(res, 404, { error: 'No such pick.' });
+          }
+          if (!pick.published) {
+            await client.query('ROLLBACK');
+            return sendJson(res, 409, { error: 'Only a published pick can be the free pick.' });
+          }
+          await client.query(
+            'UPDATE tracked_picks SET is_free_pick = false WHERE game_date = $1 AND is_free_pick', [pick.game_date]);
+          await client.query('UPDATE tracked_picks SET is_free_pick = true WHERE id = $1', [pickId]);
+          await client.query('COMMIT');
+          sendJson(res, 200, { ok: true, pickId, gameDate: pick.game_date });
+        } catch (err) {
+          await client.query('ROLLBACK').catch(() => {});
+          sendJson(res, 500, { error: err.message });
+        } finally {
+          client.release();
+        }
+        return;
+      }
+
       if (url.pathname === '/api/admin/users' && req.method === 'GET') {
         sendJson(res, 200, await buildAdminUsers());
         return;
@@ -1097,6 +1141,12 @@ const server = http.createServer(async (req, res) => {
           lockedCount: research ? 0 : Math.max(0, allPublished.length - (featured ? 1 : 0)),
         },
         featuredPickId: featured?.id ?? null,
+        // 'owner' when the free pick was designated from the Finder,
+        // 'auto' when nobody curated the slate and it fell back to the
+        // highest score. Metadata about the SELECTION, so it lives here
+        // rather than on the card -- publishedToday is re-shaped straight
+        // from the ledger and would drop a field decorated onto `featured`.
+        featuredPickChosenBy: featured?.freePickChosenBy ?? null,
         freeMoneyline,
         publishedToday,
       };

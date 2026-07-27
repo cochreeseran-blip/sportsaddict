@@ -295,6 +295,102 @@ async function main() {
     `strikeout grades: ${gradeRows.map((g) => `${g.grade} ${g.wins}-${g.losses}`).join(', ')}`
   );
 
+  // --- 7. Board shape: slot gate, per-team cap, show-all ------------------
+  {
+    // Eight more Tigers, all strong enough to qualify, so the per-team cap
+    // has something to bite on. Slots 1-6 only, to isolate the cap from
+    // the slot gate.
+    for (let i = 0; i < 8; i++) {
+      await pool.query(
+        `INSERT INTO batter_form (game_date, batter_id, batter_name, team, hit_streak, trailing_15_avg,
+                                  trailing_15_ab, trailing_15_hr_rate, lineup_confirmed, last5_results,
+                                  batting_order_slot, trailing_15_multi_hit_rate, trailing_15_games)
+         VALUES ($1,$2,$3,'Detroit Tigers',7,$4,60,0.30,true,'[]',$5,0.40,15)`,
+        [DATE, 8100 + i, `Depth Bat ${i}`, 0.330 - i * 0.002, (i % 6) + 1]
+      );
+      await pool.query(
+        `INSERT INTO savant_batter_metrics (player_id, season, pull_date, xba, xslg, barrel_pct, hard_hit_pct, avg_exit_velo)
+         VALUES ($1, 2031, $2, 0.305, 0.560, 14.0, 48.0, 93.0)
+         ON CONFLICT (player_id, pull_date) DO UPDATE SET xba = EXCLUDED.xba`,
+        [8100 + i, DATE]
+      );
+    }
+    // A genuine bottom-of-the-order bat with elite form: the slot gate has
+    // to drop him despite numbers that would otherwise top the board.
+    await pool.query(
+      `INSERT INTO batter_form (game_date, batter_id, batter_name, team, hit_streak, trailing_15_avg,
+                                trailing_15_ab, trailing_15_hr_rate, lineup_confirmed, last5_results,
+                                batting_order_slot, trailing_15_multi_hit_rate, trailing_15_games)
+       VALUES ($1, 8200, 'Eighth Hitter', 'Detroit Tigers', 12, 0.400, 70, 0.40, true, '[]', 8, 0.55, 15)`,
+      [DATE]
+    );
+    await pool.query(
+      `INSERT INTO savant_batter_metrics (player_id, season, pull_date, xba, xslg, barrel_pct, hard_hit_pct, avg_exit_velo)
+       VALUES (8200, 2031, $1, 0.350, 0.650, 18.0, 55.0, 95.0)
+       ON CONFLICT (player_id, pull_date) DO UPDATE SET xba = EXCLUDED.xba`,
+      [DATE]
+    );
+
+    const hits = await runHitStreakFilter(pool, DATE);
+    const names = (hits.multiHit || []).map((b) => b.batterName);
+    const allNames = (hits.multiHitAll || []).map((b) => b.batterName);
+
+    check(
+      '21. A batter below the lineup-slot cutoff never reaches the board',
+      !allNames.includes('Eighth Hitter') && hits.limits.minLineupSlot === 6,
+      `slot-8 bat with .400/18% barrel excluded; cutoff is slot ${hits.limits.minLineupSlot}`
+    );
+
+    const tigersOnBoard = (hits.multiHit || []).filter((b) => b.team === 'Detroit Tigers').length;
+    const tigersRanked = (hits.multiHitAll || []).filter((b) => b.team === 'Detroit Tigers').length;
+    check(
+      '22. Per-team cap limits the published board but not the ranked list',
+      tigersOnBoard <= hits.limits.perTeam && tigersRanked > tigersOnBoard,
+      `board has ${tigersOnBoard} Tigers (cap ${hits.limits.perTeam}), full ranked list has ${tigersRanked}`
+    );
+
+    check(
+      '23. The capped board keeps each team\'s best, not an arbitrary slice',
+      names.length > 0 && allNames.slice(0, names.length).join('|') === names.join('|'),
+      `board is the top ${names.length} of the ranked list, in order`
+    );
+  }
+
+  // --- 8. Wind weighting on home runs -------------------------------------
+  {
+    const base = {
+      barrelPct: 15.0, avgExitVelo: 93.2, hardHitPct: 49, xslg: 0.550,
+      trailing15HrRate: 0.30, opposingHrPer9: 1.9, opposingBarrelPct: 10.5, battingOrderSlot: 3,
+    };
+    const noWind = scoreHomeRunProp({ ...base, windBlowingOut: false });
+    const lightWind = scoreHomeRunProp({ ...base, windBlowingOut: true, windSpeedMph: 6 });
+    const gale = scoreHomeRunProp({ ...base, windBlowingOut: true, windSpeedMph: 18 });
+
+    check(
+      '24. Wind out scales with speed instead of a flat bonus',
+      gale.score > lightWind.score && lightWind.score > noWind.score,
+      `no wind ${noWind.score} < 6 mph ${lightWind.score} < 18 mph ${gale.score}`
+    );
+
+    // The confluence bonus fires only when all three conditions hold, so a
+    // gale on a weak bat must NOT collect it.
+    const weakBatGale = scoreHomeRunProp({
+      ...base, barrelPct: 7.0, windBlowingOut: true, windSpeedMph: 18,
+    });
+    const hasConfluence = (r) => r.reasons.some((x) => x.includes('power bat + homer-prone arm + wind out'));
+    check(
+      '25. The wind confluence bonus needs all three legs, not just wind',
+      hasConfluence(gale) && !hasConfluence(weakBatGale) && !hasConfluence(noWind),
+      `elite+arm+gale=${hasConfluence(gale)}, weak bat in same gale=${hasConfluence(weakBatGale)}`
+    );
+
+    check(
+      '26. The top of the HR scale is reachable without clamping at 100',
+      gale.score < 100 && gale.grade === 'A+',
+      `best realistic spot scores ${gale.score} (${gale.grade}), leaving headroom to rank within A+`
+    );
+  }
+
   await cleanup();
 
   console.log(`\n${passed}/${passed + failed} tests passed.`);

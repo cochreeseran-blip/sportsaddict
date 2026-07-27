@@ -3,7 +3,6 @@ import { teamAbbr } from '../util/teamAbbr.js';
 
 const MIN_STARTS = 4;
 const MIN_FLOOR_KS = 4;
-const MAX_WATCH = 10; // spec: "TOP 10 shown"
 
 // The largest whole-strikeout count the pitcher has reached in at least
 // hitsNeeded of his recent starts. That count minus 0.5 is the highest
@@ -121,5 +120,8 @@ export async function runStrikeoutFilter(pool, gameDate) {
   }
 
   scored.sort((a, b) => b.gradeScore - a.gradeScore);
-  return { watchList: scored.slice(0, MAX_WATCH) };
+  // No fixed top-N here either. A slate caps itself at roughly two
+  // starters per game, so this board is naturally small and there is no
+  // per-team cap to apply -- a team has exactly one starting pitcher.
+  return { watchList: scored, watchListAll: scored };
 }

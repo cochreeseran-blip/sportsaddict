@@ -342,7 +342,15 @@ function gradeBadge(grade) {
 //   otherwise        -> the button
 function publishControl(p) {
   if (p.published) {
-    return `<div class="pub-state is-published">On the record${p.publishedAt ? ` · ${esc(fmtDateTime(p.publishedAt))}` : ''}</div>`;
+    // Published picks also carry the free-pick toggle. Unlike publishing,
+    // this one is reversible -- which pick is given away is a display
+    // choice, not a claim, so it is a plain button with no confirmation.
+    const free = p.isFreePick
+      ? '<span class="free-pick-flag">Free pick of the day</span>'
+      : `<button class="btn ghost small free-btn" data-free="${p.ledgerId}">Make free pick</button>`;
+    return `
+      <div class="pub-state is-published">On the record${p.publishedAt ? ` · ${esc(fmtDateTime(p.publishedAt))}` : ''}</div>
+      <div class="free-pick-row">${p.ledgerId ? free : ''}</div>`;
   }
   if (!p.ledgerId) {
     return '<div class="pub-state is-unrecorded">Not in the ledger yet, publish once the pipeline records this date.</div>';
@@ -622,6 +630,27 @@ function wireDashboardControls() {
       const card = btn.closest('.sig-card');
       const headline = card?.querySelector('.sig-name')?.textContent?.trim() || '';
       confirmPublish(Number(btn.dataset.publish), headline);
+    });
+  });
+  // Free pick of the day. Reversible and single-valued, so no confirm:
+  // the server clears the previous one in the same transaction.
+  document.querySelectorAll('[data-free]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = 'Setting…';
+      try {
+        const res = await fetch('/api/admin/free-pick', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pickId: Number(btn.dataset.free) }),
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+        await loadDashboard(state.dashDate);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Make free pick';
+        alert(`Could not set the free pick: ${err.message}`);
+      }
     });
   });
   document.querySelectorAll('[data-signal-tab]').forEach((btn) => {

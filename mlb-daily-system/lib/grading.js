@@ -277,26 +277,26 @@ export function scoreHomeRunProp({
   // Primary: the batter's own contact quality. Barrel rate carries the
   // most weight because a barrel is, by Statcast's definition, the exact
   // batted-ball profile that becomes a home run.
-  const barrelPts = bucket(barrelPct, [[14, 35], [11, 27], [8, 18], [6, 9]]);
+  const barrelPts = bucket(barrelPct, [[14, 27], [11, 21], [8, 14], [6, 7]]);
   score += barrelPts;
   if (barrelPct !== null && barrelPct !== undefined) reasons.push(`${fmtNum(barrelPct, 1)}% barrel rate (+${barrelPts})`);
 
-  const eloPts = bucket(avgExitVelo, [[93, 15], [91, 9], [89, 4]]);
+  const eloPts = bucket(avgExitVelo, [[93, 9], [91, 6], [89, 3]]);
   score += eloPts;
   if (avgExitVelo !== null && avgExitVelo !== undefined) reasons.push(`${fmtNum(avgExitVelo, 1)} mph average exit velocity (+${eloPts})`);
 
-  const xslgPts = bucket(xslg, [[0.500, 12], [0.450, 8], [0.400, 4]]);
+  const xslgPts = bucket(xslg, [[0.500, 8], [0.450, 6], [0.400, 3]]);
   score += xslgPts;
   if (xslg !== null && xslg !== undefined) reasons.push(`${fmtNum(xslg, 3)} expected slugging (+${xslgPts})`);
 
-  const hardHitPts = bucket(hardHitPct, [[45, 8], [38, 4]]);
+  const hardHitPts = bucket(hardHitPct, [[45, 5], [38, 3]]);
   score += hardHitPts;
   if (hardHitPct !== null && hardHitPct !== undefined) reasons.push(`${fmtNum(hardHitPct, 0)}% hard-hit rate (+${hardHitPts})`);
 
   // The matchup: an arm that gives up home runs, measured directly.
   let oppPts;
   if (opposingHrPer9 === null || opposingHrPer9 === undefined) oppPts = 0;
-  else if (opposingHrPer9 >= 1.8) oppPts = 16;
+  else if (opposingHrPer9 >= 1.8) oppPts = 14;
   else if (opposingHrPer9 >= 1.3) oppPts = 10;
   else if (opposingHrPer9 >= 1.0) oppPts = 4;
   else oppPts = -8; // an arm that genuinely suppresses homers is a real negative
@@ -305,7 +305,7 @@ export function scoreHomeRunProp({
     reasons.push(`opposing arm allows ${fmtNum(opposingHrPer9, 2)} HR/9 (${oppPts >= 0 ? '+' : ''}${oppPts})`);
   }
 
-  const oppBarrelPts = bucket(opposingBarrelPct, [[10, 7], [8, 4]]);
+  const oppBarrelPts = bucket(opposingBarrelPct, [[10, 5], [8, 3]]);
   score += oppBarrelPts;
   if (opposingBarrelPct !== null && opposingBarrelPct !== undefined && oppBarrelPts > 0) {
     reasons.push(`opposing arm allows ${fmtNum(opposingBarrelPct, 1)}% barrels (+${oppBarrelPts})`);
@@ -314,20 +314,37 @@ export function scoreHomeRunProp({
   // Secondary: recent HR production. Deliberately small -- it's the noisy
   // input this rewrite exists to demote, kept only as corroboration that
   // the contact quality above is currently turning into actual home runs.
-  const ratePts = bucket(trailing15HrRate, [[0.35, 7], [0.20, 4], [0.10, 2]]);
+  const ratePts = bucket(trailing15HrRate, [[0.35, 5], [0.20, 3], [0.10, 2]]);
   score += ratePts;
   if (trailing15HrRate !== null && trailing15HrRate !== undefined && ratePts > 0) {
     reasons.push(`${fmtNum(trailing15HrRate * 100, 0)}% of recent games with a homer (+${ratePts})`);
   }
 
   // Wind, only at a park whose orientation is verified (an unverified
-  // bearing can't tell "out" from "in", see runHomeRunFilter). A bonus,
-  // never a requirement: a masher facing a batting-practice arm indoors is
-  // still the better spot than a mediocre bat in a gale.
+  // bearing can't tell "out" from "in", see runHomeRunFilter). Still a
+  // bonus rather than a requirement -- a masher facing a batting-practice
+  // arm indoors beats a mediocre bat in a gale -- but scaled by speed now
+  // instead of a flat nudge, because 20 mph straight out is a different
+  // park than a 6 mph drift and the old flat +6/+3 could not say so.
+  let windPts = 0;
   if (windBlowingOut) {
-    const windPts = windSpeedMph !== null && windSpeedMph !== undefined && windSpeedMph >= 12 ? 6 : 3;
+    windPts = bucket(windSpeedMph, [[15, 10], [10, 7], [5, 4]], 3);
     score += windPts;
     reasons.push(`wind blowing out${windSpeedMph ? ` at ${fmtNum(windSpeedMph, 0)} mph` : ''} (+${windPts})`);
+  }
+
+  // The confluence bonus: a real power bat, an arm that gives up homers,
+  // AND wind pushing the ball out. Scored above the sum of its parts on
+  // purpose -- these three compound rather than add, because the same
+  // batted ball that is a warning-track out in still air off a groundball
+  // pitcher leaves the yard in this spot. This is the specific setup the
+  // board exists to find, so it is worth naming rather than leaving the
+  // reader to notice three separate lines happened to co-occur.
+  const powerBat = barrelPct !== null && barrelPct !== undefined && barrelPct >= 11;
+  const homerProneArm = opposingHrPer9 !== null && opposingHrPer9 !== undefined && opposingHrPer9 >= 1.3;
+  if (windBlowingOut && powerBat && homerProneArm) {
+    score += 7;
+    reasons.push('power bat + homer-prone arm + wind out (+7)');
   }
 
   // More trips to the plate is more chances to run into one.

@@ -319,6 +319,13 @@ input, select, textarea { background: var(--panel-2); color: var(--text); border
 .pub-state { font-size: 11.5px; line-height: 1.5; }
 .pub-state.is-published { color: var(--green); font-weight: 600; }
 .pub-state.is-unrecorded { color: var(--text-3); }
+.free-pick-row { margin-top: 7px; }
+.free-pick-flag {
+  display: inline-block; padding: 3px 9px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--bg); background: var(--accent);
+}
+.free-btn { font-size: 11px; }
 .pub-btn { width: 100%; }
 
 /* Modal for the permanent publish confirmation. */

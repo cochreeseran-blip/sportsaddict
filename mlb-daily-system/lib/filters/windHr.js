@@ -1,6 +1,7 @@
 import { postedLineupTeams, benchedOut } from '../lineupStatus.js';
 import { scoreHomeRunProp } from '../grading.js';
 import { trailingHrPer9 } from '../data/game-logs-pull.js';
+import { capPerTeam, DEFAULT_PER_TEAM } from '../util/perTeamCap.js';
 
 // Home run board. Previously this ranked on trailing HR rate plus a wind
 // bonus and was never surfaced anywhere; it now scores on Statcast contact
@@ -18,7 +19,14 @@ const HR_RATE_GATE = 0.10;    // a homer in at least 1 of every 10 recent games
 // Per-game rates need a real denominator. Below this many trailing games,
 // one home run reads as a 33% rate and that isn't a signal.
 const MIN_TRAILING_GAMES = 8;
-const MAX_WATCH = 15;
+
+// Looser than the hit board's slot-6 cutoff, deliberately. A hit prop
+// needs plate appearances to accumulate, so batting 8th is a real handicap
+// there. A home run needs exactly one swing, and power hitters genuinely
+// do bat 7th on deep teams or while slumping. Slots 8-9 are still cut:
+// that is the pitcher's spot in a non-DH lineup and the weakest bat
+// otherwise.
+const MIN_LINEUP_SLOT = 7;
 
 export async function runWindHrFilter(pool, gameDate) {
   const warnings = [];
@@ -112,6 +120,11 @@ export async function runWindHrFilter(pool, gameDate) {
       const opposingBarrelPct = opp?.starterId != null ? pitcherSavantById.get(opp.starterId)?.barrelPct ?? null : null;
 
       for (const b of battersByTeam.get(team) || []) {
+        // Bottom-of-the-order gate, see MIN_LINEUP_SLOT. A null slot means
+        // the lineup is not posted yet, not that he is batting 9th.
+        const slot = b.batting_order_slot ?? null;
+        if (slot !== null && slot > MIN_LINEUP_SLOT) continue;
+
         const savant = savantByBatterId.get(b.batter_id) || {};
         const hrRate = num(b.trailing_15_hr_rate);
         const trailingGames = b.trailing_15_games ?? null;
@@ -169,7 +182,15 @@ export async function runWindHrFilter(pool, gameDate) {
   }
 
   scored.sort((a, b) => b.gradeScore - a.gradeScore);
-  return { watchList: scored.slice(0, MAX_WATCH), warnings };
+  // Every qualifying bat is graded and returned. watchList is the capped
+  // board (what gets published); watchListAll is the full ranked list the
+  // Finder shows the owner.
+  return {
+    watchList: capPerTeam(scored, DEFAULT_PER_TEAM),
+    watchListAll: scored,
+    warnings,
+    limits: { perTeam: DEFAULT_PER_TEAM, minLineupSlot: MIN_LINEUP_SLOT },
+  };
 }
 
 function num(v) {

@@ -3,6 +3,7 @@ import { postedLineupTeams, benchedOut } from '../lineupStatus.js';
 import { trailingHitsPer9 } from '../data/game-logs-pull.js';
 import { teamAbbr } from '../util/teamAbbr.js';
 import { projectHits } from '../hitProjection.js';
+import { capPerTeam, DEFAULT_PER_TEAM } from '../util/perTeamCap.js';
 
 const HIT_STREAK_GATE = 5;
 const AVG_GATE = 0.30; // spec: trailing-15 avg qualification path raised to .300
@@ -21,7 +22,18 @@ const MIN_TRAILING_AB = 30;
 // that thin-sample case. Sits between the two: enough to be real, low
 // enough that a genuine streaking regular is never wrongly dropped.
 const STREAK_EXEMPT_MIN_AB = 15;
-const MAX_WATCH = 15; // spec: "TOP 15 shown"
+// Lineup-slot gate. Slots 7-9 are where a lineup hides its weakest bats,
+// and the at-bat math compounds the problem: a 2-hole bat is worth ~4.1
+// expected at-bats to a 8-hole bat's ~3.5, so the bottom of the order is
+// both less likely to hit AND gets fewer chances to. Anything below slot 6
+// is excluded from the prop boards outright rather than shown with a lower
+// grade -- these are the "random people" spots, and the point of a cutoff
+// is that they never reach the board at all.
+//
+// Batters with no posted lineup slot are NOT excluded: before lineups drop
+// the slot is null for everyone, and dropping them would empty the morning
+// board. They are gated on form like always and flagged unconfirmed.
+const MIN_LINEUP_SLOT = 6;
 
 // Tier cutoffs for the multi-hit board. A batter is only called a "2+ hit"
 // candidate when the projection puts him meaningfully above the field: the
@@ -145,6 +157,11 @@ export async function runHitStreakFilter(pool, gameDate) {
 
   const scored = [];
   for (const b of eligible) {
+    // Bottom-of-the-order gate, see MIN_LINEUP_SLOT. A null slot means the
+    // lineup is not posted yet, which is not the same as batting 8th.
+    const slot = b.batting_order_slot ?? null;
+    if (slot !== null && slot > MIN_LINEUP_SLOT) continue;
+
     const opp = opponentByTeam.get(b.team);
     const opponentTrailingEra = opp?.starterId != null ? trailingEraByPitcherId.get(opp.starterId) ?? null : null;
     const trailing15Avg = b.trailing_15_avg !== null ? Number(b.trailing_15_avg) : null;
@@ -223,18 +240,27 @@ export async function runHitStreakFilter(pool, gameDate) {
   // clears it, so it separated nothing. P(1+) is still computed and
   // carried on every card as supporting context -- it's a genuinely
   // useful number to see next to P(2+) -- it just isn't its own board.
-  const multiHit = scored
+  const multiHitRanked = scored
     .filter((b) => b.pAtLeastTwo >= MULTI_HIT_TIER_MIN)
-    .sort((a, b) => b.pAtLeastTwo - a.pAtLeastTwo || b.gradeScore - a.gradeScore)
-    .slice(0, MAX_WATCH);
+    .sort((a, b) => b.pAtLeastTwo - a.pAtLeastTwo || b.gradeScore - a.gradeScore);
 
   scored.sort((a, b) => b.gradeScore - a.gradeScore);
+
+  // Every qualifying batter is graded and returned. `multiHit` is the
+  // per-team-capped board (what gets published), `multiHitAll` is the
+  // complete ranked list behind it (what the Finder shows the owner). No
+  // fixed top-N anywhere: the cutoff is the tier probability and the team
+  // cap, both of which are reasons, where "top 15" was just a number.
+  const multiHit = capPerTeam(multiHitRanked, DEFAULT_PER_TEAM);
 
   return {
     // watchList stays the grade-ranked list so existing consumers (the
     // digest, historical readers) keep working unchanged.
-    watchList: scored.slice(0, MAX_WATCH),
+    watchList: capPerTeam(scored, DEFAULT_PER_TEAM),
+    watchListAll: scored,
     multiHit,
+    multiHitAll: multiHitRanked,
     tierCutoffs: { multiHit: MULTI_HIT_TIER_MIN },
+    limits: { perTeam: DEFAULT_PER_TEAM, minLineupSlot: MIN_LINEUP_SLOT },
   };
 }

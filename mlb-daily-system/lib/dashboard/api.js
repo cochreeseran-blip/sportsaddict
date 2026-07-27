@@ -200,7 +200,7 @@ async function isBlowoutInflated(pool, pitcherId, n = 3) {
 // recorded yet" instead of a publish button that would silently fail.
 async function attachLedger(pool, gameDate, boards) {
   const { rows } = await pool.query(
-    `SELECT id, signal_type, mlb_game_id, published, published_at,
+    `SELECT id, signal_type, mlb_game_id, published, published_at, is_free_pick,
             qualifying_metrics->>'batterName'  AS batter_name,
             qualifying_metrics->>'pitcherName' AS pitcher_name
        FROM tracked_picks WHERE game_date = $1`,
@@ -221,6 +221,7 @@ async function attachLedger(pool, gameDate, boards) {
         ledgerId: row?.id ?? null,
         published: row?.published ?? false,
         publishedAt: row?.published_at ?? null,
+        isFreePick: row?.is_free_pick ?? false,
       };
     });
 

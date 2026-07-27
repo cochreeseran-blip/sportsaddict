@@ -143,7 +143,9 @@ function resultChip(result) {
 const SIGNAL_META = {
   strikeout: { label: 'Strikeouts', blurb: 'Pitchers whose recent starts support the over.' },
   multi_hit: { label: '2+ Hits', blurb: 'Batters projected to collect multiple hits.' },
-  hit_streak: { label: '1+ Hit', blurb: 'The safest hit plays on the board.' },
+  // Retired signal, kept so historical published picks still label
+  // correctly on the record instead of showing a raw key.
+  hit_streak: { label: '1+ Hit (retired)', blurb: 'No longer generated; kept on the record.' },
   home_run: { label: 'Home Runs', blurb: 'Statcast power against arms that give up homers.' },
   moneyline: { label: 'Moneyline', blurb: 'Home favorites facing a struggling starter.' },
   wind_hr: { label: 'Home Runs', blurb: 'Power spots.' },
@@ -156,34 +158,115 @@ const SIGNAL_ORDER = ['strikeout', 'multi_hit', 'hit_streak', 'home_run', 'money
 // the whole promise: nothing gets added after a game starts, and nothing
 // gets quietly removed after it ends.
 
+// A pick card. Leads with the player's face and the one number that
+// matters for that pick type, carries the team's colour as an accent, and
+// states its result plainly once graded -- losses in the same weight as
+// wins, because a record that hides them is worth nothing.
 function pickCard(p) {
   const meta = SIGNAL_META[p.signalType] || { label: p.signalType };
-  const headline = p.headline || p.description || '';
+  const person = p.batterId || p.pitcherId || null;
+  const personName = p.batterName || p.pitcherName || '';
+  const team = p.team || p.homeTeam || '';
+  const isMl = p.signalType === 'moneyline';
 
-  // The one number that matters most for this pick type, shown large.
-  let lead = '';
-  if (p.signalType === 'multi_hit' && p.pAtLeastTwo !== null && p.pAtLeastTwo !== undefined) {
-    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtPct(p.pAtLeastTwo)}</span><span class="pc-lead-lbl">projected to get 2+ hits</span></div>`;
-  } else if (p.signalType === 'hit_streak' && p.pAtLeastOne !== null && p.pAtLeastOne !== undefined) {
-    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtPct(p.pAtLeastOne)}</span><span class="pc-lead-lbl">projected to get a hit</span></div>`;
-  } else if (p.signalType === 'strikeout' && p.suggestedLine !== null && p.suggestedLine !== undefined) {
-    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtNum(p.suggestedLine, 1)}</span><span class="pc-lead-lbl">strikeout line, taking the over</span></div>`;
-  } else if (p.signalType === 'home_run' && p.barrelPct !== null && p.barrelPct !== undefined) {
-    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtNum(p.barrelPct, 1)}%</span><span class="pc-lead-lbl">barrel rate</span></div>`;
-  } else if (p.signalType === 'moneyline' && p.homeMl !== null && p.homeMl !== undefined) {
-    lead = `<div class="pc-lead"><span class="pc-lead-num">${fmtOdds(p.homeMl)}</span><span class="pc-lead-lbl">locked at publish time</span></div>`;
-  }
+  const lead = pickLead(p);
+  const face = isMl
+    ? `<span class="pc-face pc-face-team">${Media.teamLogo(p.homeTeam, 46)}</span>`
+    : `<span class="pc-face">${Media.headshot(person, personName, 52)}</span>`;
 
   return `
-    <article class="pick-card ${p.result === 'win' ? 'is-win' : p.result === 'loss' ? 'is-loss' : ''}">
+    <article class="pick-card ${p.result === 'win' ? 'is-win' : p.result === 'loss' ? 'is-loss' : ''}"
+             style="--team-color:${Media.teamColor(team)}">
       <div class="pc-top">
         <span class="pc-kind">${esc(meta.label)}</span>
         <span class="pc-badges">${gradeBadge(p.grade)}${resultChip(p.result)}</span>
       </div>
-      <h3 class="pc-headline">${esc(headline)}</h3>
+      <div class="pc-body">
+        ${face}
+        <div class="pc-text">
+          <h3 class="pc-headline">${esc(pickTitle(p))}</h3>
+          <div class="pc-sub">${esc(pickSubtitle(p))}</div>
+        </div>
+      </div>
       ${lead}
       <p class="pc-detail">${esc(p.detail || '')}</p>
     </article>`;
+}
+
+// The headline: who, in as few words as possible. The full sentence lives
+// in the detail line underneath.
+function pickTitle(p) {
+  if (p.signalType === 'moneyline') return `${p.homeTeam ?? ''} ${fmtOdds(p.homeMl)}`;
+  return p.batterName || p.pitcherName || p.headline || '';
+}
+
+function pickSubtitle(p) {
+  if (p.signalType === 'moneyline') return `to beat ${p.awayTeam ?? ''}`;
+  const team = Media.teamAbbrev(p.team);
+  if (p.signalType === 'strikeout') return `${team} · strikeouts`;
+  if (p.signalType === 'multi_hit') return `${team}${Number.isInteger(p.battingOrderSlot) ? ` · batting ${p.battingOrderSlot}` : ''} · 2+ hits`;
+  if (p.signalType === 'home_run') return `${team} · home run`;
+  return team;
+}
+
+// The big number, chosen per signal: what this pick is actually claiming.
+function pickLead(p) {
+  const box = (num, label, sub) => `
+    <div class="pc-lead">
+      <span class="pc-lead-num">${num}</span>
+      <span class="pc-lead-lbl">${label}</span>
+      ${sub ? `<span class="pc-lead-sub">${sub}</span>` : ''}
+    </div>`;
+
+  if (p.signalType === 'multi_hit' && p.pAtLeastTwo != null) {
+    return box(fmtPct(p.pAtLeastTwo), 'to get 2+ hits',
+      p.expectedHits != null ? `${fmtNum(p.expectedHits, 2)} projected hits` : '');
+  }
+  if (p.signalType === 'strikeout' && p.suggestedLine != null) {
+    return box(`o${fmtNum(p.suggestedLine, 1)}`, 'strikeouts',
+      p.strictFloorKs != null ? `${p.strictFloorKs}+ in every recent start` : '');
+  }
+  if (p.signalType === 'home_run' && p.barrelPct != null) {
+    return box(`${fmtNum(p.barrelPct, 1)}%`, 'barrel rate',
+      p.avgExitVelo != null ? `${fmtNum(p.avgExitVelo, 1)} mph exit velo` : '');
+  }
+  if (p.signalType === 'moneyline' && p.homeMl != null) {
+    return box(fmtOdds(p.homeMl), 'locked at publish',
+      p.awayStarterTrailingEra != null ? `opposing arm ${fmtNum(p.awayStarterTrailingEra)} ERA` : '');
+  }
+  if (p.signalType === 'hit_streak' && p.pAtLeastOne != null) {
+    return box(fmtPct(p.pAtLeastOne), 'to get a hit', '');
+  }
+  return '';
+}
+
+// --- live scoreboard strip ---------------------------------------------------
+// The app is alive before you even look at a pick. Reads the same public
+// /api/slate the rest of the site uses, so it costs no extra plumbing.
+function liveStrip(games) {
+  if (!games?.length) return '';
+  const tiles = games.map((g) => {
+    const live = g.abstractState === 'Live';
+    const final = g.abstractState === 'Final';
+    const state = live
+      ? `<span class="ls-live"><span class="live-dot"></span>${esc((g.inningState || '').slice(0, 3).toUpperCase())} ${g.inning ?? ''}</span>`
+      : final ? '<span class="ls-final">Final</span>'
+      : `<span class="ls-time">${esc(etTime(g.gameDate))}</span>`;
+    const showScore = live || final;
+    return `
+      <div class="ls-tile ${live ? 'is-live' : ''}">
+        ${state}
+        <div class="ls-row">
+          <span class="ls-abbr">${esc(Media.teamAbbrev(g.away?.name))}</span>
+          <span class="ls-score mono">${showScore ? (g.away?.score ?? 0) : ''}</span>
+        </div>
+        <div class="ls-row">
+          <span class="ls-abbr">${esc(Media.teamAbbrev(g.home?.name))}</span>
+          <span class="ls-score mono">${showScore ? (g.home?.score ?? 0) : ''}</span>
+        </div>
+      </div>`;
+  }).join('');
+  return `<div class="live-strip">${tiles}</div>`;
 }
 
 function heroBlock(record) {
@@ -210,9 +293,10 @@ async function renderToday() {
   const host = $('#view-today');
   host.innerHTML = '<p class="section-sub">Loading today\'s board…</p>';
   try {
-    const [digest, record] = await Promise.all([
+    const [digest, record, slate] = await Promise.all([
       api(`/api/digest?date=${state.today}`),
       api('/api/record').catch(() => null),
+      api(`/api/slate?date=${state.today}`).catch(() => null),
     ]);
 
     const picks = digest.publishedToday || [];
@@ -235,6 +319,12 @@ async function renderToday() {
 
     host.innerHTML = `
       ${heroBlock(record)}
+      ${slate?.games?.length ? `
+        <div class="strip-head">
+          <span class="strip-title">Today's games</span>
+          <span class="strip-note">${slate.games.filter((g) => g.abstractState === 'Live').length} live now</span>
+        </div>
+        ${liveStrip(slate.games)}` : ''}
       <div class="board-date">
         <h2 class="section-title">${esc(longDate(digest.date))}</h2>
         <span class="section-sub">${picks.length} published pick${picks.length === 1 ? '' : 's'}</span>
@@ -369,6 +459,29 @@ function renderHow() {
     </div>`;
 }
 
+// Live score polling. 45s is frequent enough to feel live without being a
+// firehose; the endpoint is cached server-side for 3 minutes anyway, so a
+// tighter interval would mostly return the same payload.
+let scoreTimer = null;
+function stopScorePolling() {
+  if (scoreTimer) { clearInterval(scoreTimer); scoreTimer = null; }
+}
+function startScorePolling() {
+  stopScorePolling();
+  scoreTimer = setInterval(async () => {
+    if (state.view !== 'today') return;
+    try {
+      const slate = await api(`/api/slate?date=${state.today}`);
+      const host = document.querySelector('.live-strip');
+      if (host && slate?.games?.length) {
+        host.outerHTML = liveStrip(slate.games);
+        const note = document.querySelector('.strip-note');
+        if (note) note.textContent = `${slate.games.filter((g) => g.abstractState === 'Live').length} live now`;
+      }
+    } catch { /* transient; the next tick retries */ }
+  }, 45000);
+}
+
 // ---------------------------------------------------------------------------
 // NAV + CHROME
 function showView(name) {
@@ -376,6 +489,9 @@ function showView(name) {
   document.querySelectorAll('.tab[data-view]').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'today') renderToday();
+  // Only poll while Today is on screen: nobody needs live scores while
+  // reading the methodology page, and an idle tab should not keep asking.
+  if (name === 'today') startScorePolling(); else stopScorePolling();
   if (name === 'record') renderRecord();
   if (name === 'how') renderHow();
   const wantPath = name === 'today' ? '/' : `/${name}`;

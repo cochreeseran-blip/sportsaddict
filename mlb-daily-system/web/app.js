@@ -397,6 +397,10 @@ async function loadRecordChip() {
 }
 
 async function init() {
+  // Install image fallbacks before anything renders, so a failed headshot
+  // becomes an initials disc rather than a broken-image icon.
+  Media.installFallbacks();
+
   $('#tabs').addEventListener('click', (e) => {
     const tab = e.target.closest('.tab');
     if (tab) showView(tab.dataset.view);

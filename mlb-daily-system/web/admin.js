@@ -47,6 +47,7 @@ const state = {
   // the algorithm scope because that's the honest number (every pick the
   // system generated), not the flattering published subset.
   perfScope: 'algorithm',
+  trends: null,
   perfWindow: null,
 };
 
@@ -106,24 +107,81 @@ function lineupStatusPill(teamLabel, confirmed, confirmedAt) {
 // the Finder and the public app never disagree about what to call a team.
 const abbr = (teamName) => Media.teamAbbrev(teamName);
 
-function slateOverviewTable(games) {
-  if (!games.length) return emptyState('No games today', 'Nothing on the MLB schedule for this date.');
-  const rows = games.map((g) => `
-    <tr>
-      <td>${esc(g.awayTeam)} @ ${esc(g.homeTeam)}<div class="faint" style="font-size:11px">${esc(g.venue || '')}</div></td>
-      <td>${pitcherProfileCell(g.awayStarterName, g.awayStarterProfile)}</td>
-      <td>${pitcherProfileCell(g.homeStarterName, g.homeStarterProfile)}</td>
-      <td class="lineup-cell">${lineupStatusPill(abbr(g.awayTeam), g.awayLineupConfirmed, g.awayLineupConfirmedAt)}${lineupStatusPill(abbr(g.homeTeam), g.homeLineupConfirmed, g.homeLineupConfirmedAt)}</td>
-      <td class="mono">${g.awayMl !== null && g.awayMl !== undefined ? fmtOdds(g.awayMl) : '-'} / ${g.homeMl !== null && g.homeMl !== undefined ? fmtOdds(g.homeMl) : '-'}</td>
-      <td class="mono live-cell" data-live-game="${esc(g.mlbGameId)}">-</td>
-    </tr>`).join('');
+// The scoreboard: the top of the terminal and the thing that makes it feel
+// live. One tile per game, showing the matchup, both starters, lineup
+// state, price, and -- once a game is underway -- the score and inning,
+// updated in place by the SSE feed (applyLiveSnapshot below) without
+// re-rendering the tile and losing scroll position.
+function scoreTile(g) {
+  const away = Media.teamAbbrev(g.awayTeam);
+  const home = Media.teamAbbrev(g.homeTeam);
   return `
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Game</th><th>Away starter</th><th>Home starter</th><th>Lineups</th><th>Away/Home ML</th><th>Live</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+    <div class="score-tile" data-tile="${esc(g.mlbGameId)}"
+         style="--away-color:${Media.teamColor(g.awayTeam)};--home-color:${Media.teamColor(g.homeTeam)}">
+      <div class="st-state" data-live-state="${esc(g.mlbGameId)}">
+        <span class="st-clock">Scheduled</span>
+      </div>
+      <div class="st-teams">
+        <div class="st-team">
+          <span class="st-logo">${Media.teamLogo(g.awayTeam, 26, { silent: true })}</span>
+          <span class="st-abbr">${esc(away)}</span>
+          <span class="st-score mono" data-live-away="${esc(g.mlbGameId)}">-</span>
+        </div>
+        <div class="st-team">
+          <span class="st-logo">${Media.teamLogo(g.homeTeam, 26, { silent: true })}</span>
+          <span class="st-abbr">${esc(home)}</span>
+          <span class="st-score mono" data-live-home="${esc(g.mlbGameId)}">-</span>
+        </div>
+      </div>
+      <div class="st-arms">
+        <div class="st-arm">
+          <span class="st-arm-label">${esc(away)}</span>
+          <span class="st-arm-name">${esc(g.awayStarterName || 'TBD')}</span>
+          ${armChips(g.awayStarterProfile)}
+        </div>
+        <div class="st-arm">
+          <span class="st-arm-label">${esc(home)}</span>
+          <span class="st-arm-name">${esc(g.homeStarterName || 'TBD')}</span>
+          ${armChips(g.homeStarterProfile)}
+        </div>
+      </div>
+      <div class="st-foot">
+        <span class="st-lineups">
+          ${tileLineupPill(away, g.awayLineupConfirmed)}
+          ${tileLineupPill(home, g.homeLineupConfirmed)}
+        </span>
+        <span class="st-odds mono">${g.awayMl !== null && g.awayMl !== undefined ? fmtOdds(g.awayMl) : '-'} / ${g.homeMl !== null && g.homeMl !== undefined ? fmtOdds(g.homeMl) : '-'}</span>
+      </div>
     </div>`;
+}
+
+// Compact Statcast strip under a starter's name. Colour-coded by whether
+// the number is good FOR THAT PITCHER, so a glance down the scoreboard
+// shows which arms are vulnerable today.
+function armChips(profile) {
+  if (!profile) return '<span class="st-arm-chips faint">no Savant data</span>';
+  const era = profile.savantEra ?? profile.seasonEra;
+  return `
+    <span class="st-arm-chips mono">
+      <span class="${colorClass(era, { goodMin: 99, badMax: 4.5, invert: true })}">${fmtNum(era)} ERA</span>
+      <span class="${colorClass(profile.kPct, { goodMin: 25, badMax: 18 })}">${fmtPct(profile.kPct ? profile.kPct / 100 : null, 0)} K</span>
+      <span class="${colorClass(profile.hardHitPct, { goodMin: 45, badMax: 33, invert: true })}">${fmtPct(profile.hardHitPct ? profile.hardHitPct / 100 : null, 0)} HH</span>
+    </span>`;
+}
+
+// Tile-sized lineup state: team + confirmed/projected only. The full pill
+// (with its timestamp) wrapped to three lines inside a tile and broke the
+// scoreboard's rhythm. The timestamp still appears on the signal cards,
+// where there is room for it.
+function tileLineupPill(teamAbbr, confirmed) {
+  return confirmed
+    ? `<span class="pill ok"><span class="pill-dot"></span>${esc(teamAbbr)}</span>`
+    : `<span class="pill dim">${esc(teamAbbr)} proj</span>`;
+}
+
+function scoreboard(games) {
+  if (!games.length) return emptyState('No games today', 'Nothing on the MLB schedule for this date.');
+  return `<div class="scoreboard">${games.map(scoreTile).join('')}</div>`;
 }
 
 // --- Panel 2: signal cards ---------------------------------------------------
@@ -136,7 +194,7 @@ function strikeoutCard(p) {
           ${Media.headshot(p.pitcherId, p.pitcherName, 44)}
           <span>
             <span class="sig-name">${esc(p.pitcherName)}</span>
-            <span class="sig-meta">${Media.teamLogo(p.team, 14)} ${esc(Media.teamAbbrev(p.team))} ${p.isHome ? 'vs' : '@'} ${esc(Media.teamAbbrev(p.opponent))}</span>
+            <span class="sig-meta">${Media.teamLogo(p.team, 14, { silent: true })} ${esc(Media.teamAbbrev(p.team))} ${p.isHome ? 'vs' : '@'} ${esc(Media.teamAbbrev(p.opponent))}</span>
           </span>
         </span>
         <span class="sig-badges">${gradeBadge(p.grade)}${highConf ? '<span class="pill hot">High confidence</span>' : ''}</span>
@@ -182,7 +240,7 @@ function hitPropCard(p, tier = 'multi') {
           ${Media.headshot(p.batterId, p.batterName, 44)}
           <span>
             <span class="sig-name">${esc(p.batterName)}</span>
-            <span class="sig-meta">${Media.teamLogo(p.team, 14)} ${esc(Media.teamAbbrev(p.team))} · ${slot}</span>
+            <span class="sig-meta">${Media.teamLogo(p.team, 14, { silent: true })} ${esc(Media.teamAbbrev(p.team))} · ${slot}</span>
           </span>
         </span>
         <span class="sig-badges">${gradeBadge(p.grade)}${luck}</span>
@@ -219,7 +277,7 @@ function homeRunCard(p) {
           ${Media.headshot(p.batterId, p.batterName, 44)}
           <span>
             <span class="sig-name">${esc(p.batterName)}</span>
-            <span class="sig-meta">${Media.teamLogo(p.team, 14)} ${esc(Media.teamAbbrev(p.team))}${Number.isInteger(p.battingOrderSlot) ? ` · batting ${p.battingOrderSlot}` : ''}</span>
+            <span class="sig-meta">${Media.teamLogo(p.team, 14, { silent: true })} ${esc(Media.teamAbbrev(p.team))}${Number.isInteger(p.battingOrderSlot) ? ` · batting ${p.battingOrderSlot}` : ''}</span>
           </span>
         </span>
         <span class="sig-badges">${gradeBadge(p.grade)}${wind}</span>
@@ -252,7 +310,7 @@ function moneylineCard(p) {
           ${Media.teamLogo(p.homeTeam, 34)}
           <span>
             <span class="sig-name">${esc(p.homeTeam)} ${fmtOdds(p.homeMl)}</span>
-            <span class="sig-meta">vs ${Media.teamLogo(p.awayTeam, 14)} ${esc(Media.teamAbbrev(p.awayTeam))}</span>
+            <span class="sig-meta">vs ${Media.teamLogo(p.awayTeam, 14, { silent: true })} ${esc(Media.teamAbbrev(p.awayTeam))}</span>
           </span>
         </span>
       </div>
@@ -370,25 +428,59 @@ function stopLiveMonitor() {
   if (state.liveSource) { state.liveSource.close(); state.liveSource = null; }
 }
 
+// Applies one SSE frame to the scoreboard IN PLACE. Deliberately does not
+// re-render tiles: a full re-render on every frame would fight the user's
+// scroll position and drop focus, and the whole point of this panel is
+// that it updates while you are reading it.
 function applyLiveSnapshot(games) {
+  let liveCount = 0;
   for (const g of games) {
-    const cell = document.querySelector(`[data-live-game="${g.mlbGameId}"]`);
-    if (!cell) continue;
-    if (g.error) { cell.textContent = '-'; continue; }
-    if (g.inning === null || g.inning === undefined) { cell.textContent = 'Preview'; continue; }
-    cell.innerHTML = `${g.awayScore ?? 0}-${g.homeScore ?? 0} <span class="faint">${esc(g.inningState || '')} ${g.inning}</span>`;
-    if (g.pitcherChanged) {
-      cell.innerHTML += `<div class="pill warn" style="margin-top:4px">Pitcher change: ${esc(g.newPitcherName || '')}</div>`;
+    const stateEl = document.querySelector(`[data-live-state="${g.mlbGameId}"]`);
+    const awayEl = document.querySelector(`[data-live-away="${g.mlbGameId}"]`);
+    const homeEl = document.querySelector(`[data-live-home="${g.mlbGameId}"]`);
+    const tile = document.querySelector(`[data-tile="${g.mlbGameId}"]`);
+    if (!stateEl) continue;
+
+    if (g.error) {
+      stateEl.innerHTML = '<span class="st-clock">Unavailable</span>';
+      continue;
     }
+    if (g.inning === null || g.inning === undefined) {
+      stateEl.innerHTML = '<span class="st-clock">Scheduled</span>';
+      continue;
+    }
+
+    liveCount++;
+    tile?.classList.add('is-live');
+    const half = (g.inningState || '').toLowerCase().startsWith('bot') ? 'BOT' : 'TOP';
+    stateEl.innerHTML = `
+      <span class="st-live"><span class="live-dot"></span>LIVE</span>
+      <span class="st-inning mono">${half} ${g.inning}</span>
+      ${g.outs !== null && g.outs !== undefined ? `<span class="st-outs mono">${g.outs} out</span>` : ''}`;
+    if (awayEl) awayEl.textContent = g.awayScore ?? 0;
+    if (homeEl) homeEl.textContent = g.homeScore ?? 0;
+
+    if (g.pitcherChanged) tile?.classList.add('has-alert');
   }
+
+  const banner = $('#liveCount');
+  if (banner) {
+    banner.textContent = liveCount ? `${liveCount} game${liveCount === 1 ? '' : 's'} in progress` : 'No games in progress';
+    banner.classList.toggle('is-live', liveCount > 0);
+  }
+
+  // Pitcher-change alerts: the one live event that can kill a K prop
+  // outright, so it gets its own banner rather than a subtle tile state.
   const alertHost = $('#liveAlerts');
   if (!alertHost) return;
   const alerts = games.filter((g) => g.pitcherChanged && g.departedStarter);
   alertHost.innerHTML = alerts.length ? alerts.map((g) => {
-    const lines = Object.entries(g.departedStarter || {}).map(([side, d]) =>
-      `${esc(d.pitcherId)} left with ${d.strikeouts ?? '?'} Ks${d.suggestedLine !== null ? ` (line ${d.suggestedLine}, prop ${d.kPropStatus === 'hit' ? 'HIT' : d.kPropStatus === 'dead' ? 'DEAD' : 'n/a'})` : ''}`
-    ).join(' · ');
-    return `<div class="sig-card" style="border-color:var(--amber)"><div class="sig-head"><span>${esc(g.awayTeam)} @ ${esc(g.homeTeam)}</span><span class="pill hot">Pitcher change</span></div><div class="sig-sub">${lines}</div></div>`;
+    const lines = Object.values(g.departedStarter || {}).map((d) => {
+      const status = d.kPropStatus === 'hit' ? '<span class="pos">PROP HIT</span>'
+        : d.kPropStatus === 'dead' ? '<span class="neg">PROP DEAD</span>' : '';
+      return `left with ${d.strikeouts ?? '?'} Ks${d.suggestedLine !== null && d.suggestedLine !== undefined ? ` (line ${d.suggestedLine})` : ''} ${status}`;
+    }).join(' · ');
+    return `<div class="live-alert"><strong>${esc(Media.teamAbbrev(g.awayTeam))} @ ${esc(Media.teamAbbrev(g.homeTeam))}</strong> starter out, ${lines}</div>`;
   }).join('') : '';
 }
 
@@ -409,7 +501,7 @@ function dashboardToolbar() {
   return `
     <div class="signals-toolbar">
       <input type="date" id="dashDate" value="${state.dashDate}" class="date-select">
-      <button class="btn ghost small" id="dashRefresh">Refresh now</button>
+      <button class="btn ghost small" id="dashRefresh">Refresh</button>
       <span class="faint" id="dashUpdated" style="font-size:11px"></span>
     </div>`;
 }
@@ -423,17 +515,80 @@ async function renderSlate() {
 // Renders from already-fetched data (used both right after a fetch and on
 // a signal-tab switch, which must NOT refetch or restart the live SSE
 // connection just to change which card grid is visible).
+// Recent form per signal, fetched once and cached on state. Answers
+// "what is actually working lately" on the same screen as today's board,
+// instead of requiring a trip to the Performance tab.
+function trendsStrip(perf) {
+  if (!perf) return '<div class="trend-strip"><span class="faint">Loading form…</span></div>';
+  const rows = (perf.published?.signals || []).filter((s) => s.graded > 0);
+  if (!rows.length) {
+    return '<div class="trend-strip"><span class="faint">No graded picks in the last 30 days yet.</span></div>';
+  }
+  return `<div class="trend-strip">${rows.map((s) => {
+    const rate = s.winRate !== null && s.winRate !== undefined ? fmtPct(s.winRate, 0) : null;
+    const cls = s.winRate === null || s.winRate === undefined ? '' : s.winRate >= 0.6 ? 'pos' : s.winRate < 0.45 ? 'neg' : '';
+    return `<span class="trend-item">
+      <span class="trend-label">${esc(SIGNAL_LABEL[s.signalType] || s.label)}</span>
+      <span class="trend-wl mono">${s.wins}-${s.losses}</span>
+      <span class="trend-rate mono ${cls}">${rate ?? `${s.needsForRate} more`}</span>
+    </span>`;
+  }).join('')}</div>`;
+}
+
+const SIGNAL_LABEL = {
+  strikeout: 'K props', multi_hit: '2+ hits', hit_streak: '1+ hit (retired)',
+  home_run: 'Home runs', moneyline: 'Moneyline', wind_hr: 'HR (legacy)',
+};
+
+async function loadTrends() {
+  try {
+    state.trends = await api('/api/performance/breakdown?sinceDays=30');
+    const host = $('#trendStrip');
+    if (host) host.outerHTML = `<div id="trendStrip">${trendsStrip(state.trends)}</div>`;
+  } catch { /* the strip is context, never block the board on it */ }
+}
+
 function renderDashboardBody(data) {
   const host = $('#admin-view');
+  const published = countPublished(data);
   host.innerHTML = `
-    <div class="section-head"><h2 class="section-title">Research</h2></div>
-    ${dashboardToolbar()}
-    <h2 class="board-title">Today's slate${count(data.slate.length)}</h2>
-    ${slateOverviewTable(data.slate)}
+    ${dashboardToolbar(data, published)}
+    <div class="desk-bar">
+      <span class="desk-title">Scoreboard</span>
+      <span class="live-count" id="liveCount">Connecting…</span>
+      <span class="desk-spacer"></span>
+      <span class="desk-stat"><b>${data.slate.length}</b> games</span>
+      <span class="desk-stat"><b>${published.total}</b> published</span>
+    </div>
     <div id="liveAlerts"></div>
-    <h2 class="board-title">Signals</h2>
+    ${scoreboard(data.slate)}
+    <div class="desk-bar">
+      <span class="desk-title">Form, last 30 days</span>
+      <span class="desk-spacer"></span>
+      <span class="desk-stat faint">published picks only</span>
+    </div>
+    <div id="trendStrip">${trendsStrip(state.trends)}</div>
+    <div class="desk-bar">
+      <span class="desk-title">Signals</span>
+      <span class="desk-spacer"></span>
+      <span class="desk-stat faint">${published.pending} awaiting publish</span>
+    </div>
     ${signalPanel(data)}`;
   wireDashboardControls();
+}
+
+// How much of today's board has been acted on. Shown in the desk bar so
+// the answer to "have I published yet" is always on screen, rather than
+// something you have to click through four tabs to work out.
+function countPublished(data) {
+  const all = [
+    ...(data.multiHit || []),
+    ...(data.homeRuns || []),
+    ...(data.strikeouts || []),
+    ...(data.moneyline?.picks || []),
+  ];
+  const total = all.filter((p) => p.published).length;
+  return { total, pending: all.filter((p) => !p.published && p.ledgerId).length };
 }
 
 async function loadDashboard(dateStr) {
@@ -443,6 +598,7 @@ async function loadDashboard(dateStr) {
     state.dashData = data;
     renderDashboardBody(data);
     startLiveMonitor(dateStr);
+    if (!state.trends) loadTrends();
   } catch (err) {
     host.innerHTML = `<div class="section-head"><h2 class="section-title">Research</h2></div>${dashboardToolbar()}${emptyState('Dashboard unavailable', err.message)}`;
     wireDashboardControls();
@@ -734,6 +890,11 @@ function showView(name) {
 }
 
 async function init() {
+  // Without this, a headshot or logo that fails to load (MLB's CDN 404s
+  // for freshly called-up players, and blocks entirely on some networks)
+  // leaves a broken-image icon on the card instead of the initials disc.
+  Media.installFallbacks();
+
   $('#adminTabs').addEventListener('click', (e) => {
     const tab = e.target.closest('.tab');
     if (tab) showView(tab.dataset.view);

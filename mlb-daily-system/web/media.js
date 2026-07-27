@@ -103,15 +103,22 @@
       src="${HEADSHOT(personId, px * 2)}">`;
   }
 
-  function teamLogo(teamName, size) {
+  // opts.silent: render an EMPTY placeholder if the logo fails, instead of
+  // the abbreviation. Use this wherever the team abbreviation is already
+  // printed beside the logo -- otherwise a failed image produces "NYY NYY",
+  // which is what the text fallback looks like next to its own label.
+  function teamLogo(teamName, size, opts) {
     const px = size || 24;
     const t = TEAMS[teamName];
     const ab = teamAbbrev(teamName);
+    const silent = Boolean(opts && opts.silent);
     if (!t) {
-      return `<span class="logo-fallback" style="width:${px}px;height:${px}px">${esc(ab)}</span>`;
+      return silent
+        ? `<span class="logo-fallback is-silent" style="width:${px}px;height:${px}px"></span>`
+        : `<span class="logo-fallback" style="width:${px}px;height:${px}px">${esc(ab)}</span>`;
     }
     return `<img class="team-logo" style="width:${px}px;height:${px}px" loading="lazy" alt="${esc(teamName)}"
-      data-fb="${esc(ab)}" data-fb-class="logo-fallback"
+      data-fb="${silent ? '' : esc(ab)}" data-fb-class="logo-fallback${silent ? ' is-silent' : ''}"
       src="${TEAM_LOGO(t.id)}">`;
   }
 
@@ -124,7 +131,9 @@
       'error',
       (e) => {
         const img = e.target;
-        if (!(img instanceof HTMLImageElement) || !img.dataset.fb) return;
+        // dataset.fb may be an empty string for a silent fallback, so
+        // check for the ATTRIBUTE's presence, not its truthiness.
+        if (!(img instanceof HTMLImageElement) || img.dataset.fb === undefined) return;
         const span = document.createElement('span');
         span.className = img.dataset.fbClass || 'headshot-fallback';
         span.textContent = img.dataset.fb;

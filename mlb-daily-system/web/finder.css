@@ -163,6 +163,135 @@ select.date-select:focus { outline: 1px solid var(--accent); }
 .perf-table td, .perf-table th { padding: 6px 10px; font-size: 12.5px; }
 .lineup-cell { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 
+/* --- DARK TERMINAL THEME ---------------------------------------------------
+   The Finder overrides the shared light tokens with a broadcast-desk dark
+   palette. This is a private, always-on surface that gets stared at for
+   hours, so it is dark, dense, and colour-coded by meaning: green means
+   the number favours the pick, red means it does not, amber means an
+   event that needs attention. Nothing is coloured decoratively. */
+:root {
+  --bg: #0b0e13;
+  --bg-2: #141922;
+  --panel: #121722;
+  --panel-2: #182030;
+  --border: #232c3a;
+  --border-strong: #33405340;
+  --text: #e9edf3;
+  --text-2: #97a2b4;
+  --text-3: #66718a;
+  --accent: #35d07f;
+  --accent-soft: rgba(53, 208, 127, 0.12);
+  --green: #35d07f;
+  --green-bg: rgba(53, 208, 127, 0.12);
+  --red: #ff5f6d;
+  --red-bg: rgba(255, 95, 109, 0.12);
+  --amber: #ffb443;
+  --amber-bg: rgba(255, 180, 67, 0.12);
+  --shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+body {
+  background:
+    radial-gradient(900px 400px at 12% -5%, rgba(53, 208, 127, 0.06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+.topbar { background: rgba(11, 14, 19, 0.92); backdrop-filter: blur(10px); border-bottom-color: var(--border); }
+.brand-name { letter-spacing: 0.14em; text-transform: uppercase; font-size: 12.5px; color: var(--text-2); }
+input, select, textarea { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+
+/* --- desk bars -------------------------------------------------------------
+   The horizontal rules that divide the terminal into panels. */
+.desk-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 26px 0 12px; padding-bottom: 9px;
+  border-bottom: 1px solid var(--border);
+}
+.desk-title {
+  font-family: var(--font-display); font-weight: 800; font-size: 12px;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--text);
+}
+.desk-spacer { flex: 1 1 auto; }
+.desk-stat { font-size: 11.5px; color: var(--text-3); }
+.desk-stat b { color: var(--text-2); font-weight: 700; }
+
+.live-count {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-3);
+}
+.live-count.is-live { color: var(--accent); }
+.live-count.is-live::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); animation: livePulse 1.8s ease-in-out infinite;
+}
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* --- scoreboard ----------------------------------------------------------- */
+.scoreboard {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 10px;
+}
+.score-tile {
+  position: relative; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px 11px;
+}
+/* Both teams' colours as a thin top rule, so a tile is identifiable at a
+   glance without reading it. */
+.score-tile::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, var(--away-color) 0 50%, var(--home-color) 50% 100%);
+  opacity: 0.85;
+}
+.score-tile.is-live { border-color: rgba(53, 208, 127, 0.35); }
+.score-tile.has-alert { border-color: rgba(255, 180, 67, 0.5); }
+
+.st-state { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; min-height: 16px; }
+.st-clock { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.st-live {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 800; letter-spacing: 0.1em; color: var(--accent);
+}
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: livePulse 1.8s ease-in-out infinite;
+}
+.st-inning, .st-outs { font-size: 11px; color: var(--text-2); font-weight: 600; }
+.st-outs { color: var(--text-3); }
+
+.st-teams { display: flex; flex-direction: column; gap: 5px; margin-bottom: 11px; }
+.st-team { display: flex; align-items: center; gap: 9px; }
+.st-logo { display: inline-flex; width: 26px; justify-content: center; }
+.st-abbr {
+  font-family: var(--font-display); font-weight: 800; font-size: 15px;
+  letter-spacing: -0.01em; flex: 1 1 auto;
+}
+.st-score {
+  font-family: var(--font-display); font-weight: 800; font-size: 19px;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+
+.st-arms { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.st-arm { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; font-size: 11.5px; }
+.st-arm-label { font-weight: 700; color: var(--text-3); font-size: 10px; min-width: 26px; }
+.st-arm-name { color: var(--text-2); font-weight: 600; }
+.st-arm-chips { display: inline-flex; gap: 7px; font-size: 10.5px; }
+
+.st-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border);
+}
+.st-lineups { display: flex; gap: 5px; flex-wrap: wrap; }
+.st-odds { font-size: 11.5px; color: var(--text-2); font-weight: 600; }
+
+.live-alert {
+  padding: 9px 12px; margin-bottom: 8px; border-radius: 8px;
+  background: var(--amber-bg); border: 1px solid rgba(255, 180, 67, 0.35);
+  font-size: 12px; color: var(--text);
+}
+.live-alert strong { color: var(--amber); }
+
 /* --- signal cards: broadcast layout ---------------------------------------
    Every board uses the same card so the terminal reads as one system
    rather than four different screens bolted together. */
@@ -222,3 +351,57 @@ select.date-select:focus { outline: 1px solid var(--accent); }
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 9px; font-weight: 700; color: var(--text-3);
 }
+
+/* --- dark-theme corrections for shared primitives -------------------------
+   tokens.css was written for the light app; these adjust the pieces that
+   need different treatment on a dark surface. */
+.sig-card { background: var(--panel); border-color: var(--border); }
+.sig-card.is-published { box-shadow: inset 3px 0 0 var(--green), var(--shadow); }
+.proj-row { background: var(--bg-2); border-color: var(--border); }
+.proj-pct { color: var(--text); }
+.headshot, .headshot-fallback { background: var(--bg-2); border-color: var(--border); }
+.headshot-fallback { color: var(--text-3); }
+/* MLB team logos are drawn for light backgrounds; a slight lift keeps the
+   dark-navy marks (NYY, DET, TB) from disappearing into the panel. */
+.team-logo { filter: brightness(1.12); }
+.perf-block, .perf-overall, .admin-stat, .empty-state { background: var(--panel); border-color: var(--border); }
+.admin-modal { background: var(--panel-2); border-color: var(--border-strong); }
+.data-table th { color: var(--text-3); border-bottom-color: var(--border); }
+.data-table td { border-bottom-color: var(--border); }
+.tab { color: var(--text-3); }
+.tab:hover { color: var(--text-2); }
+.tab.active { color: var(--text); background: var(--panel-2); }
+.btn.ghost { color: var(--text-2); border-color: var(--border); background: transparent; }
+.btn.ghost:hover { background: var(--panel-2); color: var(--text); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #06210f; font-weight: 700; }
+.btn.primary:hover { filter: brightness(1.08); }
+.grade-badge { border-width: 1px; }
+.pill.dim { color: var(--text-3); background: var(--bg-2); border-color: var(--border); }
+.pill.ok { color: var(--green); background: var(--green-bg); border-color: rgba(53,208,127,0.3); }
+.pill.hot { color: var(--amber); background: var(--amber-bg); border-color: rgba(255,180,67,0.35); }
+.section-title, .board-title { color: var(--text); }
+.date-select { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+.date-select::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+
+@media (max-width: 720px) {
+  .scoreboard { grid-template-columns: 1fr; }
+  .sig-cards { grid-template-columns: 1fr; }
+}
+
+/* --- form strip -----------------------------------------------------------
+   Recent per-signal results, on the same screen as today's board. */
+.trend-strip {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  padding: 2px 0 4px;
+}
+.trend-item {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 8px 13px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+}
+.trend-label { font-size: 11px; color: var(--text-3); letter-spacing: 0.04em; text-transform: uppercase; }
+.trend-wl { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.trend-rate { font-size: 12.5px; font-weight: 600; }
+/* A silent logo fallback occupies its slot without printing text, for the
+   places where the abbreviation is already shown beside it. */
+.logo-fallback.is-silent { border: 1px dashed var(--border); border-radius: 4px; opacity: 0.45; }

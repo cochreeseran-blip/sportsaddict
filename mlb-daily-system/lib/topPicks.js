@@ -116,13 +116,20 @@ function hitCandidate(b, tier) {
   };
 }
 
-// The 1+ hit tier. Kept as signal_type 'hit_streak' so the existing ledger
-// history, grading path, and public record stay continuous -- the pick
-// being asked for is unchanged ("gets a hit"), only how it's selected and
-// ranked has changed.
-export function hitPropCandidates(hitStreak) {
-  const source = hitStreak?.singleHit?.length ? hitStreak.singleHit : (hitStreak?.watchList || []);
-  return source.map((b) => hitCandidate(b, 'single'));
+// RETIRED: the 1+ hit tier is no longer generated. "Will he get a hit" is
+// a weak question -- nearly every regular clears it, so the pick carried
+// almost no information and the board was mostly noise. The 2+ tier asks
+// something that actually separates players.
+//
+// This function is deliberately kept and deliberately returns nothing:
+//   - Existing signal_type 'hit_streak' rows stay in the ledger and keep
+//     grading (see gradeOnePick), so the public record keeps its real
+//     history instead of silently losing picks that were genuinely made.
+//   - Any caller still wired to it gets an empty board rather than a
+//     crash, and the reason is documented here rather than in a commit
+//     message nobody will find.
+export function hitPropCandidates() {
+  return [];
 }
 
 // The 2+ hit tier, a new signal type with its own grading rule (see

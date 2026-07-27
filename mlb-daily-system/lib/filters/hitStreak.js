@@ -30,7 +30,6 @@ const MAX_WATCH = 15; // spec: "TOP 15 shown"
 // same idea from the other end: below ~70% a "gets a hit" play isn't safe
 // enough to be worth calling out at all.
 const MULTI_HIT_TIER_MIN = 0.32;
-const SINGLE_HIT_TIER_MIN = 0.70;
 
 // Hot recent form (streak, trailing average, OR Savant xBA) against a
 // beatable arm, scored per lib/grading.js scoreHitProp -- contact-quality
@@ -219,29 +218,23 @@ export async function runHitStreakFilter(pool, gameDate) {
     });
   }
 
-  // Two boards off one model. multiHit is ordered by P(2+) because that's
-  // the question being asked; singleHit by P(1+) for the same reason. A
-  // batter can legitimately appear on both: a leadoff masher is both the
-  // best 2+ candidate and one of the safest 1+ plays, and hiding him from
-  // one list to avoid the overlap would be hiding a true answer.
+  // One board off the model: 2+ hits. The 1+ tier was retired (see
+  // hitPropCandidates in lib/topPicks.js) because nearly every regular
+  // clears it, so it separated nothing. P(1+) is still computed and
+  // carried on every card as supporting context -- it's a genuinely
+  // useful number to see next to P(2+) -- it just isn't its own board.
   const multiHit = scored
     .filter((b) => b.pAtLeastTwo >= MULTI_HIT_TIER_MIN)
     .sort((a, b) => b.pAtLeastTwo - a.pAtLeastTwo || b.gradeScore - a.gradeScore)
-    .slice(0, MAX_WATCH);
-
-  const singleHit = scored
-    .filter((b) => b.pAtLeastOne >= SINGLE_HIT_TIER_MIN)
-    .sort((a, b) => b.pAtLeastOne - a.pAtLeastOne || b.gradeScore - a.gradeScore)
     .slice(0, MAX_WATCH);
 
   scored.sort((a, b) => b.gradeScore - a.gradeScore);
 
   return {
     // watchList stays the grade-ranked list so existing consumers (the
-    // ledger recorder, the email digest) keep working unchanged.
+    // digest, historical readers) keep working unchanged.
     watchList: scored.slice(0, MAX_WATCH),
     multiHit,
-    singleHit,
-    tierCutoffs: { multiHit: MULTI_HIT_TIER_MIN, singleHit: SINGLE_HIT_TIER_MIN },
+    tierCutoffs: { multiHit: MULTI_HIT_TIER_MIN },
   };
 }

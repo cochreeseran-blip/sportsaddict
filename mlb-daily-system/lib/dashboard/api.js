@@ -186,11 +186,57 @@ async function isBlowoutInflated(pool, pitcherId, n = 3) {
   return Number.isFinite(best) && best < 4.5;
 }
 
+// Attaches each live-computed card to its row in the permanent ledger.
+//
+// WHY THIS EXISTS: the boards below are computed fresh from the filters
+// on every request, so a card has no database id of its own. Publishing
+// needs one -- and without this join the Finder has no way to publish
+// anything at all, which means nothing can ever reach the public site.
+// The join key is the same identity recordTrackedPicks dedupes on:
+// (game_date, signal_type, game, batterName, pitcherName).
+//
+// A card with no matching ledger row (the pipeline hasn't recorded this
+// date yet) comes back with ledgerId null, and the UI shows "not
+// recorded yet" instead of a publish button that would silently fail.
+async function attachLedger(pool, gameDate, boards) {
+  const { rows } = await pool.query(
+    `SELECT id, signal_type, mlb_game_id, published, published_at,
+            qualifying_metrics->>'batterName'  AS batter_name,
+            qualifying_metrics->>'pitcherName' AS pitcher_name
+       FROM tracked_picks WHERE game_date = $1`,
+    [gameDate]
+  );
+  const key = (signal, gameId, batter, pitcher) =>
+    `${signal}|${gameId ?? ''}|${batter ?? ''}|${pitcher ?? ''}`;
+  const byKey = new Map(
+    rows.map((r) => [key(r.signal_type, r.mlb_game_id, r.batter_name, r.pitcher_name), r])
+  );
+
+  const decorate = (list, signalType, getNames) =>
+    (list || []).map((c) => {
+      const { batter, pitcher } = getNames(c);
+      const row = byKey.get(key(signalType, c.mlbGameId, batter, pitcher));
+      return {
+        ...c,
+        ledgerId: row?.id ?? null,
+        published: row?.published ?? false,
+        publishedAt: row?.published_at ?? null,
+      };
+    });
+
+  return {
+    multiHit: decorate(boards.multiHit, 'multi_hit', (c) => ({ batter: c.batterName, pitcher: null })),
+    homeRuns: decorate(boards.homeRuns, 'home_run', (c) => ({ batter: c.batterName, pitcher: null })),
+    strikeouts: decorate(boards.strikeouts, 'strikeout', (c) => ({ batter: null, pitcher: c.pitcherName })),
+    moneyline: decorate(boards.moneyline, 'moneyline', () => ({ batter: null, pitcher: null })),
+  };
+}
+
 // The full dashboard payload for one date: slate overview + every signal
 // board. Each signal's filter runs unmodified; moneyline gets the display
 // enrichment above, the prop boards arrive already scored (lib/grading.js)
-// and, for hits, already projected and split into tiers
-// (lib/hitProjection.js, lib/filters/hitStreak.js).
+// and, for hits, already projected (lib/hitProjection.js). Every card is
+// then joined to its ledger row so it can be published in place.
 export async function buildDashboardData(pool, gameDate) {
   const [slate, strikeouts, hitProps, homeRuns, moneyline] = await Promise.all([
     buildSlateOverview(pool, gameDate),
@@ -200,17 +246,25 @@ export async function buildDashboardData(pool, gameDate) {
     runMoneylineFilter(pool, gameDate),
   ]);
   const moneylinePicks = await enrichMoneylinePicks(pool, gameDate, moneyline.picks);
+
+  const withLedger = await attachLedger(pool, gameDate, {
+    multiHit: hitProps.multiHit ?? [],
+    homeRuns: homeRuns.watchList ?? [],
+    strikeouts: strikeouts.watchList ?? [],
+    moneyline: moneylinePicks,
+  });
+
   return {
     gameDate,
     slate,
-    strikeouts: strikeouts.watchList,
-    // Both hit tiers off the one projection. hitProps stays the
-    // grade-ranked list so nothing that read it before breaks.
+    strikeouts: withLedger.strikeouts,
+    // The 2+ hit board. hitProps stays the grade-ranked list so nothing
+    // that read it before breaks; the 1+ tier is retired (see
+    // hitPropCandidates in lib/topPicks.js).
     hitProps: hitProps.watchList,
-    multiHit: hitProps.multiHit ?? [],
-    singleHit: hitProps.singleHit ?? [],
+    multiHit: withLedger.multiHit,
     tierCutoffs: hitProps.tierCutoffs ?? null,
-    homeRuns: homeRuns.watchList ?? [],
-    moneyline: { signal: moneyline.signal, picks: moneylinePicks, otherGames: moneyline.otherGames },
+    homeRuns: withLedger.homeRuns,
+    moneyline: { signal: moneyline.signal, picks: withLedger.moneyline, otherGames: moneyline.otherGames },
   };
 }

@@ -1,0 +1,244 @@
+/* slateaddict.com -- the public app.
+   Loaded after tokens.css, so it may rely on the variables and
+   primitives defined there. Nothing in this file is served on the admin
+   host. */
+
+.exp-stat .k { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); margin-bottom: 3px; }
+.lu-stat .k { font-size: 9.5px; color: var(--text-3); margin-top: 1px; }
+/* --- trading-card pick grid ----------------------------------------------------------- */
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.pick-card {
+  position: relative; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 13px 11px; cursor: pointer;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+.pick-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.pc-top { display: flex; align-items: center; gap: 10px; }
+.pc-top .prob-chip { margin-left: auto; flex: 0 0 auto; }
+.pick-card.open .pc-why { display: block; }
+.pick-card.open { border-color: var(--accent); }
+.footer-note { width: 100%; text-align: center; }
+/* --- footer (base) ------------------------------------------------------------------ */
+.footer {
+  display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;
+  padding: 20px 20px 26px; border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--text-3);
+}
+/* --- account gate ------------------------------------------------------------------ */
+.auth-gate {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(10, 12, 15, 0.88); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.auth-gate[hidden] { display: none; }
+.auth-card {
+  width: 100%; max-width: 380px; background: var(--panel);
+  border: 1px solid var(--border-strong); border-radius: 12px;
+  padding: 26px 26px 22px; text-align: center;
+}
+.auth-brand {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-weight: 700; font-size: 17px; letter-spacing: -0.01em; margin-bottom: 18px;
+}
+.auth-brand .brand-mark { width: 20px; height: 20px; color: var(--accent); }
+.auth-title { font-size: 16px; font-weight: 650; margin-bottom: 4px; }
+.auth-sub { color: var(--text-3); font-size: 12.5px; line-height: 1.55; margin: 0 0 16px; }
+.auth-card form { text-align: left; }
+.auth-submit { width: 100%; margin-top: 4px; height: 36px; }
+.password-wrap { position: relative; display: block; }
+.password-wrap input { padding-right: 56px; }
+.password-toggle {
+  position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+  font: 550 11px var(--font); color: var(--text-2);
+  background: var(--panel-2); border: 1px solid var(--border-strong); border-radius: 5px;
+  padding: 3px 8px; cursor: pointer;
+}
+.password-toggle:hover { color: var(--text); }
+.remember-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 12.5px; color: var(--text-2); margin: 2px 0 12px; user-select: none;
+}
+.remember-row input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+.auth-toggle-row { margin-top: 14px; font-size: 12px; color: var(--text-3); display: flex; gap: 6px; justify-content: center; }
+.auth-toggle { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; }
+.auth-toggle:hover { text-decoration: underline; }
+.auth-reveal-avatar { display: flex; justify-content: center; margin-bottom: 12px; }
+.auth-reveal-name { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 18px; }
+/* topbar account chip */
+.account-chip { display: flex; align-items: center; gap: 8px; }
+.account-name { font-size: 12px; font-weight: 600; color: var(--text-2); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-head { display: flex; align-items: center; gap: 12px; margin: 36px 0 14px; }
+.board-head:first-child { margin-top: 6px; }
+/* --- market-style pick cards ------------------------------------------------------- */
+.pick-grid { grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 12px; }
+.pick-grid.center { grid-template-columns: repeat(auto-fit, minmax(258px, 320px)); justify-content: center; }
+.pick-card {
+  position: relative; overflow: hidden;
+  border: 1px solid var(--border);
+  padding: 14px 15px 12px;
+  transition: border-color 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease;
+}
+.pick-card::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: var(--tier, var(--accent)); opacity: 0.9;
+}
+.pick-card.warm { --tier: var(--accent); }
+.pick-card.cool { --tier: var(--text-3); }
+.pick-card:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: 0 12px 30px rgba(0,0,0,0.34); }
+.pick-card.open { border-color: var(--accent); }
+.pick-card.open .pc-why { display: block; }
+.admin-metric .k { font-size: 10.5px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+/* ===========================================================================
+   SLATE ADDICT (the public app at slateaddict.com)
+   Everything below is consumer-app surface. The Finder reuses the tokens
+   and the generic components above, not these.
+   ========================================================================= */
+.brand-mark { width: 26px; height: 26px; flex: 0 0 auto; }
+.mark-bg { fill: #14161a; }
+.mark-line { stroke: #34d17f; }
+.brand-accent { color: var(--accent); }
+/* Header record chip: the headline claim, present on every screen. */
+.record-chip {
+  display: inline-flex; align-items: baseline; gap: 7px;
+  padding: 5px 10px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--panel);
+  font-size: 12px;
+}
+.record-chip .chip-wl { font-weight: 700; font-variant-numeric: tabular-nums; }
+.record-chip .chip-rate { color: var(--accent); font-weight: 600; }
+/* --- hero ---------------------------------------------------------------- */
+.hero {
+  display: flex; gap: 28px; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  padding: 30px 32px; margin-bottom: 30px;
+  background: linear-gradient(135deg, #14161a 0%, #1d2329 100%);
+  border-radius: 16px; color: #f4f5f6;
+}
+.hero-left { flex: 1 1 380px; }
+.hero-title {
+  font-family: var(--font-display); font-weight: 800; font-size: 30px;
+  line-height: 1.15; letter-spacing: -0.025em; margin-bottom: 10px;
+}
+.hero-sub { color: #b6bcc4; font-size: 14px; line-height: 1.6; max-width: 52ch; }
+.hero-right {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  padding: 20px 24px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.10);
+}
+.hero-wl {
+  font-family: var(--font-display); font-weight: 800; font-size: 46px;
+  line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+}
+.hero-dash { opacity: 0.4; margin: 0 2px; }
+.hero-push { opacity: 0.5; font-size: 30px; }
+.hero-meta { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; max-width: 34ch; }
+.hero-rate { font-size: 20px; font-weight: 700; color: #34d17f; }
+.hero-rate-lbl { font-size: 12px; color: #9aa2ab; line-height: 1.5; }
+/* --- board --------------------------------------------------------------- */
+.board-date { margin-bottom: 22px; }
+.board-section { margin-bottom: 32px; }
+.board-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.board-blurb { color: var(--text-3); font-size: 12.5px; }
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 14px; }
+.pick-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  padding: 16px 18px; box-shadow: var(--shadow); position: relative; overflow: hidden;
+}
+/* A graded pick carries its outcome as a left rule: visible at a glance
+   while scrolling, and losses are marked exactly as loudly as wins. */
+.pick-card.is-win { box-shadow: inset 3px 0 0 var(--green), var(--shadow); }
+.pick-card.is-loss { box-shadow: inset 3px 0 0 var(--red), var(--shadow); }
+.pc-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.pc-kind {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
+}
+.pc-badges { display: flex; align-items: center; gap: 6px; }
+.pc-headline {
+  font-family: var(--font-display); font-weight: 700; font-size: 15.5px;
+  line-height: 1.35; letter-spacing: -0.01em; margin-bottom: 10px;
+}
+.pc-lead {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  padding: 10px 12px; margin-bottom: 10px;
+  background: var(--bg-2); border-radius: 8px;
+}
+.pc-lead-num {
+  font-family: var(--font-display); font-weight: 800; font-size: 26px; line-height: 1;
+  letter-spacing: -0.02em; color: var(--accent); font-variant-numeric: tabular-nums;
+}
+.pc-lead-lbl { font-size: 12px; color: var(--text-2); }
+.pc-detail { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+.res-chip {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; border: 1px solid transparent;
+}
+/* --- track record -------------------------------------------------------- */
+.rec-overall {
+  display: flex; align-items: baseline; gap: 22px; flex-wrap: wrap;
+  padding: 24px 26px; margin-bottom: 20px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
+}
+.rec-overall-wl {
+  font-family: var(--font-display); font-weight: 800; font-size: 48px; line-height: 1;
+  letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+}
+.rec-overall-meta { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+.rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.rec-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  padding: 16px 18px; box-shadow: var(--shadow);
+}
+.rec-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.rec-card-name { font-family: var(--font-display); font-weight: 700; font-size: 15px; }
+.rec-card-wl { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rec-card-rate { font-size: 13px; margin-top: 3px; margin-bottom: 12px; }
+.rec-grade-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rec-grade-table th {
+  text-align: left; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-3); font-weight: 600; padding: 5px 8px 5px 0; border-bottom: 1px solid var(--border);
+}
+.rec-grade-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--bg-2); }
+.rec-card-note { font-size: 11.5px; color: var(--text-3); margin-top: 10px; }
+.rec-disclaimer {
+  margin-top: 20px; padding: 14px 16px; font-size: 12.5px; line-height: 1.65; color: var(--text-2);
+  background: var(--bg-2); border-radius: 10px; max-width: 84ch;
+}
+/* --- how it works -------------------------------------------------------- */
+.how-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.how-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--card-radius);
+  padding: 18px 20px; box-shadow: var(--shadow);
+}
+.how-card h3 { font-family: var(--font-display); font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+.how-card p { font-size: 13px; line-height: 1.65; color: var(--text-2); }
+.how-card strong { color: var(--text); font-weight: 600; }
+.how-caveat {
+  margin-top: 18px; padding: 20px 22px; border-radius: var(--card-radius);
+  background: var(--bg-2); border: 1px solid var(--border); max-width: 90ch;
+}
+.how-caveat h3 { font-family: var(--font-display); font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+.how-caveat p { font-size: 13px; line-height: 1.7; color: var(--text-2); }
+.auth-skip {
+  display: block; width: 100%; margin-top: 12px; padding: 6px;
+  background: none; border: none; cursor: pointer;
+  font-size: 12.5px; color: var(--text-3); text-decoration: underline;
+}
+.auth-skip:hover { color: var(--text-2); }
+
+/* Player media, shared shapes with the Finder but sized for the consumer
+   cards (bigger, since a face is a big part of what makes a pick card
+   feel like a real product rather than a spreadsheet row). */
+.headshot, .headshot-fallback {
+  border-radius: 50%; flex: 0 0 auto; object-fit: cover;
+  background: var(--bg-2); border: 1px solid var(--border);
+}
+.headshot-fallback {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700; color: var(--text-3);
+}
+.team-logo, .logo-fallback { flex: 0 0 auto; object-fit: contain; }
+.logo-fallback {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; color: var(--text-3);
+}

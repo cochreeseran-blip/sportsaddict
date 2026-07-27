@@ -454,7 +454,7 @@ export async function runPipeline(gameDate = todayIsoDate(), { fetchOdds = true,
   // top 6 can see everyone). Slice here so the digest, email, Research,
   // and Daily Slate all agree on the same 15.
   hitStreak.watchList = (hitStreak.watchList || []).slice(0, 15);
-  log(`Hit board: ${hitStreak.singleHit?.length ?? 0} at 1+ tier, ${hitStreak.multiHit?.length ?? 0} at 2+ tier.`);
+  log(`Hit board: ${hitStreak.multiHit?.length ?? 0} multi-hit candidate(s).`);
   log(`Home run board: ${windHr.watchList?.length ?? 0} qualifying batter(s).`);
 
   // The moneyline board locks for the day once the generation run has

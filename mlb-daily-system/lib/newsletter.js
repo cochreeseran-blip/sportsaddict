@@ -127,12 +127,7 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl, pos
       .join('');
 
   const multiList = digest.hitStreak?.multiHit ?? [];
-  const singleList = digest.hitStreak?.singleHit?.length
-    ? digest.hitStreak.singleHit
-    : (digest.hitStreak?.watchList ?? []);
-
   const multiHits = multiList.length ? hitBlock(multiList, 'multi') : empty('Nobody projects high enough for a multi-hit call today.');
-  const hits = singleList.length ? hitBlock(singleList, 'single') : empty('No qualifying hitters.');
 
   const homers = digest.windHr?.watchList?.length
     ? digest.windHr.watchList
@@ -182,9 +177,6 @@ export function renderDigestEmail({ gameDate, digest, recap, unsubscribeUrl, pos
     <p style="${S.h2}">2+ hit candidates</p>
     ${multiHits}
 
-    <p style="${S.h2}">Safest 1+ hit plays</p>
-    ${hits}
-
     <p style="${S.h2}">Home runs</p>
     ${homers}
 
@@ -230,7 +222,7 @@ async function loadDigestForEmail(pool, gameDate) {
   return {
     topPicks: byType.top_picks?.picks || [],
     moneyline: byType.moneyline || { picks: [] },
-    hitStreak: byType.hit_streak || { watchList: [], multiHit: [], singleHit: [] },
+    hitStreak: byType.hit_streak || { watchList: [], multiHit: [] },
     windHr: byType.wind_hr || { watchList: [] },
     strikeouts: byType.strikeouts || { watchList: [] },
   };

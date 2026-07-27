@@ -173,11 +173,10 @@ async function main() {
   // --- 2. The hit board ----------------------------------------------------
   const hits = await runHitStreakFilter(pool, DATE);
   const multiNames = (hits.multiHit || []).map((b) => b.batterName);
-  const singleNames = (hits.singleHit || []).map((b) => b.batterName);
   check(
-    '5. Hit filter returns both tiers off one projection',
-    Array.isArray(hits.multiHit) && Array.isArray(hits.singleHit),
-    `2+ tier: [${multiNames.join(', ')}] | 1+ tier: [${singleNames.join(', ')}]`
+    '5. Hit filter returns the 2+ board, and no retired 1+ board',
+    Array.isArray(hits.multiHit) && hits.singleHit === undefined,
+    `2+ tier: [${multiNames.join(', ')}]; singleHit is ${hits.singleHit === undefined ? 'absent as intended' : 'STILL PRESENT'}`
   );
   check(
     '6. The elite leadoff bat leads the 2+ tier',
@@ -201,15 +200,18 @@ async function main() {
   // --- 3. Candidate shaping (what lands in the ledger) ---------------------
   const multiCands = multiHitCandidates(hits);
   const singleCands = hitPropCandidates(hits);
+  const eliteFromBoard = (hits.multiHit || []).find((b) => b.batterName === 'Elite Masher');
   check(
     '10. Multi-hit candidates carry signal_type multi_hit and a 2+ headline',
     multiCands.length > 0 && multiCands[0].type === 'multi_hit' && /2\+ hits/.test(multiCands[0].headline),
     multiCands[0]?.headline ?? 'none'
   );
+  // The 1+ tier is retired: it must generate NOTHING new, while P(1+) is
+  // still computed and carried on each card as supporting context.
   check(
-    '11. Single-hit candidates stay signal_type hit_streak (record continuity)',
-    singleCands.length > 0 && singleCands.every((c) => c.type === 'hit_streak'),
-    `${singleCands.length} candidate(s), all hit_streak`
+    '11. The retired 1+ tier generates no new picks, but P(1+) is still carried',
+    singleCands.length === 0 && eliteFromBoard && eliteFromBoard.pAtLeastOne > 0,
+    `hitPropCandidates returned ${singleCands.length}; P(1+) on the card is still ${eliteFromBoard?.pAtLeastOne}`
   );
 
   // --- 4. The home run board ----------------------------------------------

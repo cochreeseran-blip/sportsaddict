@@ -483,7 +483,15 @@ const STATIC_FILES = {
   '/record': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/how': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
-  '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
+  // Shared by both surfaces: design tokens and the player-media helpers
+  // (headshots, team logos, colours). Public because the customer app
+  // needs them; they contain no picks and no account data.
+  '/media.js': { file: 'media.js', type: 'text/javascript; charset=utf-8' },
+  '/tokens.css': { file: 'tokens.css', type: 'text/css; charset=utf-8' },
+  '/app.css': { file: 'app.css', type: 'text/css; charset=utf-8' },
+  // Legacy path: older cached HTML may still ask for this. Serves the
+  // token sheet so a stale page renders readable rather than unstyled.
+  '/styles.css': { file: 'tokens.css', type: 'text/css; charset=utf-8' },
 };
 
 function sendJson(res, status, body) {
@@ -725,6 +733,7 @@ const server = http.createServer(async (req, res) => {
     // is admin-only private research, not a customer-facing surface.
     const isAdminRoute = /^\/admin(\/(slate|users|email))?$/.test(url.pathname)
       || url.pathname === '/admin.js'
+      || url.pathname === '/finder.css'
       || url.pathname.startsWith('/api/admin/')
       || url.pathname.startsWith('/api/dashboard');
 
@@ -741,10 +750,17 @@ const server = http.createServer(async (req, res) => {
       res.end(fs.readFileSync(path.join(__dirname, 'web', 'admin.html')));
       return;
     }
-    if (onAdminHost && url.pathname === '/admin.js' && req.method === 'GET') {
+    // The Finder's own bundle and stylesheet. Both admin-gated: the
+    // stylesheet leaks nothing sensitive, but there is no reason for the
+    // customer host to serve the private terminal's design either.
+    if (onAdminHost && (url.pathname === '/admin.js' || url.pathname === '/finder.css') && req.method === 'GET') {
       if (!(await requireAdmin(req, res))) return;
-      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(fs.readFileSync(path.join(__dirname, 'web', 'admin.js')));
+      const isCss = url.pathname === '/finder.css';
+      res.writeHead(200, {
+        'Content-Type': isCss ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end(fs.readFileSync(path.join(__dirname, 'web', isCss ? 'finder.css' : 'admin.js')));
       return;
     }
 

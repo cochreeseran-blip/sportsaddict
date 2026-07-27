@@ -39,7 +39,7 @@ async function apiSend(path, method, body) {
 const state = {
   view: 'slate',
   dashDate: todayIso(),
-  signalTab: 'strikeouts',
+  signalTab: 'strikeouts', // one of: strikeouts | multiHit | homeRuns | moneyline
   dashData: null,
   liveSource: null,
   autoTimer: null,
@@ -102,24 +102,9 @@ function lineupStatusPill(teamLabel, confirmed, confirmedAt) {
   return `<span class="pill dim">${label}projected</span>`;
 }
 
-// "Chicago White Sox" -> "CWS" for the compact lineup pills. Falls back to
-// the first three letters so an unmapped name still labels its pill.
-const TEAM_ABBR = {
-  'Arizona Diamondbacks': 'AZ', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
-  'Boston Red Sox': 'BOS', 'Chicago Cubs': 'CHC', 'Chicago White Sox': 'CWS',
-  'Cincinnati Reds': 'CIN', 'Cleveland Guardians': 'CLE', 'Colorado Rockies': 'COL',
-  'Detroit Tigers': 'DET', 'Houston Astros': 'HOU', 'Kansas City Royals': 'KC',
-  'Los Angeles Angels': 'LAA', 'Los Angeles Dodgers': 'LAD', 'Miami Marlins': 'MIA',
-  'Milwaukee Brewers': 'MIL', 'Minnesota Twins': 'MIN', 'New York Mets': 'NYM',
-  'New York Yankees': 'NYY', 'Athletics': 'ATH', 'Oakland Athletics': 'OAK',
-  'Philadelphia Phillies': 'PHI', 'Pittsburgh Pirates': 'PIT', 'San Diego Padres': 'SD',
-  'San Francisco Giants': 'SF', 'Seattle Mariners': 'SEA', 'St. Louis Cardinals': 'STL',
-  'Tampa Bay Rays': 'TB', 'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR',
-  'Washington Nationals': 'WSH',
-};
-function abbr(teamName) {
-  return TEAM_ABBR[teamName] || (teamName || '').slice(0, 3).toUpperCase();
-}
+// Team abbreviations come from the shared media helper (web/media.js) so
+// the Finder and the public app never disagree about what to call a team.
+const abbr = (teamName) => Media.teamAbbrev(teamName);
 
 function slateOverviewTable(games) {
   if (!games.length) return emptyState('No games today', 'Nothing on the MLB schedule for this date.');
@@ -145,23 +130,39 @@ function slateOverviewTable(games) {
 function strikeoutCard(p) {
   const highConf = p.strictFloorKs >= 6 && p.opposingTeamKPct !== null && p.opposingTeamKPct >= 24;
   return `
-    <div class="sig-card">
+    <div class="sig-card ${p.published ? 'is-published' : ''}">
       <div class="sig-head">
-        <span>${esc(p.pitcherName)} <span class="faint">(${esc(p.team)} ${p.isHome ? 'vs' : '@'} ${esc(p.opponent)})</span></span>
-        <span style="display:flex;align-items:center;gap:8px">${gradeBadge(p.grade)}${highConf ? '<span class="pill hot">High confidence</span>' : ''}</span>
+        <span class="sig-who">
+          ${Media.headshot(p.pitcherId, p.pitcherName, 44)}
+          <span>
+            <span class="sig-name">${esc(p.pitcherName)}</span>
+            <span class="sig-meta">${Media.teamLogo(p.team, 14)} ${esc(Media.teamAbbrev(p.team))} ${p.isHome ? 'vs' : '@'} ${esc(Media.teamAbbrev(p.opponent))}</span>
+          </span>
+        </span>
+        <span class="sig-badges">${gradeBadge(p.grade)}${highConf ? '<span class="pill hot">High confidence</span>' : ''}</span>
       </div>
-      <div class="sig-sub">K floor <strong>${p.strictFloorKs}</strong> (soft floor ${p.softFloorKs ?? '-'}) over his last ${p.last5StartKs.length} starts: ${p.last5StartKs.join(', ')}</div>
-      <div class="sig-note">Suggested line: over ${fmtNum(p.suggestedLine, 1)}</div>
-      <div class="sig-note mono">${fmtNum(p.kPerStart, 1)} K/start · opponent K rate <span class="${colorClass(p.opposingTeamKPct, { goodMin: 24, badMax: 20 })}">${fmtPct(p.opposingTeamKPct ? p.opposingTeamKPct / 100 : null, 0)}</span></div>
-      <div class="faint" style="font-size:11px;margin-top:6px">${esc(p.gradeReasons.join(' · '))}</div>
+      <div class="proj-row">
+        <div class="proj-main">
+          <span class="proj-pct">${fmtNum(p.suggestedLine, 1)}</span>
+          <span class="proj-label">line, over</span>
+        </div>
+        <div class="proj-side">
+          <span class="mono">${fmtNum(p.kPerStart, 1)} K/start</span>
+          <span class="faint">floor ${p.strictFloorKs} · soft ${p.softFloorKs ?? '-'}</span>
+        </div>
+      </div>
+      <div class="sig-note">Last starts: <span class="mono">${p.last5StartKs.join(', ')}</span></div>
+      <div class="sig-note mono">Opponent K rate <span class="${colorClass(p.opposingTeamKPct, { goodMin: 24, badMax: 20 })}">${fmtPct(p.opposingTeamKPct ? p.opposingTeamKPct / 100 : null, 0)}</span></div>
+      <div class="faint sig-why">${esc(p.gradeReasons.join(' · '))}</div>
+      <div class="sig-foot">${publishControl(p)}</div>
     </div>`;
 }
 
 // The headline number on a hit card is the projection for THAT tier: a 2+
 // card leads with P(2+), a 1+ card with P(1+). Both come from one model
 // (lib/hitProjection.js) so the two boards always agree with each other.
-function hitPropCard(p, tier = 'single') {
-  const isMulti = tier === 'multi';
+function hitPropCard(p, tier = 'multi') {
+  const isMulti = tier !== 'single';
   const prob = isMulti ? p.pAtLeastTwo : p.pAtLeastOne;
   const luck = p.xbaLuckFlag === 'buy' ? '<span class="pill ok">Buy signal</span>' : p.xbaLuckFlag === 'sell' ? '<span class="pill warn">Regression risk</span>' : '';
   const slot = Number.isInteger(p.battingOrderSlot)
@@ -175,10 +176,16 @@ function hitPropCard(p, tier = 'single') {
     : '';
 
   return `
-    <div class="sig-card">
+    <div class="sig-card ${p.published ? 'is-published' : ''}">
       <div class="sig-head">
-        <span>${esc(p.batterName)} <span class="faint">(${esc(p.team)}, ${slot})</span></span>
-        <span style="display:flex;align-items:center;gap:8px">${gradeBadge(p.grade)}${luck}</span>
+        <span class="sig-who">
+          ${Media.headshot(p.batterId, p.batterName, 44)}
+          <span>
+            <span class="sig-name">${esc(p.batterName)}</span>
+            <span class="sig-meta">${Media.teamLogo(p.team, 14)} ${esc(Media.teamAbbrev(p.team))} · ${slot}</span>
+          </span>
+        </span>
+        <span class="sig-badges">${gradeBadge(p.grade)}${luck}</span>
       </div>
       <div class="proj-row">
         <div class="proj-main">
@@ -194,7 +201,8 @@ function hitPropCard(p, tier = 'single') {
       <div class="sig-sub">${p.hitStreak >= 5 ? `${p.hitStreak}-game hit streak, ` : ''}batting ${fmtNum(p.trailing15Avg, 3)} over his last 15 (${p.trailing15Ab} AB)${p.xba !== null && p.xba !== undefined ? `, xBA ${fmtNum(p.xba, 3)}` : ''}</div>
       <div class="sig-note">vs ${esc(p.opposingStarterName || 'TBD')}${p.opposingHitsPer9 !== null && p.opposingHitsPer9 !== undefined ? `, allows <span class="mono ${colorClass(p.opposingHitsPer9, { goodMin: 9.5, badMax: 7.5 })}">${fmtNum(p.opposingHitsPer9, 1)}</span> H/9` : ''}</div>
       ${p.vsTeamPa >= 20 ? `<div class="sig-note mono">${fmtNum(p.vsTeamAvg, 3)} career vs this team (${p.vsTeamPa} PA)</div>` : ''}
-      <div class="faint" style="font-size:11px;margin-top:6px">${esc((p.gradeReasons || []).join(' · '))}</div>
+      <div class="faint sig-why">${esc((p.gradeReasons || []).join(' · '))}</div>
+      <div class="sig-foot">${publishControl(p)}</div>
     </div>`;
 }
 
@@ -205,10 +213,16 @@ function homeRunCard(p) {
   const wind = p.windBlowingOut
     ? `<span class="pill ok">Wind out${p.windSpeedMph ? ` ${fmtNum(p.windSpeedMph, 0)} mph` : ''}</span>` : '';
   return `
-    <div class="sig-card">
+    <div class="sig-card ${p.published ? 'is-published' : ''}">
       <div class="sig-head">
-        <span>${esc(p.batterName)} <span class="faint">(${esc(p.team)}${Number.isInteger(p.battingOrderSlot) ? `, batting ${p.battingOrderSlot}` : ''})</span></span>
-        <span style="display:flex;align-items:center;gap:8px">${gradeBadge(p.grade)}${wind}</span>
+        <span class="sig-who">
+          ${Media.headshot(p.batterId, p.batterName, 44)}
+          <span>
+            <span class="sig-name">${esc(p.batterName)}</span>
+            <span class="sig-meta">${Media.teamLogo(p.team, 14)} ${esc(Media.teamAbbrev(p.team))}${Number.isInteger(p.battingOrderSlot) ? ` · batting ${p.battingOrderSlot}` : ''}</span>
+          </span>
+        </span>
+        <span class="sig-badges">${gradeBadge(p.grade)}${wind}</span>
       </div>
       <div class="proj-row">
         <div class="proj-main">
@@ -223,7 +237,8 @@ function homeRunCard(p) {
       ${noSavant ? '<div class="sig-note warn-text">No Savant data on file, capped at B.</div>' : ''}
       <div class="sig-note">vs ${esc(p.opposingStarterName || 'TBD')}${p.opposingHrPer9 !== null && p.opposingHrPer9 !== undefined ? `, allows <span class="mono ${colorClass(p.opposingHrPer9, { goodMin: 1.5, badMax: 1.0 })}">${fmtNum(p.opposingHrPer9, 2)}</span> HR/9` : ''}</div>
       <div class="sig-note mono">Homered in ${fmtPct(p.trailing15HrRate, 0)} of his last ${p.trailing15Games ?? 15} · ${esc(p.venue || '')}</div>
-      <div class="faint" style="font-size:11px;margin-top:6px">${esc((p.gradeReasons || []).join(' · '))}</div>
+      <div class="faint sig-why">${esc((p.gradeReasons || []).join(' · '))}</div>
+      <div class="sig-foot">${publishControl(p)}</div>
     </div>`;
 }
 
@@ -231,9 +246,15 @@ function moneylineCard(p) {
   const blowout = p.awayStarterBlowoutInflated
     ? '<div class="pill warn">Blowout-inflated: ex-worst-start ERA drops under 4.50</div>' : '';
   return `
-    <div class="sig-card">
+    <div class="sig-card ${p.published ? 'is-published' : ''}">
       <div class="sig-head">
-        <span>${esc(p.homeTeam)} ${fmtOdds(p.homeMl)} <span class="faint">vs ${esc(p.awayTeam)}</span></span>
+        <span class="sig-who">
+          ${Media.teamLogo(p.homeTeam, 34)}
+          <span>
+            <span class="sig-name">${esc(p.homeTeam)} ${fmtOdds(p.homeMl)}</span>
+            <span class="sig-meta">vs ${Media.teamLogo(p.awayTeam, 14)} ${esc(Media.teamAbbrev(p.awayTeam))}</span>
+          </span>
+        </span>
       </div>
       <div class="sig-sub">${esc(p.awayStarterName || 'TBD')} trailing ERA <strong class="mono">${fmtNum(p.awayStarterTrailingEra)}</strong> over his last ${p.awayStarterTrailingStarts ?? '-'} start(s)</div>
       ${blowout}
@@ -242,6 +263,7 @@ function moneylineCard(p) {
         Home: ${p.homeStarterSavant ? `${fmtNum(p.homeStarterSavant.era)} ERA, ${fmtPct(p.homeStarterSavant.kPct ? p.homeStarterSavant.kPct / 100 : null, 0)} K` : 'no Savant data'}
         &nbsp;|&nbsp; Away: ${p.awayStarterSavant ? `${fmtNum(p.awayStarterSavant.era)} ERA, ${fmtPct(p.awayStarterSavant.kPct ? p.awayStarterSavant.kPct / 100 : null, 0)} K` : 'no Savant data'}
       </div>
+      <div class="sig-foot">${publishControl(p)}</div>
     </div>`;
 }
 
@@ -251,14 +273,68 @@ function gradeBadge(grade) {
   return `<span class="grade-badge ${cls}">${esc(grade)}</span>`;
 }
 
+// The publish control, rendered on every signal card.
+//
+// This is the only way a pick reaches slateaddict.com, so its states have
+// to be unambiguous:
+//   published        -> a locked stamp, no button (it is permanent)
+//   not yet recorded -> explained, no button (the pipeline hasn't written
+//                       a ledger row for this date, so there is nothing
+//                       to publish and a button would fail silently)
+//   otherwise        -> the button
+function publishControl(p) {
+  if (p.published) {
+    return `<div class="pub-state is-published">On the record${p.publishedAt ? ` · ${esc(fmtDateTime(p.publishedAt))}` : ''}</div>`;
+  }
+  if (!p.ledgerId) {
+    return '<div class="pub-state is-unrecorded">Not in the ledger yet, publish once the pipeline records this date.</div>';
+  }
+  return `<button class="btn primary small pub-btn" data-publish="${p.ledgerId}">Publish</button>`;
+}
+
+// Publishing is permanent and enforced by a database trigger, so it sits
+// behind an explicit confirmation that says exactly that. There is no
+// edit and no delete anywhere in this app because no such endpoint
+// exists.
+function confirmPublish(pickId, headline) {
+  const wrap = document.createElement('div');
+  wrap.className = 'admin-modal-overlay';
+  wrap.innerHTML = `
+    <div class="admin-modal">
+      <div class="admin-modal-title">Publish this pick?</div>
+      <p class="admin-modal-body">${esc(headline || '')}</p>
+      <p class="admin-modal-body"><strong>This is permanent.</strong> Once published it is on the public record whether it wins or loses. It cannot be edited, un-published, or deleted by anyone, including you.</p>
+      <div class="admin-modal-actions">
+        <button class="btn ghost" id="pubCancel">Cancel</button>
+        <button class="btn primary" id="pubConfirm">Publish permanently</button>
+      </div>
+      <div class="modal-error" id="pubError" hidden></div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  $('#pubCancel', wrap).addEventListener('click', close);
+  $('#pubConfirm', wrap).addEventListener('click', async () => {
+    $('#pubConfirm', wrap).disabled = true;
+    try {
+      await apiSend('/api/admin/publish', 'POST', { pickId });
+      close();
+      loadDashboard(state.dashDate); // refetch so the card flips to its locked state
+    } catch (err) {
+      const e = $('#pubError', wrap);
+      e.textContent = err.message;
+      e.hidden = false;
+      $('#pubConfirm', wrap).disabled = false;
+    }
+  });
+}
+
 function signalPanel(data) {
   const multi = data.multiHit || [];
-  const single = data.singleHit || [];
   const hrs = data.homeRuns || [];
   const tabs = [
     ['strikeouts', `K Props (${data.strikeouts.length})`],
     ['multiHit', `2+ Hits (${multi.length})`],
-    ['hitProps', `1+ Hit (${single.length})`],
     ['homeRuns', `Home Runs (${hrs.length})`],
     ['moneyline', `Moneyline (${data.moneyline.picks.length})`],
   ];
@@ -276,11 +352,6 @@ function signalPanel(data) {
       ? `<p class="section-sub">Batters projected above ${fmtPct(cutoff.multiHit ?? 0.32, 0)} to record two or more hits, best first.</p>
          <div class="sig-cards">${multi.map((p) => hitPropCard(p, 'multi')).join('')}</div>`
       : emptyState('No 2+ hit candidates today', `Nobody projects above ${fmtPct(cutoff.multiHit ?? 0.32, 0)} for a multi-hit game.`);
-  } else if (state.signalTab === 'hitProps') {
-    body = single.length
-      ? `<p class="section-sub">The safest 1+ hit plays, everyone projected above ${fmtPct(cutoff.singleHit ?? 0.70, 0)}.</p>
-         <div class="sig-cards">${single.map((p) => hitPropCard(p, 'single')).join('')}</div>`
-      : emptyState('No 1+ hit plays today', `Nobody projects above ${fmtPct(cutoff.singleHit ?? 0.70, 0)} to get a hit.`);
   } else if (state.signalTab === 'homeRuns') {
     body = hrs.length
       ? `<p class="section-sub">Ranked on Statcast contact quality against arms that give up home runs.</p>
@@ -387,6 +458,16 @@ function wireDashboardControls() {
     loadDashboard(state.dashDate);
   });
   $('#dashRefresh')?.addEventListener('click', () => loadDashboard(state.dashDate));
+  // Publish, delegated so it works across every board without rebinding
+  // on each tab switch. The headline is passed into the confirm dialog so
+  // a permanent action always names exactly what is about to be published.
+  document.querySelectorAll('[data-publish]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const card = btn.closest('.sig-card');
+      const headline = card?.querySelector('.sig-name')?.textContent?.trim() || '';
+      confirmPublish(Number(btn.dataset.publish), headline);
+    });
+  });
   document.querySelectorAll('[data-signal-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.signalTab = btn.dataset.signalTab;

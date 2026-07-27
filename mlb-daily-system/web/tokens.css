@@ -1,0 +1,279 @@
+/* Design tokens and shared chrome.
+   Loaded by BOTH surfaces (slateaddict.com and the Finder), so nothing
+   here may be specific to either one. Contains: the colour/type scale,
+   the reset, and the primitives both apps genuinely share -- topbar,
+   tabs, buttons, form fields, pills, the auth gate, tables, empty
+   states, grade badges, and the player-media fallbacks.
+
+   Surface-specific rules live in app.css (slateaddict.com) and
+   finder.css (the terminal). Keeping them apart is what lets the two
+   surfaces be developed on separate branches without fighting over one
+   file. If you are about to add a rule here, check first that BOTH
+   surfaces really need it.
+
+   This file was rebuilt from the previous single styles.css; 303 rules
+   left over from earlier versions of the app were unused by either
+   surface and were dropped rather than carried forward. */
+
+/* Slate Addict.
+   Light, dense, evidence-forward. Green means the number favours the
+   pick, red means it doesn't; nothing is coloured for decoration. The
+   Finder (admin) shares this sheet, which is why the tokens below are
+   generic rather than page-specific. */
+:root {
+  --bg: #fbfbfa;
+  --bg-2: #f4f4f2;
+  --panel: #ffffff;
+  --panel-2: #fafaf9;
+  --border: #e4e3df;
+  --border-strong: #cfcec9;
+  --text: #14161a;
+  --text-2: #55585f;
+  --text-3: #8a8d94;
+  --accent: #1d7a4c;
+  --accent-soft: rgba(29, 122, 76, 0.10);
+  --green: #1d7a4c;
+  --green-bg: rgba(29, 122, 76, 0.10);
+  --red: #b3392f;
+  --red-bg: rgba(179, 57, 47, 0.10);
+  --amber: #9a6f14;
+  --amber-bg: rgba(154, 111, 20, 0.12);
+  --radius: 8px;
+  --card-radius: 12px;
+  --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: var(--font);
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --shadow: 0 1px 2px rgba(20, 22, 26, 0.05), 0 1px 3px rgba(20, 22, 26, 0.04);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+/* [hidden] must win over any component's display rule. Without this, any
+   rule like `.account-chip { display: flex }` silently defeats
+   `el.hidden = true`, which is how both "Sign in" and "Sign out" ended up
+   visible at once. Global and !important on purpose: hiding is not a
+   style choice, it's a state, and no component should be able to override
+   it by accident. */
+[hidden] { display: none !important; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+/* --- top bar -------------------------------------------------------------- */
+.topbar {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+  padding: 0 20px;
+  height: 52px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-name { font-family: var(--font-display); font-weight: 600; font-size: 15px; }
+.tabs { display: flex; gap: 4px; height: 100%; align-items: center; }
+.tab {
+  font: 600 13px var(--font);
+  color: var(--text-3); background: none; border: 0;
+  border-radius: 8px;
+  padding: 7px 13px; cursor: pointer; height: auto;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.tab:hover { color: var(--text-2); background: rgba(255,255,255,0.03); }
+.tab.active { color: var(--text); background: rgba(91, 140, 255, 0.12); }
+.topbar-right { display: flex; align-items: center; gap: 14px; margin-left: auto; position: relative; }
+.pulse-dot.warn { background: var(--amber); }
+@keyframes blink { 50% { opacity: 0.3; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* --- layout --------------------------------------------------------------- */
+#app { max-width: 1180px; margin: 0 auto; padding: 22px 20px 64px; }
+.view { display: none; }
+.view.active { display: block; }
+.section-title { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.section-title .idx { display: none; }
+.section-sub { color: var(--text-3); font-size: 12.5px; margin: 2px 0 14px; max-width: 78ch; }
+.pill.ok { color: var(--green); background: var(--green-bg); }
+.pill.warn { color: var(--amber); background: var(--amber-bg); }
+.pill.dim { color: var(--text-3); background: var(--panel-2); }
+.pill.hot { color: var(--amber); background: var(--amber-bg); }
+/* --- empty / loading ------------------------------------------------------- */
+.empty-state {
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+  padding: 32px 20px; text-align: center; color: var(--text-3); font-size: 13px;
+}
+.empty-state .es-title { font-weight: 600; font-size: 13px; color: var(--text-2); margin-bottom: 4px; }
+/* --- skeleton loading ---------------------------------------------------------- */
+@keyframes skel-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+.headshot { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: var(--panel-2); border: 1px solid var(--border-strong); flex: 0 0 auto; }
+.headshot-fallback { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--panel-2); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 650; color: var(--text-2); flex: 0 0 auto; }
+.mono { font-variant-numeric: tabular-nums; }
+.dim { color: var(--text-2); }
+.faint { color: var(--text-3); }
+.pos { color: var(--green); }
+.neg { color: var(--red); }
+@keyframes ball-bob { 50% { transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .lu-ball { animation: none; } }
+.mlv-badge.dim { color: var(--text-3); background: rgba(255, 255, 255, 0.05); }
+.mlv-big.win { color: #04140b; background: var(--green); box-shadow: 0 0 14px rgba(52, 209, 127, 0.55); }
+.mlv-big.loss { color: #fff; background: var(--red); }
+.mlv-big.push { color: var(--amber); background: var(--amber-bg); }
+.mlv-big.pending { color: var(--text-2); background: rgba(255, 255, 255, 0.06); }
+.mlv-big.pending i.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: blink 1.2s ease-in-out infinite; }
+/* Track is rendered as 4 copies of the row (see jumbotronHtml), so -25%
+   is exactly one row-width, same as -50% was for a 2-copy track. Each
+   copy is display:contents so it's invisible to the flex layout here,
+   it exists purely so the reduced-motion override below can hide 3 of
+   the 4 copies instead of dumping all of them out statically. */
+@keyframes jumbo-scroll { to { transform: translateX(-25%); } }
+@media (prefers-reduced-motion: reduce) {
+  .jumbo-track { animation: none; flex-wrap: wrap; width: auto; padding: 9px 12px; gap: 8px; }
+  .jumbo-copy:not(:first-child) { display: none; }
+}
+.jumbo-item .headshot, .jumbo-item .headshot-fallback, .jumbo-item .gc-logo, .jumbo-item .gc-logo-fallback { width: 26px; height: 26px; }
+.prob-chip.hot { color: #3fd07a; background: rgba(63, 208, 122, 0.12); }
+.yd-chip.win b { color: var(--green); }
+.yd-chip.loss b { color: var(--red); }
+.yd-chip.push b { color: var(--amber); }
+.pc-top .headshot, .pc-top .headshot-fallback { width: 38px; height: 38px; }
+.date-strip-btn.active { color: var(--accent); border-color: var(--accent); background: rgba(91, 156, 255, 0.09); }
+.date-strip-btn.active .ds-date { color: var(--accent); }
+/* --- buttons / forms ---------------------------------------------------------------- */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 13px var(--font);
+  border-radius: 6px; padding: 6px 14px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text);
+}
+.btn:hover:not(:disabled) { background: #21252c; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #0c1524; font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: #6ea8ff; }
+.btn.ghost { background: none; }
+.btn.small { padding: 4px 11px; font-size: 12.5px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 11px; flex: 1; }
+.field span { font-size: 11.5px; font-weight: 550; color: var(--text-2); }
+.field span em { font-style: normal; font-weight: 400; color: var(--text-3); }
+.field input {
+  font: 400 13.5px var(--font); color: var(--text);
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 7px 10px; width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+.field input:focus { outline: none; border-color: var(--accent); }
+.modal-error { color: var(--red); font-size: 12.5px; margin-bottom: 8px; }
+/* --- facelift skin -----------------------------------------------------------------
+   Editorial sports-desk look: Bricolage Grotesque display headings, a mono
+   for live numbers, market-style probability cards with meters, glassy
+   surfaces. Deep near-black canvas, one electric-blue accent, green/red
+   only where a number is good or bad. */
+:root {
+  --accent-soft: rgba(91, 140, 255, 0.14);
+  --pos: var(--green);
+  --pos-soft: var(--green-bg);
+  --neg: var(--red);
+  --neg-soft: var(--red-bg);
+  --warnc: var(--amber);
+  --warn-soft: var(--amber-bg);
+  --card-radius: 14px;
+}
+/* section headings: display type, accent tick, count badge */
+.board-title {
+  display: flex; align-items: center; gap: 10px;
+  margin: 36px 0 14px;
+  font-family: var(--font-display);
+  font-weight: 800; font-style: normal;
+  font-size: 23px; line-height: 1.1; letter-spacing: -0.02em;
+  text-transform: none; color: var(--text);
+  border-bottom: 0; padding-bottom: 0;
+}
+.board-title::before {
+  content: ""; width: 4px; height: 20px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), #3a63d6); flex: 0 0 auto;
+}
+.board-title:first-child { margin-top: 6px; }
+.board-title.center { justify-content: center; }
+.board-title.center::before { display: none; }
+.board-head .board-title { flex: 1; margin: 0; }
+/* card surfaces: subtle top-lit gradient + soft shadow */
+.pick-card, .sig-card, .chat-wrap, .game-card {
+  border-radius: var(--card-radius);
+  background: linear-gradient(180deg, var(--panel), var(--bg-2));
+  box-shadow: var(--shadow);
+}
+.pick-card.hot { --tier: var(--pos); }
+.pc-head .headshot, .pc-head .headshot-fallback { width: 40px; height: 40px; }
+/* letter grades: one shared scale (lib/grading.js) across every pick type */
+.grade-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-weight: 800; font-size: 12px; letter-spacing: -0.01em;
+  border-radius: 7px; padding: 2px 8px; flex: 0 0 auto;
+  border: 1px solid transparent;
+}
+.grade-badge.g-aplus { color: #04140b; background: var(--green); box-shadow: 0 0 12px rgba(52, 209, 127, 0.45); }
+.grade-badge.g-a { color: var(--green); background: var(--green-bg); border-color: rgba(52, 209, 127, 0.4); }
+.grade-badge.g-bplus, .grade-badge.g-b { color: var(--accent); background: var(--accent-soft, rgba(91, 140, 255, 0.12)); border-color: rgba(91, 140, 255, 0.35); }
+.grade-badge.g-cplus, .grade-badge.g-c { color: var(--text-2); background: rgba(255, 255, 255, 0.06); border-color: var(--border); }
+.pill.ok { color: var(--pos); background: var(--pos-soft); }
+.pill.warn { color: var(--warnc); background: var(--warn-soft); }
+.pill.dim { color: var(--text-3); background: rgba(255, 255, 255, 0.05); }
+.pill.hot { color: var(--neg); background: var(--neg-soft); }
+.prob-chip.hot { color: #04140b; background: var(--pos); }
+.prob-chip.hot i { opacity: 0.6; }
+/* empty states: soft panel, not a dashed AI box */
+.empty-state {
+  border: 1px solid var(--border); border-radius: var(--card-radius);
+  background: linear-gradient(180deg, var(--panel), var(--bg-2));
+  padding: 30px 22px; text-align: center; color: var(--text-3); font-size: 13px;
+}
+.empty-state .es-title { font-family: var(--font-display); font-weight: 700; font-size: 15px; color: var(--text-2); margin-bottom: 4px; }
+#chatInput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* --- responsive -------------------------------------------------------------------- */
+@media (max-width: 760px) {
+  .topbar { padding: 0 12px; height: auto; min-height: 48px; }
+  .tabs { order: 3; width: 100%; }
+  .tab { flex: 1; height: 40px; padding: 0 6px; font-size: 12.5px; }
+  #app { padding: 14px 10px 56px; }
+  .gp-starters, .gc-pitchers { grid-template-columns: 1fr; }
+  .lu-stats { gap: 8px; }
+  .lu-stat:nth-child(3) { display: none; }
+  .brand-tag { display: none; }
+  .sys-status { display: none; }
+  .pick-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+  .pick-card { padding: 10px 11px 9px; }
+  .pc-top .headshot, .pc-top .headshot-fallback { width: 32px; height: 32px; }
+  .pc-name { font-size: 12.5px; }
+  .prob-chip b { font-size: 12.5px; }
+  .jumbo-track { animation-duration: 30s; }
+  .yd-record { width: 100%; margin-left: 0; }
+  .signals-toolbar .toolbar-note:last-child { display: none; }
+}
+.record-clv .pos { color: var(--pos); font-weight: 700; }
+.record-clv .neg { color: var(--neg); font-weight: 700; }
+@media (max-width: 640px) { .record-grid { grid-template-columns: 1fr; } .record-label { min-height: 0; } }
+.btn.small { padding: 5px 12px; font-size: 12.5px; }
+.proj-side .faint { font-size: 11px; }
+.hero .btn.ghost {
+  border-color: rgba(255,255,255,0.25); color: #e8eaed; background: transparent;
+}
+.hero .btn.ghost:hover { background: rgba(255,255,255,0.10); }
+.board-date .section-title {
+  font-family: var(--font-display); font-weight: 800; font-size: 22px; letter-spacing: -0.02em;
+}
+.board-date .section-sub { display: block; margin-top: 5px; color: var(--text-2); font-size: 13px; max-width: 70ch; line-height: 1.6; }
+.board-head .board-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 17px; letter-spacing: -0.01em; margin: 0;
+}
+.res-chip.win { color: var(--green); background: var(--green-bg); border-color: rgba(29,122,76,0.28); }
+.res-chip.loss { color: var(--red); background: var(--red-bg); border-color: rgba(179,57,47,0.28); }
+.res-chip.push { color: var(--amber); background: var(--amber-bg); border-color: rgba(154,111,20,0.28); }
+.res-chip.pending { color: var(--text-3); background: var(--bg-2); border-color: var(--border); }
+@media (max-width: 620px) {
+  .hero { padding: 22px 20px; }
+  .hero-title { font-size: 24px; }
+  .hero-wl { font-size: 38px; }
+  .rec-overall-wl { font-size: 38px; }
+  .pick-grid, .rec-grid, .how-grid { grid-template-columns: 1fr; }
+}
